@@ -1,0 +1,7 @@
+# Emscripten sysroot config for Zig (wasm32-emscripten)
+include_dir=/home/deano/projects/ziggy_moltbot/.tools/emsdk/upstream/emscripten/cache/sysroot/include
+sys_include_dir=/home/deano/projects/ziggy_moltbot/.tools/emsdk/upstream/emscripten/cache/sysroot/include
+crt_dir=/home/deano/projects/ziggy_moltbot/.tools/emsdk/upstream/emscripten/cache/sysroot/lib/wasm32-emscripten
+msvc_lib_dir=
+kernel32_lib_dir=
+gcc_dir=

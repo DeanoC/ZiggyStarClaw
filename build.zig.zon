@@ -1,0 +1,35 @@
+.{
+    .name = .zig_moltbot_client,
+    .version = "0.1.0",
+    .fingerprint = 0x1cc2d61fb4846ac1,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .websocket = .{
+            .url = "https://github.com/karlseguin/websocket.zig/archive/refs/heads/master.zip",
+            .hash = "websocket-0.1.0-ZPISdRNzAwAGszh62EpRtoQxu8wb1MSMVI6Ow0o2dmyJ",
+        },
+        .zgui = .{
+            .url = "https://github.com/zig-gamedev/zgui/archive/refs/heads/main.zip",
+            .hash = "zgui-0.6.0-dev--L6sZAD7bQD9cbuCtZ_eZU0HEaAaCDN3Cc2Mv6IGBeyD",
+        },
+        .zemscripten = .{
+            .url = "https://github.com/zig-gamedev/zemscripten/archive/refs/heads/main.zip",
+            .hash = "zemscripten-0.2.0-dev-sRlDqEtQAAB_1tPdqJsxQIqXxvvklcFu6VN5p6ANy8hw",
+        },
+        .emsdk = .{
+            .path = ".tools/emsdk",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "assets",
+        "docs",
+        "examples",
+        "scripts",
+        "tests",
+        "README.md",
+        "LICENSE",
+    },
+}
