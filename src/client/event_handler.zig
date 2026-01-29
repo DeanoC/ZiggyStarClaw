@@ -1,7 +1,11 @@
 const std = @import("std");
 const state = @import("state.zig");
+const types = @import("../protocol/types.zig");
 const gateway = @import("../protocol/gateway.zig");
 const messages = @import("../protocol/messages.zig");
+const sessions = @import("../protocol/sessions.zig");
+const chat = @import("../protocol/chat.zig");
+const requests = @import("../protocol/requests.zig");
 
 pub const AuthUpdate = struct {
     device_token: []const u8,
@@ -65,6 +69,11 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             return null;
         }
 
+        if (std.mem.eql(u8, frame.value.event, "chat")) {
+            handleChatEvent(ctx, frame.value.payload);
+            return null;
+        }
+
         std.log.debug("Gateway event: {s}", .{frame.value.event});
         return null;
     }
@@ -76,9 +85,22 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
         };
         defer frame.deinit();
 
+        const response_id = frame.value.id;
+        const is_sessions = ctx.pending_sessions_request_id != null and
+            std.mem.eql(u8, ctx.pending_sessions_request_id.?, response_id);
+        const is_history = ctx.pending_history_request_id != null and
+            std.mem.eql(u8, ctx.pending_history_request_id.?, response_id);
+        const is_send = ctx.pending_send_request_id != null and
+            std.mem.eql(u8, ctx.pending_send_request_id.?, response_id);
+
         if (!frame.value.ok) {
+            if (is_sessions) ctx.clearPendingSessionsRequest();
+            if (is_history) ctx.clearPendingHistoryRequest();
+            if (is_send) ctx.clearPendingSendRequest();
+
             if (frame.value.@"error") |err| {
                 std.log.err("Gateway request failed ({s}): {s}", .{ err.code, err.message });
+                ctx.setError(err.message) catch {};
                 if (err.details) |details| {
                     if (details == .object) {
                         if (details.object.get("requestId")) |request_id| {
@@ -108,6 +130,27 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
                     }
                 }
             }
+
+            if (is_sessions) {
+                ctx.clearPendingSessionsRequest();
+                handleSessionsList(ctx, payload) catch |err| {
+                    std.log.warn("sessions.list handling failed ({s})", .{@errorName(err)});
+                };
+                return null;
+            }
+
+            if (is_history) {
+                ctx.clearPendingHistoryRequest();
+                handleChatHistory(ctx, payload) catch |err| {
+                    std.log.warn("chat.history handling failed ({s})", .{@errorName(err)});
+                };
+                return null;
+            }
+
+            if (is_send) {
+                ctx.clearPendingSendRequest();
+                return null;
+            }
         }
         return null;
     }
@@ -118,6 +161,117 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
 
 pub fn handleConnectionState(ctx: *state.ClientContext, new_state: state.ClientState) void {
     ctx.state = new_state;
+}
+
+fn handleSessionsList(ctx: *state.ClientContext, payload: std.json.Value) !void {
+    var parsed = try messages.parsePayload(ctx.allocator, payload, sessions.SessionsListResult);
+    defer parsed.deinit();
+
+    const rows = parsed.value.sessions orelse {
+        std.log.warn("sessions.list payload missing sessions", .{});
+        return;
+    };
+
+    const list = try ctx.allocator.alloc(types.Session, rows.len);
+    var filled: usize = 0;
+    errdefer {
+        for (list[0..filled]) |*session| {
+            freeSessionOwned(ctx.allocator, session);
+        }
+        ctx.allocator.free(list);
+    }
+
+    for (rows, 0..) |row, index| {
+        list[index] = .{
+            .key = try ctx.allocator.dupe(u8, row.key),
+            .display_name = if (row.displayName) |name| try ctx.allocator.dupe(u8, name) else null,
+            .label = if (row.label) |label| try ctx.allocator.dupe(u8, label) else null,
+            .kind = if (row.kind) |kind| try ctx.allocator.dupe(u8, kind) else null,
+            .updated_at = row.updatedAt,
+        };
+        filled = index + 1;
+    }
+
+    ctx.setSessionsOwned(list);
+}
+
+fn handleChatHistory(ctx: *state.ClientContext, payload: std.json.Value) !void {
+    var parsed = try messages.parsePayload(ctx.allocator, payload, chat.ChatHistoryResult);
+    defer parsed.deinit();
+
+    const items = parsed.value.messages orelse {
+        std.log.warn("chat.history payload missing messages", .{});
+        return;
+    };
+
+    const list = try ctx.allocator.alloc(types.ChatMessage, items.len);
+    var filled: usize = 0;
+    errdefer {
+        for (list[0..filled]) |*message| {
+            freeChatMessageOwned(ctx.allocator, message);
+        }
+        ctx.allocator.free(list);
+    }
+
+    for (items, 0..) |item, index| {
+        list[index] = try buildChatMessage(ctx.allocator, item);
+        filled = index + 1;
+    }
+
+    ctx.setMessagesOwned(list);
+    if (ctx.current_session) |session| {
+        ctx.setHistorySession(session) catch {};
+    }
+    ctx.clearStreamText();
+}
+
+fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) void {
+    const value = payload orelse return;
+    var parsed = messages.parsePayload(ctx.allocator, value, chat.ChatEventPayload) catch |err| {
+        std.log.warn("Failed to parse chat event ({s})", .{@errorName(err)});
+        return;
+    };
+    defer parsed.deinit();
+
+    const event = parsed.value;
+    if (ctx.current_session) |session| {
+        if (!std.mem.eql(u8, session, event.sessionKey)) return;
+    }
+
+    if (std.mem.eql(u8, event.state, "delta")) {
+        if (event.message) |message_val| {
+            if (extractChatTextValue(ctx.allocator, message_val)) |text| {
+                defer ctx.allocator.free(text);
+                ctx.setStreamText(text) catch {};
+            }
+        }
+        return;
+    }
+
+    ctx.clearStreamText();
+
+    if (std.mem.eql(u8, event.state, "error")) {
+        if (event.errorMessage) |msg| {
+            ctx.setError(msg) catch {};
+        }
+        return;
+    }
+
+    if (event.message) |message_val| {
+        var parsed_msg = messages.parsePayload(ctx.allocator, message_val, chat.ChatHistoryMessage) catch |err| {
+            std.log.warn("Failed to parse chat message ({s})", .{@errorName(err)});
+            return;
+        };
+        defer parsed_msg.deinit();
+        var message = buildChatMessage(ctx.allocator, parsed_msg.value) catch |err| {
+            std.log.warn("Failed to build chat message ({s})", .{@errorName(err)});
+            return;
+        };
+        ctx.upsertMessageOwned(message) catch |err| {
+            std.log.warn("Failed to upsert chat message ({s})", .{@errorName(err)});
+            freeChatMessageOwned(ctx.allocator, &message);
+        };
+    }
 }
 
 fn extractAuthUpdate(allocator: std.mem.Allocator, payload: std.json.Value) !?AuthUpdate {
@@ -163,4 +317,74 @@ fn extractAuthUpdate(allocator: std.mem.Allocator, payload: std.json.Value) !?Au
         else
             null,
     };
+}
+
+fn buildChatMessage(allocator: std.mem.Allocator, msg: chat.ChatHistoryMessage) !types.ChatMessage {
+    const id = if (msg.id) |value| try allocator.dupe(u8, value) else try requests.makeRequestId(allocator);
+    errdefer allocator.free(id);
+    const role = try allocator.dupe(u8, msg.role);
+    errdefer allocator.free(role);
+    const content = try extractChatText(allocator, msg);
+    errdefer allocator.free(content);
+    return .{
+        .id = id,
+        .role = role,
+        .content = content,
+        .timestamp = msg.timestamp orelse std.time.milliTimestamp(),
+        .attachments = null,
+    };
+}
+
+fn extractChatTextValue(allocator: std.mem.Allocator, value: std.json.Value) ?[]const u8 {
+    var parsed = messages.parsePayload(allocator, value, chat.ChatHistoryMessage) catch return null;
+    defer parsed.deinit();
+    return extractChatText(allocator, parsed.value) catch null;
+}
+
+fn extractChatText(allocator: std.mem.Allocator, msg: chat.ChatHistoryMessage) ![]const u8 {
+    if (msg.content) |content| {
+        var list = std.ArrayList(u8).empty;
+        defer list.deinit(allocator);
+        var first = true;
+        for (content) |item| {
+            if (!std.mem.eql(u8, item.type, "text")) continue;
+            if (item.text) |text| {
+                if (!first) {
+                    try list.appendSlice(allocator, "\n");
+                }
+                try list.appendSlice(allocator, text);
+                first = false;
+            }
+        }
+        if (list.items.len > 0) {
+            return list.toOwnedSlice(allocator);
+        }
+    }
+
+    if (msg.text) |text| {
+        return allocator.dupe(u8, text);
+    }
+
+    return allocator.dupe(u8, "");
+}
+
+fn freeSessionOwned(allocator: std.mem.Allocator, session: *types.Session) void {
+    allocator.free(session.key);
+    if (session.display_name) |name| allocator.free(name);
+    if (session.label) |label| allocator.free(label);
+    if (session.kind) |kind| allocator.free(kind);
+}
+
+fn freeChatMessageOwned(allocator: std.mem.Allocator, msg: *types.ChatMessage) void {
+    allocator.free(msg.id);
+    allocator.free(msg.role);
+    allocator.free(msg.content);
+    if (msg.attachments) |attachments| {
+        for (attachments) |*attachment| {
+            allocator.free(attachment.kind);
+            allocator.free(attachment.url);
+            if (attachment.name) |name| allocator.free(name);
+        }
+        allocator.free(attachments);
+    }
 }

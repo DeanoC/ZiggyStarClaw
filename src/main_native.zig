@@ -7,6 +7,10 @@ const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
 const websocket_client = @import("client/websocket_client.zig");
+const requests = @import("protocol/requests.zig");
+const sessions_proto = @import("protocol/sessions.zig");
+const chat_proto = @import("protocol/chat.zig");
+const types = @import("protocol/types.zig");
 
 extern fn zgui_opengl_load() c_int;
 extern fn zgui_glViewport(x: c_int, y: c_int, w: c_int, h: c_int) void;
@@ -97,6 +101,154 @@ fn stopReadThread(loop: *ReadLoop, thread: *?std.Thread) void {
         handle.join();
         thread.* = null;
     }
+}
+
+fn sendSessionsListRequest(
+    allocator: std.mem.Allocator,
+    ctx: *client_state.ClientContext,
+    ws_client: *websocket_client.WebSocketClient,
+) void {
+    if (!ws_client.is_connected) return;
+    if (ctx.state != .connected) return;
+    if (ctx.pending_sessions_request_id != null) return;
+
+    const params = sessions_proto.SessionsListParams{
+        .includeGlobal = true,
+        .includeUnknown = true,
+    };
+
+    const request = requests.buildRequestPayload(allocator, "sessions.list", params) catch |err| {
+        std.log.warn("Failed to build sessions.list request: {}", .{err});
+        return;
+    };
+    errdefer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    ws_client.send(request.payload) catch |err| {
+        std.log.err("Failed to send sessions.list: {}", .{err});
+        return;
+    };
+    allocator.free(request.payload);
+    ctx.setPendingSessionsRequest(request.id);
+}
+
+fn sendChatHistoryRequest(
+    allocator: std.mem.Allocator,
+    ctx: *client_state.ClientContext,
+    ws_client: *websocket_client.WebSocketClient,
+    session_key: []const u8,
+) void {
+    if (!ws_client.is_connected) return;
+    if (ctx.state != .connected) return;
+    if (ctx.pending_history_request_id != null) return;
+
+    const params = chat_proto.ChatHistoryParams{
+        .sessionKey = session_key,
+        .limit = 200,
+    };
+
+    const request = requests.buildRequestPayload(allocator, "chat.history", params) catch |err| {
+        std.log.warn("Failed to build chat.history request: {}", .{err});
+        return;
+    };
+    errdefer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    ws_client.send(request.payload) catch |err| {
+        std.log.err("Failed to send chat.history: {}", .{err});
+        return;
+    };
+    allocator.free(request.payload);
+    ctx.setPendingHistoryRequest(request.id);
+}
+
+fn sendChatMessageRequest(
+    allocator: std.mem.Allocator,
+    ctx: *client_state.ClientContext,
+    ws_client: *websocket_client.WebSocketClient,
+    session_key: []const u8,
+    message: []const u8,
+) void {
+    if (!ws_client.is_connected or ctx.state != .connected) {
+        std.log.warn("Cannot send chat message while disconnected", .{});
+        return;
+    }
+
+    const idempotency = requests.makeRequestId(allocator) catch |err| {
+        std.log.warn("Failed to generate idempotency key: {}", .{err});
+        return;
+    };
+    defer allocator.free(idempotency);
+
+    const params = chat_proto.ChatSendParams{
+        .sessionKey = session_key,
+        .message = message,
+        .deliver = false,
+        .idempotencyKey = idempotency,
+    };
+
+    const request = requests.buildRequestPayload(allocator, "chat.send", params) catch |err| {
+        std.log.warn("Failed to build chat.send request: {}", .{err});
+        return;
+    };
+    errdefer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    var msg = buildUserMessage(allocator, idempotency, message) catch |err| {
+        std.log.warn("Failed to build user message: {}", .{err});
+        return;
+    };
+    ctx.upsertMessageOwned(msg) catch |err| {
+        std.log.warn("Failed to append user message: {}", .{err});
+        freeChatMessageOwned(allocator, &msg);
+    };
+
+    ws_client.send(request.payload) catch |err| {
+        std.log.err("Failed to send chat.send: {}", .{err});
+        return;
+    };
+    allocator.free(request.payload);
+    ctx.setPendingSendRequest(request.id);
+}
+
+fn freeChatMessageOwned(allocator: std.mem.Allocator, msg: *types.ChatMessage) void {
+    allocator.free(msg.id);
+    allocator.free(msg.role);
+    allocator.free(msg.content);
+    if (msg.attachments) |attachments| {
+        for (attachments) |*attachment| {
+            allocator.free(attachment.kind);
+            allocator.free(attachment.url);
+            if (attachment.name) |name| allocator.free(name);
+        }
+        allocator.free(attachments);
+    }
+}
+
+fn buildUserMessage(
+    allocator: std.mem.Allocator,
+    id: []const u8,
+    content: []const u8,
+) !types.ChatMessage {
+    const id_copy = try allocator.dupe(u8, id);
+    errdefer allocator.free(id_copy);
+    const role = try allocator.dupe(u8, "user");
+    errdefer allocator.free(role);
+    const content_copy = try allocator.dupe(u8, content);
+    errdefer allocator.free(content_copy);
+    return .{
+        .id = id_copy,
+        .role = role,
+        .content = content_copy,
+        .timestamp = std.time.milliTimestamp(),
+        .attachments = null,
+    };
 }
 
 pub fn main() !void {
@@ -217,6 +369,24 @@ pub fn main() !void {
             }
         }
 
+        if (ws_client.is_connected and ctx.state == .connected) {
+            if (ctx.current_session == null) {
+                ctx.setCurrentSession("main") catch {};
+            }
+            if (ctx.sessions.items.len == 0 and ctx.pending_sessions_request_id == null) {
+                sendSessionsListRequest(allocator, &ctx, &ws_client);
+            }
+            if (ctx.current_session) |session_key| {
+                if (ctx.pending_history_request_id == null) {
+                    const needs_history = ctx.history_session == null or
+                        !std.mem.eql(u8, ctx.history_session.?, session_key);
+                    if (needs_history) {
+                        sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
+                    }
+                }
+            }
+        }
+
         imgui.beginFrame(win_width, win_height, fb_width, fb_height);
         const ui_action = ui.draw(allocator, &ctx, &cfg, ws_client.is_connected);
 
@@ -234,6 +404,7 @@ pub fn main() !void {
 
         if (ui_action.connect) {
             ctx.state = .connecting;
+            ctx.clearError();
             ws_client.url = cfg.server_url;
             ws_client.token = cfg.token;
             ws_client.insecure_tls = cfg.insecure_tls;
@@ -245,7 +416,7 @@ pub fn main() !void {
                 ctx.state = .error_state;
             };
             if (ws_client.is_connected) {
-                ctx.state = .connected;
+                ctx.state = .authenticating;
                 startReadThread(&read_loop, &read_thread) catch |err| {
                     std.log.err("Failed to start read thread: {}", .{err});
                 };
@@ -259,16 +430,33 @@ pub fn main() !void {
             next_reconnect_at_ms = 0;
             reconnect_backoff_ms = 500;
             ctx.state = .disconnected;
+            ctx.clearPendingRequests();
+            ctx.clearStreamText();
+        }
+
+        if (ui_action.refresh_sessions) {
+            sendSessionsListRequest(allocator, &ctx, &ws_client);
+        }
+
+        if (ui_action.select_session) |session_key| {
+            defer allocator.free(session_key);
+            ctx.setCurrentSession(session_key) catch |err| {
+                std.log.warn("Failed to set session: {}", .{err});
+            };
+            ctx.clearMessages();
+            ctx.clearStreamText();
+            ctx.clearPendingHistoryRequest();
+            if (ws_client.is_connected) {
+                sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
+            }
         }
 
         if (ui_action.send_message) |message| {
             defer allocator.free(message);
-            if (ws_client.is_connected) {
-                ws_client.send(message) catch |err| {
-                    std.log.err("Failed to send message: {}", .{err});
-                };
+            if (ctx.current_session) |session_key| {
+                sendChatMessageRequest(allocator, &ctx, &ws_client, session_key, message);
             } else {
-                std.log.warn("Cannot send message while disconnected", .{});
+                std.log.warn("Cannot send message without a session selected", .{});
             }
         }
 
@@ -284,7 +472,8 @@ pub fn main() !void {
                     ctx.state = .error_state;
                 };
                 if (ws_client.is_connected) {
-                    ctx.state = .connected;
+                    ctx.clearError();
+                    ctx.state = .authenticating;
                     reconnect_backoff_ms = 500;
                     next_reconnect_at_ms = 0;
                     startReadThread(&read_loop, &read_thread) catch |err| {

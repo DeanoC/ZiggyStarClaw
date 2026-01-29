@@ -6,6 +6,7 @@ pub fn draw(
     is_connected: bool,
     session_name: ?[]const u8,
     message_count: usize,
+    last_error: ?[]const u8,
 ) void {
     zgui.separator();
 
@@ -27,4 +28,8 @@ pub fn draw(
     }
     zgui.sameLine(.{});
     zgui.text("Messages: {d}", .{message_count});
+    if (last_error) |err| {
+        zgui.sameLine(.{});
+        zgui.textColored(.{ 0.9, 0.4, 0.4, 1.0 }, "Error: {s}", .{err});
+    }
 }

@@ -13,22 +13,49 @@ pub const ClientContext = struct {
     allocator: std.mem.Allocator,
     state: ClientState,
     current_session: ?[]const u8,
+    history_session: ?[]const u8,
     sessions: std.ArrayList(types.Session),
     messages: std.ArrayList(types.ChatMessage),
     users: std.ArrayList(types.User),
+    stream_text: ?[]const u8 = null,
+    sessions_loading: bool = false,
+    messages_loading: bool = false,
+    pending_sessions_request_id: ?[]const u8 = null,
+    pending_history_request_id: ?[]const u8 = null,
+    pending_send_request_id: ?[]const u8 = null,
+    last_error: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator) !ClientContext {
         return .{
             .allocator = allocator,
             .state = .disconnected,
             .current_session = null,
+            .history_session = null,
             .sessions = std.ArrayList(types.Session).empty,
             .messages = std.ArrayList(types.ChatMessage).empty,
             .users = std.ArrayList(types.User).empty,
+            .stream_text = null,
+            .sessions_loading = false,
+            .messages_loading = false,
+            .pending_sessions_request_id = null,
+            .pending_history_request_id = null,
+            .pending_send_request_id = null,
+            .last_error = null,
         };
     }
 
     pub fn deinit(self: *ClientContext) void {
+        if (self.current_session) |session| {
+            self.allocator.free(session);
+            self.current_session = null;
+        }
+        if (self.history_session) |session| {
+            self.allocator.free(session);
+            self.history_session = null;
+        }
+        self.clearStreamText();
+        self.clearPendingRequests();
+        self.clearError();
         for (self.sessions.items) |*session| {
             freeSession(self.allocator, session);
         }
@@ -51,6 +78,22 @@ pub const ClientContext = struct {
         }
     }
 
+    pub fn setSessionsOwned(self: *ClientContext, sessions: []types.Session) void {
+        clearSessions(self);
+        self.sessions.deinit(self.allocator);
+        self.sessions = std.ArrayList(types.Session).fromOwnedSlice(sessions);
+    }
+
+    pub fn setMessagesOwned(self: *ClientContext, messages: []types.ChatMessage) void {
+        clearMessagesInternal(self);
+        self.messages.deinit(self.allocator);
+        self.messages = std.ArrayList(types.ChatMessage).fromOwnedSlice(messages);
+    }
+
+    pub fn clearMessages(self: *ClientContext) void {
+        clearMessagesInternal(self);
+    }
+
     pub fn upsertMessage(self: *ClientContext, msg: types.ChatMessage) !void {
         for (self.messages.items, 0..) |*existing, index| {
             if (std.mem.eql(u8, existing.id, msg.id)) {
@@ -61,6 +104,114 @@ pub const ClientContext = struct {
         }
         try self.messages.append(self.allocator, try cloneChatMessage(self.allocator, msg));
     }
+
+    pub fn upsertMessageOwned(self: *ClientContext, msg: types.ChatMessage) !void {
+        for (self.messages.items, 0..) |*existing, index| {
+            if (std.mem.eql(u8, existing.id, msg.id)) {
+                freeChatMessage(self.allocator, existing);
+                self.messages.items[index] = msg;
+                return;
+            }
+        }
+        try self.messages.append(self.allocator, msg);
+    }
+
+    pub fn setCurrentSession(self: *ClientContext, key: []const u8) !void {
+        if (self.current_session) |session| {
+            if (std.mem.eql(u8, session, key)) return;
+            self.allocator.free(session);
+        }
+        self.current_session = try self.allocator.dupe(u8, key);
+        self.clearHistorySession();
+    }
+
+    pub fn clearHistorySession(self: *ClientContext) void {
+        if (self.history_session) |session| {
+            self.allocator.free(session);
+            self.history_session = null;
+        }
+    }
+
+    pub fn setHistorySession(self: *ClientContext, key: []const u8) !void {
+        self.clearHistorySession();
+        self.history_session = try self.allocator.dupe(u8, key);
+    }
+
+    pub fn setStreamText(self: *ClientContext, text: []const u8) !void {
+        self.clearStreamText();
+        self.stream_text = try self.allocator.dupe(u8, text);
+    }
+
+    pub fn clearStreamText(self: *ClientContext) void {
+        if (self.stream_text) |text| {
+            self.allocator.free(text);
+            self.stream_text = null;
+        }
+    }
+
+    pub fn setPendingSessionsRequest(self: *ClientContext, id: []const u8) void {
+        if (self.pending_sessions_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_sessions_request_id = id;
+        self.sessions_loading = true;
+    }
+
+    pub fn clearPendingSessionsRequest(self: *ClientContext) void {
+        if (self.pending_sessions_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_sessions_request_id = null;
+        self.sessions_loading = false;
+    }
+
+    pub fn setPendingHistoryRequest(self: *ClientContext, id: []const u8) void {
+        if (self.pending_history_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_history_request_id = id;
+        self.messages_loading = true;
+    }
+
+    pub fn clearPendingHistoryRequest(self: *ClientContext) void {
+        if (self.pending_history_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_history_request_id = null;
+        self.messages_loading = false;
+    }
+
+    pub fn setPendingSendRequest(self: *ClientContext, id: []const u8) void {
+        if (self.pending_send_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_send_request_id = id;
+    }
+
+    pub fn clearPendingSendRequest(self: *ClientContext) void {
+        if (self.pending_send_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_send_request_id = null;
+    }
+
+    pub fn clearPendingRequests(self: *ClientContext) void {
+        self.clearPendingSessionsRequest();
+        self.clearPendingHistoryRequest();
+        self.clearPendingSendRequest();
+    }
+
+    pub fn setError(self: *ClientContext, message: []const u8) !void {
+        self.clearError();
+        self.last_error = try self.allocator.dupe(u8, message);
+    }
+
+    pub fn clearError(self: *ClientContext) void {
+        if (self.last_error) |msg| {
+            self.allocator.free(msg);
+            self.last_error = null;
+        }
+    }
 };
 
 fn clearSessions(self: *ClientContext) void {
@@ -68,6 +219,13 @@ fn clearSessions(self: *ClientContext) void {
         freeSession(self.allocator, session);
     }
     self.sessions.clearRetainingCapacity();
+}
+
+fn clearMessagesInternal(self: *ClientContext) void {
+    for (self.messages.items) |*message| {
+        freeChatMessage(self.allocator, message);
+    }
+    self.messages.clearRetainingCapacity();
 }
 
 fn cloneAttachment(allocator: std.mem.Allocator, attachment: types.ChatAttachment) !types.ChatAttachment {
@@ -118,15 +276,25 @@ fn freeChatMessage(allocator: std.mem.Allocator, msg: *types.ChatMessage) void {
 
 fn cloneSession(allocator: std.mem.Allocator, session: types.Session) !types.Session {
     return .{
-        .id = try allocator.dupe(u8, session.id),
-        .name = try allocator.dupe(u8, session.name),
-        .created_at = session.created_at,
+        .key = try allocator.dupe(u8, session.key),
+        .display_name = if (session.display_name) |name| try allocator.dupe(u8, name) else null,
+        .label = if (session.label) |label| try allocator.dupe(u8, label) else null,
+        .kind = if (session.kind) |kind| try allocator.dupe(u8, kind) else null,
+        .updated_at = session.updated_at,
     };
 }
 
 fn freeSession(allocator: std.mem.Allocator, session: *types.Session) void {
-    allocator.free(session.id);
-    allocator.free(session.name);
+    allocator.free(session.key);
+    if (session.display_name) |name| {
+        allocator.free(name);
+    }
+    if (session.label) |label| {
+        allocator.free(label);
+    }
+    if (session.kind) |kind| {
+        allocator.free(kind);
+    }
 }
 
 fn cloneUser(allocator: std.mem.Allocator, user: types.User) !types.User {

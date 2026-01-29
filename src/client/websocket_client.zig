@@ -3,6 +3,7 @@ const ws = @import("websocket");
 const messages = @import("../protocol/messages.zig");
 const gateway = @import("../protocol/gateway.zig");
 const identity = @import("device_identity.zig");
+const requests = @import("../protocol/requests.zig");
 const builtin = @import("builtin");
 
 pub const WebSocketClient = struct {
@@ -168,7 +169,7 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
     if (self.client == null) return;
     if (self.connect_sent) return;
 
-    const request_id = try makeRequestId(self.allocator);
+    const request_id = try requests.makeRequestId(self.allocator);
     defer self.allocator.free(request_id);
 
     const scopes = [_][]const u8{ "operator.admin", "operator.approvals", "operator.pairing" };
@@ -273,14 +274,6 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
         try client.write(payload);
     }
     self.connect_sent = true;
-}
-
-fn makeRequestId(allocator: std.mem.Allocator) ![]u8 {
-    var bytes: [16]u8 = undefined;
-    std.crypto.random.bytes(&bytes);
-
-    const hex = std.fmt.bytesToHex(bytes, .lower);
-    return allocator.dupe(u8, &hex);
 }
 
 fn buildDeviceAuthPayload(allocator: std.mem.Allocator, params: struct {

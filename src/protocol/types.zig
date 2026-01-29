@@ -15,13 +15,15 @@ pub const ChatMessage = struct {
 };
 
 pub const Session = struct {
-    id: []const u8,
-    name: []const u8,
-    created_at: i64,
+    key: []const u8,
+    display_name: ?[]const u8 = null,
+    label: ?[]const u8 = null,
+    kind: ?[]const u8 = null,
+    updated_at: ?i64 = null,
 };
 
 pub const SessionListResult = struct {
-    sessions: []Session,
+    sessions: ?[]Session = null,
 };
 
 pub const User = struct {
