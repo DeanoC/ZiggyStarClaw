@@ -105,6 +105,16 @@ pub const WebSocketClient = struct {
         return error.NotConnected;
     }
 
+    pub fn sendPing(self: *WebSocketClient) !void {
+        if (!self.is_connected) return error.NotConnected;
+        if (self.client) |*client| {
+            var ping_buf: [1]u8 = .{0};
+            try client.writePing(ping_buf[0..0]);
+            return;
+        }
+        return error.NotConnected;
+    }
+
     pub fn receive(self: *WebSocketClient) !?[]u8 {
         if (!self.is_connected) return error.NotConnected;
         if (self.client) |*client| {
@@ -133,6 +143,11 @@ pub const WebSocketClient = struct {
             };
 
             if (payload) |text| {
+                if (message.type == .text) {
+                    std.log.debug("WebSocket text frame len={d}", .{text.len});
+                } else if (message.type == .binary) {
+                    std.log.debug("WebSocket binary frame len={d}", .{text.len});
+                }
                 handleConnectChallenge(self, text) catch {};
                 return text;
             }
@@ -150,6 +165,13 @@ pub const WebSocketClient = struct {
         self.is_connected = false;
         self.connect_sent = false;
         clearConnectNonce(self);
+    }
+
+    pub fn signalClose(self: *WebSocketClient) void {
+        if (self.client) |*client| {
+            client.stream.close();
+        }
+        self.is_connected = false;
     }
 
     pub fn deinit(self: *WebSocketClient) void {

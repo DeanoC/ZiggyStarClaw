@@ -60,6 +60,8 @@ const ReadLoop = struct {
     queue: *MessageQueue,
     stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    last_receive_ms: i64 = 0,
+    last_payload_len: usize = 0,
 };
 
 fn readLoopMain(loop: *ReadLoop) void {
@@ -72,7 +74,13 @@ fn readLoopMain(loop: *ReadLoop) void {
                 return;
             }
             if (err == error.ReadFailed) {
-                std.log.warn("WebSocket receive failed (thread): {}", .{err});
+                const now_ms = std.time.milliTimestamp();
+                const last_ms = loop.last_receive_ms;
+                const delta = if (last_ms > 0) now_ms - last_ms else -1;
+                std.log.warn(
+                    "WebSocket receive failed (thread) connected={} last_payload_len={} last_payload_age_ms={d}",
+                    .{ loop.ws_client.is_connected, loop.last_payload_len, delta },
+                );
                 loop.ws_client.disconnect();
                 return;
             }
@@ -81,6 +89,12 @@ fn readLoopMain(loop: *ReadLoop) void {
             return;
         } orelse continue;
 
+        loop.last_receive_ms = std.time.milliTimestamp();
+        loop.last_payload_len = payload.len;
+        if (loop.stop.load(.monotonic)) {
+            loop.allocator.free(payload);
+            return;
+        }
         loop.queue.push(loop.allocator, payload) catch {
             loop.allocator.free(payload);
             return;
@@ -97,9 +111,10 @@ fn startReadThread(loop: *ReadLoop, thread: *?std.Thread) !void {
 fn stopReadThread(loop: *ReadLoop, thread: *?std.Thread) void {
     if (thread.*) |handle| {
         loop.stop.store(true, .monotonic);
-        loop.ws_client.disconnect();
+        loop.ws_client.signalClose();
         handle.join();
         thread.* = null;
+        loop.ws_client.disconnect();
     }
 }
 
@@ -314,6 +329,7 @@ pub fn main() !void {
     var should_reconnect = false;
     var reconnect_backoff_ms: u32 = 500;
     var next_reconnect_at_ms: i64 = 0;
+    var next_ping_at_ms: i64 = 0;
 
     std.log.info("MoltBot client stub (native) loaded. Server: {s}", .{cfg.server_url});
 
@@ -370,9 +386,6 @@ pub fn main() !void {
         }
 
         if (ws_client.is_connected and ctx.state == .connected) {
-            if (ctx.current_session == null) {
-                ctx.setCurrentSession("main") catch {};
-            }
             if (ctx.sessions.items.len == 0 and ctx.pending_sessions_request_id == null) {
                 sendSessionsListRequest(allocator, &ctx, &ws_client);
             }
@@ -385,6 +398,18 @@ pub fn main() !void {
                     }
                 }
             }
+        }
+
+        if (ws_client.is_connected and ctx.state == .connected) {
+            const now_ms = std.time.milliTimestamp();
+            if (next_ping_at_ms == 0 or now_ms >= next_ping_at_ms) {
+                ws_client.sendPing() catch |err| {
+                    std.log.warn("WebSocket ping failed: {}", .{err});
+                };
+                next_ping_at_ms = now_ms + 10_000;
+            }
+        } else {
+            next_ping_at_ms = 0;
         }
 
         imgui.beginFrame(win_width, win_height, fb_width, fb_height);
@@ -417,6 +442,7 @@ pub fn main() !void {
             };
             if (ws_client.is_connected) {
                 ctx.state = .authenticating;
+                next_ping_at_ms = 0;
                 startReadThread(&read_loop, &read_thread) catch |err| {
                     std.log.err("Failed to start read thread: {}", .{err});
                 };
@@ -433,6 +459,7 @@ pub fn main() !void {
             ctx.clearPendingRequests();
             ctx.clearStreamText();
             ctx.clearStreamRunId();
+            next_ping_at_ms = 0;
         }
 
         if (ui_action.refresh_sessions) {
@@ -455,6 +482,11 @@ pub fn main() !void {
 
         if (ui_action.send_message) |message| {
             defer allocator.free(message);
+            if (ctx.current_session == null) {
+                ctx.setCurrentSession("main") catch |err| {
+                    std.log.warn("Failed to set default session: {}", .{err});
+                };
+            }
             if (ctx.current_session) |session_key| {
                 sendChatMessageRequest(allocator, &ctx, &ws_client, session_key, message);
             } else {
@@ -478,6 +510,7 @@ pub fn main() !void {
                     ctx.state = .authenticating;
                     reconnect_backoff_ms = 500;
                     next_reconnect_at_ms = 0;
+                    next_ping_at_ms = 0;
                     startReadThread(&read_loop, &read_thread) catch |err| {
                         std.log.err("Failed to start read thread: {}", .{err});
                     };

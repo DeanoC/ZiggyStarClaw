@@ -195,6 +195,7 @@ fn handleSessionsList(ctx: *state.ClientContext, payload: std.json.Value) !void 
     }
 
     ctx.setSessionsOwned(list);
+    selectPreferredSession(ctx);
 }
 
 fn handleChatHistory(ctx: *state.ClientContext, payload: std.json.Value) !void {
@@ -226,6 +227,33 @@ fn handleChatHistory(ctx: *state.ClientContext, payload: std.json.Value) !void {
     }
     ctx.clearStreamText();
     ctx.clearStreamRunId();
+}
+
+fn selectPreferredSession(ctx: *state.ClientContext) void {
+    if (ctx.sessions.items.len == 0) return;
+
+    if (ctx.current_session != null) return;
+
+    var best_index: usize = 0;
+    var best_updated: i64 = -1;
+    for (ctx.sessions.items, 0..) |session, index| {
+        const updated = session.updated_at orelse 0;
+        if (updated > best_updated) {
+            best_updated = updated;
+            best_index = index;
+        }
+    }
+
+    const chosen = ctx.sessions.items[best_index].key;
+    ctx.setCurrentSession(chosen) catch |err| {
+        std.log.warn("Failed to select session: {}", .{err});
+        return;
+    };
+    ctx.clearMessages();
+    ctx.clearStreamText();
+    ctx.clearStreamRunId();
+    ctx.clearPendingHistoryRequest();
+    ctx.clearHistorySession();
 }
 
 fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
