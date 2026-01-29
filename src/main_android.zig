@@ -18,7 +18,7 @@ fn handleAppCmd(app: ?*c.android_app, cmd: c_int) callconv(.c) void {
     logInfo("app cmd {d}", .{cmd});
 }
 
-pub export fn android_main(app: *c.android_app) void {
+pub export fn android_main(app: *c.android_app) callconv(.c) void {
     c.app_dummy();
     app.*.onAppCmd = handleAppCmd;
     logInfo("android_main started", .{});

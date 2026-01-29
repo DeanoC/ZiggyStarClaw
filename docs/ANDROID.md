@@ -24,13 +24,15 @@ zig build apk -Dandroid=true \
 The APK will be written to:
 
 ```
-zig-out/bin/moltbot-client.apk
+zig-out/bin/moltbot_android.apk
 ```
+
+Note: `zig-android-sdk` packages the native shared library as `libmain.so`, so the manifest uses `android.app.lib_name="main"`.
 
 ## Install + Run (manual)
 
 ```sh
-adb install -r zig-out/bin/moltbot-client.apk
+adb install -r zig-out/bin/moltbot_android.apk
 adb shell am start -S -W -n com.deanoc.moltbot/android.app.NativeActivity
 ```
 

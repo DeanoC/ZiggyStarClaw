@@ -284,7 +284,7 @@ pub fn build(b: *std.Build) void {
             });
 
             const android_lib = b.addLibrary(.{
-                .name = "moltbot-client",
+                .name = "moltbot_android",
                 .root_module = android_module,
                 .linkage = .dynamic,
             });
