@@ -311,7 +311,9 @@ fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
             return;
         };
         if (had_stream) {
-            _ = ctx.removeMessageById(event.runId);
+            const stream_id = try makeStreamId(ctx.allocator, event.runId);
+            defer ctx.allocator.free(stream_id);
+            _ = ctx.removeMessageById(stream_id);
         }
         ctx.upsertMessageOwned(message) catch |err| {
             std.log.warn("Failed to upsert chat message ({s})", .{@errorName(err)});
@@ -382,7 +384,7 @@ fn buildChatMessage(allocator: std.mem.Allocator, msg: chat.ChatHistoryMessage) 
 }
 
 fn buildStreamMessage(allocator: std.mem.Allocator, run_id: []const u8, content: []const u8) !types.ChatMessage {
-    const id = try allocator.dupe(u8, run_id);
+    const id = try makeStreamId(allocator, run_id);
     errdefer allocator.free(id);
     const role = try allocator.dupe(u8, "assistant");
     errdefer allocator.free(role);
@@ -395,6 +397,10 @@ fn buildStreamMessage(allocator: std.mem.Allocator, run_id: []const u8, content:
         .timestamp = std.time.milliTimestamp(),
         .attachments = null,
     };
+}
+
+fn makeStreamId(allocator: std.mem.Allocator, run_id: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "stream:{s}", .{run_id});
 }
 
 fn extractChatTextValue(allocator: std.mem.Allocator, value: std.json.Value) ?[]const u8 {

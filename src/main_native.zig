@@ -251,7 +251,7 @@ fn buildUserMessage(
     id: []const u8,
     content: []const u8,
 ) !types.ChatMessage {
-    const id_copy = try allocator.dupe(u8, id);
+    const id_copy = try std.fmt.allocPrint(allocator, "user:{s}", .{id});
     errdefer allocator.free(id_copy);
     const role = try allocator.dupe(u8, "user");
     errdefer allocator.free(role);
