@@ -30,6 +30,7 @@ pub const WebSocketClient = struct {
             .host = parsed.host,
             .tls = parsed.tls,
             .verify_host = !self.insecure_tls,
+            .verify_cert = !self.insecure_tls,
             .max_size = 256 * 1024,
             .buffer_size = 8 * 1024,
         });

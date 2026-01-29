@@ -58,6 +58,7 @@ pub const Client = struct {
         host: []const u8,
         tls: bool = false,
         verify_host: bool = true,
+        verify_cert: bool = true,
         max_size: usize = 65536,
         buffer_size: usize = 4096,
         ca_bundle: ?Bundle = null,
@@ -502,11 +503,11 @@ const TLSClient = struct {
 
         const aa = arena.allocator();
 
-        const bundle = config.ca_bundle orelse blk: {
+        const bundle = if (config.verify_cert) (config.ca_bundle orelse blk: {
             var b = Bundle{};
             try b.rescan(aa);
             break :blk b;
-        };
+        }) else null;
 
         // The TLS input and output have to be max_ciphertext_record_len each.
         // It isn't clear to me how big the un-encrypted reader and writer
@@ -530,7 +531,7 @@ const TLSClient = struct {
             self.stream_reader.interface(),
             &self.stream_writer.interface,
             .{
-                .ca = .{ .bundle = bundle },
+                .ca = if (config.verify_cert) .{ .bundle = bundle.? } else .no_verification,
                 .host = if (config.verify_host) .{ .explicit = config.host } else .no_verification,
                 .read_buffer = buf.ptr[2 * buf_len .. 3 * buf_len][0..buf_len],
                 .write_buffer = buf.ptr[3 * buf_len .. 4 * buf_len][0..buf_len],
