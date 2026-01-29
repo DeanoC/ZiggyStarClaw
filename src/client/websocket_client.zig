@@ -37,6 +37,7 @@ pub const WebSocketClient = struct {
             .timeout_ms = 10_000,
             .headers = if (headers.len > 0) headers else null,
         });
+        try client.readTimeout(1);
 
         self.client = client;
         self.is_connected = true;

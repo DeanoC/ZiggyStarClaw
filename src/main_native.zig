@@ -5,6 +5,8 @@ const ui = @import("ui/main_window.zig");
 const imgui = @import("ui/imgui_wrapper.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
+const event_handler = @import("client/event_handler.zig");
+const websocket_client = @import("client/websocket_client.zig");
 
 extern fn zgui_opengl_load() c_int;
 extern fn zgui_glViewport(x: c_int, y: c_int, w: c_int, h: c_int) void;
@@ -27,6 +29,9 @@ pub fn main() !void {
 
     var cfg = try config.loadOrDefault(allocator, "moltbot_config.json");
     defer cfg.deinit(allocator);
+
+    var ws_client = websocket_client.WebSocketClient.init(allocator, cfg.server_url, cfg.token);
+    defer ws_client.deinit();
 
     _ = glfw.setErrorCallback(glfwErrorCallback);
     try glfw.init();
@@ -83,8 +88,66 @@ pub fn main() !void {
         zgui_glClearColor(0.08, 0.08, 0.1, 1.0);
         zgui_glClear(0x00004000);
 
+        if (ws_client.is_connected) {
+            var handled: usize = 0;
+            while (handled < 16) {
+                const payload = ws_client.receive() catch |err| {
+                    std.log.err("WebSocket receive failed: {}", .{err});
+                    ws_client.disconnect();
+                    ctx.state = .error_state;
+                    break;
+                } orelse break;
+                defer allocator.free(payload);
+                event_handler.handleRawMessage(&ctx, payload) catch |err| {
+                    std.log.err("Failed to handle server message: {}", .{err});
+                };
+                handled += 1;
+            }
+        }
+
         imgui.beginFrame(win_width, win_height, fb_width, fb_height);
-        ui.draw(&ctx);
+        var ui_action = ui.draw(allocator, &ctx, &cfg, ws_client.is_connected);
+
+        if (ui_action.config_updated) {
+            ws_client.url = cfg.server_url;
+            ws_client.token = cfg.token;
+        }
+
+        if (ui_action.save_config) {
+            config.save(allocator, "moltbot_config.json", cfg) catch |err| {
+                std.log.err("Failed to save config: {}", .{err});
+            };
+        }
+
+        if (ui_action.connect) {
+            ctx.state = .connecting;
+            ws_client.url = cfg.server_url;
+            ws_client.token = cfg.token;
+            ws_client.connect() catch |err| {
+                std.log.err("WebSocket connect failed: {}", .{err});
+                ctx.state = .error_state;
+            };
+            if (ws_client.is_connected) {
+                ctx.state = .connected;
+            }
+        }
+
+        if (ui_action.disconnect) {
+            ws_client.disconnect();
+            ctx.state = .disconnected;
+        }
+
+        if (ui_action.send_message) |message| {
+            defer allocator.free(message);
+            if (ws_client.is_connected) {
+                ws_client.send(message) catch |err| {
+                    std.log.err("Failed to send message: {}", .{err});
+                };
+            } else {
+                std.log.warn("Cannot send message while disconnected", .{});
+            }
+        }
+
         imgui.endFrame();
 
         window.swapBuffers();
