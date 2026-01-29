@@ -36,7 +36,7 @@ pub const WebSocketClient = struct {
         });
         errdefer client.deinit();
 
-        const headers = try buildHeaders(aa, parsed.host_header, self.token);
+        const headers = try buildHeaders(aa, parsed.host_header, parsed.origin, self.token);
         try client.handshake(parsed.path, .{
             .timeout_ms = 10_000,
             .headers = if (headers.len > 0) headers else null,
@@ -104,6 +104,7 @@ const ParsedUrl = struct {
     port: u16,
     path: []const u8,
     tls: bool,
+    origin: []const u8,
 };
 
 fn parseServerUrl(allocator: std.mem.Allocator, raw_url: []const u8) !ParsedUrl {
@@ -135,19 +136,24 @@ fn parseServerUrl(allocator: std.mem.Allocator, raw_url: []const u8) !ParsedUrl 
         break :blk try std.fmt.allocPrint(allocator, "{s}?{s}", .{ base_path, query_raw });
     } else base_path;
 
+    const origin_scheme = if (tls) "https" else "http";
+    const origin = try std.fmt.allocPrint(allocator, "{s}://{s}", .{ origin_scheme, host_header });
+
     return .{
         .host = host,
         .host_header = host_header,
         .port = port,
         .path = path,
         .tls = tls,
+        .origin = origin,
     };
 }
 
-fn buildHeaders(allocator: std.mem.Allocator, host_header: []const u8, token: []const u8) ![]const u8 {
+fn buildHeaders(allocator: std.mem.Allocator, host_header: []const u8, origin: []const u8, token: []const u8) ![]const u8 {
     var list = std.ArrayList(u8).empty;
     const writer = list.writer(allocator);
     try writer.print("Host: {s}", .{host_header});
+    try writer.print("\r\nOrigin: {s}", .{origin});
     if (token.len > 0) {
         try writer.print("\r\nAuthorization: Bearer {s}", .{token});
     }

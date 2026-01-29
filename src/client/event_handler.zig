@@ -5,7 +5,10 @@ const messages = @import("../protocol/messages.zig");
 const types = @import("../protocol/types.zig");
 
 pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !void {
-    var envelope = try messages.deserializeMessage(ctx.allocator, raw, types.MessageEnvelope);
+    var envelope = messages.deserializeMessage(ctx.allocator, raw, types.MessageEnvelope) catch |err| {
+        std.log.warn("Unparsed server message ({s}): {s}", .{ @errorName(err), raw });
+        return;
+    };
     defer envelope.deinit();
 
     const kind = envelope.value.kind;
