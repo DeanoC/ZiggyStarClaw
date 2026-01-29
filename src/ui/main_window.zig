@@ -13,6 +13,7 @@ pub const UiAction = struct {
     connect: bool = false,
     disconnect: bool = false,
     save_config: bool = false,
+    clear_saved: bool = false,
     config_updated: bool = false,
     refresh_sessions: bool = false,
     select_session: ?[]u8 = null,
@@ -77,6 +78,7 @@ pub fn draw(
             action.connect = settings_action.connect;
             action.disconnect = settings_action.disconnect;
             action.save_config = settings_action.save;
+            action.clear_saved = settings_action.clear_saved;
             action.config_updated = settings_action.config_updated;
         }
         zgui.endChild();
@@ -86,4 +88,8 @@ pub fn draw(
     zgui.end();
 
     return action;
+}
+
+pub fn syncSettings(cfg: config.Config) void {
+    settings_view.syncFromConfig(cfg);
 }

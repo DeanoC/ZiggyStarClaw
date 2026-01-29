@@ -430,6 +430,18 @@ pub fn main() !void {
                 logger.err("Failed to save config: {}", .{err});
             };
         }
+        if (ui_action.clear_saved) {
+            cfg.deinit(allocator);
+            cfg = config.initDefault(allocator) catch |err| {
+                logger.err("Failed to reset config: {}", .{err});
+                cfg = config.initDefault(allocator) catch return;
+            };
+            _ = std.fs.cwd().deleteFile("moltbot_config.json") catch {};
+            ws_client.url = cfg.server_url;
+            ws_client.token = cfg.token;
+            ws_client.insecure_tls = cfg.insecure_tls;
+            ui.syncSettings(cfg);
+        }
 
         if (ui_action.connect) {
             ctx.state = .connecting;

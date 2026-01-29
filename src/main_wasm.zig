@@ -13,7 +13,9 @@ const chat_proto = @import("protocol/chat.zig");
 const sessions_proto = @import("protocol/sessions.zig");
 const types = @import("protocol/types.zig");
 const identity = @import("client/device_identity_wasm.zig");
+const wasm_storage = @import("platform/wasm_storage.zig");
 const logger = @import("utils/logger.zig");
+const builtin = @import("builtin");
 
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
@@ -55,6 +57,7 @@ var use_device_identity = true;
 var device_identity: ?identity.DeviceIdentity = null;
 var last_state: ?client_state.ClientState = null;
 var initialized = false;
+const config_storage_key: [:0]const u8 = "moltbot.config";
 
 const MessageQueue = struct {
     items: std.ArrayList([]u8) = .empty,
@@ -155,7 +158,7 @@ fn initApp() !void {
     applyDpiScale(scale[0]);
 
     ctx = try client_state.ClientContext.init(allocator);
-    cfg = try config.initDefault(allocator);
+    cfg = try loadConfigFromStorage();
     window = win;
     message_queue = MessageQueue{};
     initialized = true;
@@ -231,6 +234,60 @@ fn parseConnectNonce(raw: []const u8) !?[]u8 {
     const nonce_val = payload_val.object.get("nonce") orelse return null;
     if (nonce_val != .string or nonce_val.string.len == 0) return null;
     return try allocator.dupe(u8, nonce_val.string);
+}
+
+fn loadConfigFromStorage() !config.Config {
+    const raw = wasm_storage.get(allocator, config_storage_key) catch |err| {
+        logger.warn("Failed to read stored config: {}", .{err});
+        return try config.initDefault(allocator);
+    };
+    if (raw == null) {
+        return try config.initDefault(allocator);
+    }
+    defer allocator.free(raw.?);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, raw.?, .{}) catch |err| {
+        logger.warn("Stored config parse failed: {}", .{err});
+        return try config.initDefault(allocator);
+    };
+    defer parsed.deinit();
+
+    var cfg_local = try config.initDefault(allocator);
+    if (parsed.value == .object) {
+        const obj = parsed.value.object;
+        if (obj.get("server_url")) |value| {
+            if (value == .string) {
+                allocator.free(cfg_local.server_url);
+                cfg_local.server_url = try allocator.dupe(u8, value.string);
+            }
+        }
+        if (obj.get("token")) |value| {
+            if (value == .string) {
+                allocator.free(cfg_local.token);
+                cfg_local.token = try allocator.dupe(u8, value.string);
+            }
+        }
+        if (obj.get("insecure_tls")) |value| {
+            if (value == .bool) {
+                cfg_local.insecure_tls = value.bool;
+            }
+        }
+    }
+    if (builtin.target.os.tag == .emscripten) {
+        cfg_local.insecure_tls = false;
+    }
+    return cfg_local;
+}
+
+fn saveConfigToStorage() void {
+    const json = std.json.Stringify.valueAlloc(allocator, cfg, .{}) catch |err| {
+        logger.warn("Failed to serialize config: {}", .{err});
+        return;
+    };
+    defer allocator.free(json);
+    wasm_storage.set(allocator, config_storage_key, json) catch |err| {
+        logger.warn("Failed to persist config: {}", .{err});
+    };
 }
 
 fn buildDeviceAuthPayload(params: struct {
@@ -676,6 +733,20 @@ fn frame() callconv(.c) void {
 
     if (ui_action.config_updated) {
         // config updated in-place
+        saveConfigToStorage();
+    }
+
+    if (ui_action.save_config) {
+        saveConfigToStorage();
+    }
+    if (ui_action.clear_saved) {
+        wasm_storage.remove(config_storage_key);
+        cfg.deinit(allocator);
+        cfg = config.initDefault(allocator) catch |err| {
+            logger.warn("Failed to reset config: {}", .{err});
+            return;
+        };
+        ui.syncSettings(cfg);
     }
 
     if (ui_action.connect) {

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const zgui = @import("zgui");
 const config = @import("../client/config.zig");
 const state = @import("../client/state.zig");
@@ -7,6 +8,7 @@ pub const SettingsAction = struct {
     connect: bool = false,
     disconnect: bool = false,
     save: bool = false,
+    clear_saved: bool = false,
     config_updated: bool = false,
 };
 
@@ -22,6 +24,7 @@ pub fn draw(
     is_connected: bool,
 ) SettingsAction {
     var action = SettingsAction{};
+    const show_insecure_tls = builtin.target.os.tag != .emscripten;
 
     if (!initialized) {
         syncBuffers(cfg.*);
@@ -32,13 +35,18 @@ pub fn draw(
 
         _ = zgui.inputText("Server URL", .{ .buf = server_buf[0.. :0] });
         _ = zgui.inputText("Token", .{ .buf = token_buf[0.. :0], .flags = .{ .password = true } });
-        _ = zgui.checkbox("Insecure TLS (skip cert verification)", .{ .v = &insecure_tls_value });
+        if (show_insecure_tls) {
+            _ = zgui.checkbox(
+                "Insecure TLS (skip cert verification)",
+                .{ .v = &insecure_tls_value },
+            );
+        }
 
         const server_text = std.mem.sliceTo(&server_buf, 0);
         const token_text = std.mem.sliceTo(&token_buf, 0);
         const dirty = !std.mem.eql(u8, server_text, cfg.server_url) or
             !std.mem.eql(u8, token_text, cfg.token) or
-            insecure_tls_value != cfg.insecure_tls;
+            (show_insecure_tls and insecure_tls_value != cfg.insecure_tls);
 
         zgui.beginDisabled(.{ .disabled = !dirty });
         if (zgui.button("Apply", .{})) {
@@ -51,6 +59,10 @@ pub fn draw(
         zgui.sameLine(.{});
         if (zgui.button("Save", .{})) {
             action.save = true;
+        }
+        zgui.sameLine(.{});
+        if (zgui.button("Clear Saved", .{})) {
+            action.clear_saved = true;
         }
 
         zgui.separator();
@@ -72,6 +84,10 @@ pub fn draw(
     zgui.endChild();
 
     return action;
+}
+
+pub fn syncFromConfig(cfg: config.Config) void {
+    syncBuffers(cfg);
 }
 
 fn syncBuffers(cfg: config.Config) void {
