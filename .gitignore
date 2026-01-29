@@ -3,3 +3,4 @@ zig-out/
 .tools/
 .DS_Store
 *.log
+imgui.ini
