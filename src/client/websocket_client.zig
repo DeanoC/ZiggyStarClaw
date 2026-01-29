@@ -1,5 +1,9 @@
 const std = @import("std");
 const ws = @import("websocket");
+const messages = @import("../protocol/messages.zig");
+const gateway = @import("../protocol/gateway.zig");
+const identity = @import("device_identity.zig");
+const builtin = @import("builtin");
 
 pub const WebSocketClient = struct {
     allocator: std.mem.Allocator,
@@ -8,6 +12,11 @@ pub const WebSocketClient = struct {
     insecure_tls: bool = false,
     is_connected: bool = false,
     client: ?ws.Client = null,
+    read_timeout_ms: u32 = 1,
+    device_identity: ?identity.DeviceIdentity = null,
+    connect_nonce: ?[]u8 = null,
+    connect_sent: bool = false,
+    use_device_identity: bool = true,
 
     pub fn init(allocator: std.mem.Allocator, url: []const u8, token: []const u8, insecure_tls: bool) WebSocketClient {
         return .{
@@ -16,6 +25,33 @@ pub const WebSocketClient = struct {
             .token = token,
             .insecure_tls = insecure_tls,
         };
+    }
+
+    pub fn setReadTimeout(self: *WebSocketClient, ms: u32) void {
+        self.read_timeout_ms = ms;
+    }
+
+    pub fn storeDeviceToken(
+        self: *WebSocketClient,
+        token: []const u8,
+        role: ?[]const u8,
+        scopes: ?[]const []const u8,
+        issued_at_ms: ?i64,
+    ) !void {
+        if (self.device_identity == null) {
+            self.device_identity = try identity.loadOrCreate(self.allocator, identity.default_path);
+        }
+        if (self.device_identity) |*ident| {
+            try identity.storeDeviceToken(
+                self.allocator,
+                identity.default_path,
+                ident,
+                token,
+                role,
+                scopes,
+                issued_at_ms,
+            );
+        }
     }
 
     pub fn connect(self: *WebSocketClient) !void {
@@ -31,8 +67,8 @@ pub const WebSocketClient = struct {
             .tls = parsed.tls,
             .verify_host = !self.insecure_tls,
             .verify_cert = !self.insecure_tls,
-            .max_size = 256 * 1024,
-            .buffer_size = 8 * 1024,
+            .max_size = 1024 * 1024,
+            .buffer_size = 64 * 1024,
         });
         errdefer client.deinit();
 
@@ -41,10 +77,20 @@ pub const WebSocketClient = struct {
             .timeout_ms = 10_000,
             .headers = if (headers.len > 0) headers else null,
         });
-        try client.readTimeout(1);
+        try client.readTimeout(self.read_timeout_ms);
 
         self.client = client;
         self.is_connected = true;
+        self.connect_sent = false;
+        clearConnectNonce(self);
+
+        if (self.use_device_identity) {
+            if (self.device_identity == null) {
+                self.device_identity = try identity.loadOrCreate(self.allocator, identity.default_path);
+            }
+        } else {
+            try sendConnectRequest(self, null);
+        }
     }
 
     pub fn send(self: *WebSocketClient, message: []const u8) !void {
@@ -64,7 +110,7 @@ pub const WebSocketClient = struct {
             const message = try client.read() orelse return null;
             defer client.done(message);
 
-            return switch (message.type) {
+            const payload = switch (message.type) {
                 .text, .binary => try self.allocator.dupe(u8, message.data),
                 .ping => blk: {
                     try client.writePong(message.data);
@@ -72,11 +118,24 @@ pub const WebSocketClient = struct {
                 },
                 .pong => null,
                 .close => blk: {
+                    if (message.data.len >= 2) {
+                        const code = (@as(u16, message.data[0]) << 8) | message.data[1];
+                        const reason = message.data[2..];
+                        std.log.warn("WebSocket closed by server code={} reason={s}", .{ code, reason });
+                    } else {
+                        std.log.warn("WebSocket closed by server (no close payload)", .{});
+                    }
                     try client.close(.{});
                     self.is_connected = false;
                     break :blk null;
                 },
             };
+
+            if (payload) |text| {
+                handleConnectChallenge(self, text) catch {};
+                return text;
+            }
+            return null;
         }
         return error.NotConnected;
     }
@@ -88,6 +147,8 @@ pub const WebSocketClient = struct {
         }
         self.client = null;
         self.is_connected = false;
+        self.connect_sent = false;
+        clearConnectNonce(self);
     }
 
     pub fn deinit(self: *WebSocketClient) void {
@@ -95,8 +156,196 @@ pub const WebSocketClient = struct {
             client.deinit();
             self.client = null;
         }
+        if (self.device_identity) |*ident| {
+            ident.deinit(self.allocator);
+            self.device_identity = null;
+        }
+        clearConnectNonce(self);
     }
 };
+
+fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
+    if (self.client == null) return;
+    if (self.connect_sent) return;
+
+    const request_id = try makeRequestId(self.allocator);
+    defer self.allocator.free(request_id);
+
+    const scopes = [_][]const u8{ "operator.admin", "operator.approvals", "operator.pairing" };
+    const caps = [_][]const u8{};
+    const client_id = "cli";
+    const client_mode = "cli";
+    const auth_token = if (self.device_identity) |ident|
+        if (ident.device_token) |token| token else self.token
+    else
+        self.token;
+    const auth = if (auth_token.len > 0) gateway.ConnectAuth{ .token = auth_token } else null;
+    var signature_buf: ?[]u8 = null;
+    defer if (signature_buf) |sig| self.allocator.free(sig);
+
+    const device = blk: {
+        if (!self.use_device_identity) break :blk null;
+        const ident = self.device_identity orelse return error.MissingDeviceIdentity;
+        if (nonce == null) return error.MissingConnectNonce;
+        const signed_at = std.time.milliTimestamp();
+        const payload = try buildDeviceAuthPayload(self.allocator, .{
+            .device_id = ident.device_id,
+            .client_id = client_id,
+            .client_mode = client_mode,
+            .role = "operator",
+            .scopes = &scopes,
+            .signed_at_ms = signed_at,
+            .token = if (auth_token.len > 0) auth_token else "",
+            .nonce = nonce.?,
+        });
+        defer self.allocator.free(payload);
+        signature_buf = try identity.signPayload(self.allocator, ident, payload);
+        const signature = signature_buf.?;
+        std.log.debug(
+            "Device signature utf8={} len={} bytes[0..4]={d} {d} {d} {d}",
+            .{
+                std.unicode.utf8ValidateSlice(signature),
+                signature.len,
+                signature[0],
+                signature[1],
+                signature[2],
+                signature[3],
+            },
+        );
+        break :blk gateway.DeviceAuth{
+            .id = ident.device_id,
+            .publicKey = ident.public_key_b64,
+            .signature = signature,
+            .signedAt = signed_at,
+            .nonce = nonce,
+        };
+    };
+    const token_source = if (auth_token.len == 0)
+        "none"
+    else if (self.device_identity) |ident|
+        if (ident.device_token != null and std.mem.eql(u8, auth_token, ident.device_token.?)) "device" else "shared"
+    else
+        "shared";
+    std.log.info(
+        "Sending connect request id={s} device_id={s} nonce={s} token={s}",
+        .{
+            request_id,
+            if (device) |d| d.id else "(none)",
+            if (nonce) |value| value else "(none)",
+            token_source,
+        },
+    );
+
+    const connect_params = gateway.ConnectParams{
+        .minProtocol = gateway.PROTOCOL_VERSION,
+        .maxProtocol = gateway.PROTOCOL_VERSION,
+        .client = .{
+            .id = client_id,
+            .displayName = "MoltBot Zig Client",
+            .version = "0.1.0",
+            .platform = @tagName(builtin.os.tag),
+            .mode = client_mode,
+        },
+        .caps = &caps,
+        .role = "operator",
+        .scopes = &scopes,
+        .auth = auth,
+        .device = device,
+    };
+
+    const request = gateway.ConnectRequestFrame{
+        .id = request_id,
+        .params = connect_params,
+    };
+
+    const payload = try messages.serializeMessage(self.allocator, request);
+    defer self.allocator.free(payload);
+
+    if (auth_token.len > 0) {
+        const redacted = try std.mem.replaceOwned(u8, self.allocator, payload, auth_token, "<redacted>");
+        defer self.allocator.free(redacted);
+        std.log.debug("Connect request payload: {s}", .{redacted});
+    } else {
+        std.log.debug("Connect request payload: {s}", .{payload});
+    }
+
+    if (self.client) |*client| {
+        try client.write(payload);
+    }
+    self.connect_sent = true;
+}
+
+fn makeRequestId(allocator: std.mem.Allocator) ![]u8 {
+    var bytes: [16]u8 = undefined;
+    std.crypto.random.bytes(&bytes);
+
+    const hex = std.fmt.bytesToHex(bytes, .lower);
+    return allocator.dupe(u8, &hex);
+}
+
+fn buildDeviceAuthPayload(allocator: std.mem.Allocator, params: struct {
+    device_id: []const u8,
+    client_id: []const u8,
+    client_mode: []const u8,
+    role: []const u8,
+    scopes: []const []const u8,
+    signed_at_ms: i64,
+    token: []const u8,
+    nonce: []const u8,
+}) ![]u8 {
+    const scopes_joined = try std.mem.join(allocator, ",", params.scopes);
+    defer allocator.free(scopes_joined);
+
+    const version = "v2";
+    return std.fmt.allocPrint(
+        allocator,
+        "{s}|{s}|{s}|{s}|{s}|{s}|{d}|{s}|{s}",
+        .{
+            version,
+            params.device_id,
+            params.client_id,
+            params.client_mode,
+            params.role,
+            scopes_joined,
+            params.signed_at_ms,
+            params.token,
+            params.nonce,
+        },
+    );
+}
+
+fn parseConnectNonce(allocator: std.mem.Allocator, raw: []const u8) !?[]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, raw, .{}) catch return null;
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return null;
+    const obj = parsed.value.object;
+    const type_val = obj.get("type") orelse return null;
+    if (type_val != .string or !std.mem.eql(u8, type_val.string, "event")) return null;
+    const event_val = obj.get("event") orelse return null;
+    if (event_val != .string or !std.mem.eql(u8, event_val.string, "connect.challenge")) return null;
+    const payload_val = obj.get("payload") orelse return null;
+    if (payload_val != .object) return null;
+    const nonce_val = payload_val.object.get("nonce") orelse return null;
+    if (nonce_val != .string or nonce_val.string.len == 0) return null;
+    return try allocator.dupe(u8, nonce_val.string);
+}
+
+fn clearConnectNonce(self: *WebSocketClient) void {
+    if (self.connect_nonce) |nonce| {
+        self.allocator.free(nonce);
+        self.connect_nonce = null;
+    }
+}
+
+fn handleConnectChallenge(self: *WebSocketClient, raw: []const u8) !void {
+    if (!self.use_device_identity or self.connect_sent) return;
+    const nonce = try parseConnectNonce(self.allocator, raw) orelse return;
+    clearConnectNonce(self);
+    self.connect_nonce = nonce;
+    std.log.info("Connect challenge nonce received: {s}", .{nonce});
+    try sendConnectRequest(self, nonce);
+}
 
 const ParsedUrl = struct {
     host: []const u8,

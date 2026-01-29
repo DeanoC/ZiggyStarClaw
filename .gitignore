@@ -5,3 +5,4 @@ zig-out/
 *.log
 imgui.ini
 moltbot_config.json
+moltbot_device.json

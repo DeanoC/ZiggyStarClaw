@@ -64,6 +64,31 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(native_exe);
 
+    const cli_module = b.createModule(.{
+        .root_source_file = b.path("src/main_cli.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "websocket", .module = ws_native },
+            .{ .name = "moltbot", .module = app_module },
+        },
+    });
+
+    const cli_exe = b.addExecutable(.{
+        .name = "moltbot-cli",
+        .root_module = cli_module,
+    });
+
+    b.installArtifact(cli_exe);
+
+    const run_cli_step = b.step("run-cli", "Run the CLI client");
+    const run_cli_cmd = b.addRunArtifact(cli_exe);
+    run_cli_step.dependOn(&run_cli_cmd.step);
+    run_cli_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_cli_cmd.addArgs(args);
+    }
+
     const run_step = b.step("run", "Run the native application");
     const run_cmd = b.addRunArtifact(native_exe);
     run_step.dependOn(&run_cmd.step);

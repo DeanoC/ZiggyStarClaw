@@ -2,6 +2,7 @@ pub const protocol = struct {
     pub const types = @import("protocol/types.zig");
     pub const messages = @import("protocol/messages.zig");
     pub const constants = @import("protocol/constants.zig");
+    pub const gateway = @import("protocol/gateway.zig");
 };
 
 pub const client = struct {
@@ -9,6 +10,7 @@ pub const client = struct {
     pub const config = @import("client/config.zig");
     pub const event_handler = @import("client/event_handler.zig");
     pub const websocket_client = @import("client/websocket_client.zig");
+    pub const device_identity = @import("client/device_identity.zig");
 };
 
 pub const ui = struct {
