@@ -283,9 +283,10 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
             });
 
-            const android_lib = b.addSharedLibrary(.{
+            const android_lib = b.addLibrary(.{
                 .name = "moltbot-client",
                 .root_module = android_module,
+                .linkage = .dynamic,
             });
             android_lib.root_module.addSystemIncludePath(.{ .cwd_relative = apk.ndk.include_path });
             android_lib.root_module.addIncludePath(.{ .cwd_relative = glue_dir });
@@ -293,8 +294,8 @@ pub fn build(b: *std.Build) void {
                 .file = .{ .cwd_relative = glue_file },
                 .flags = &.{},
             });
-            android_lib.linkSystemLibrary("android", .{});
-            android_lib.linkSystemLibrary("log", .{});
+            android_lib.linkSystemLibrary("android");
+            android_lib.linkSystemLibrary("log");
 
             apk.addArtifact(android_lib);
         }

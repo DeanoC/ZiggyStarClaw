@@ -13,7 +13,7 @@ fn logInfo(comptime fmt: []const u8, args: anytype) void {
     _ = c.__android_log_print(c.ANDROID_LOG_INFO, log_tag, "%s", msg.ptr);
 }
 
-fn handleAppCmd(app: ?*c.android_app, cmd: c_int) callconv(.C) void {
+fn handleAppCmd(app: ?*c.android_app, cmd: c_int) callconv(.c) void {
     _ = app;
     logInfo("app cmd {d}", .{cmd});
 }
@@ -28,7 +28,9 @@ pub export fn android_main(app: *c.android_app) void {
         var source: ?*c.android_poll_source = null;
         _ = c.ALooper_pollAll(-1, null, &events, @ptrCast(&source));
         if (source) |src| {
-            src.process(app, src);
+            if (src.process) |proc| {
+                proc(app, src);
+            }
         }
         if (app.destroyRequested != 0) {
             break;
