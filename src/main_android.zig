@@ -310,6 +310,25 @@ fn sendChatMessageRequest(
     };
     allocator.free(request.payload);
     ctx.setPendingSendRequest(request.id);
+    logger.info("chat.send queued for session {s} (id={s})", .{ session_key, request.id });
+}
+
+fn pickSessionForSend(ctx: *client_state.ClientContext) ?struct { key: []const u8, should_set: bool } {
+    if (ctx.current_session) |session| {
+        return .{ .key = session, .should_set = false };
+    }
+    if (ctx.sessions.items.len == 0) return null;
+
+    var best_index: usize = 0;
+    var best_updated: i64 = -1;
+    for (ctx.sessions.items, 0..) |session, index| {
+        const updated = session.updated_at orelse 0;
+        if (updated > best_updated) {
+            best_updated = updated;
+            best_index = index;
+        }
+    }
+    return .{ .key = ctx.sessions.items[best_index].key, .should_set = true };
 }
 
 fn freeChatMessageOwned(allocator: std.mem.Allocator, msg: *types.ChatMessage) void {
@@ -719,15 +738,16 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
 
         if (ui_action.send_message) |message| {
             defer allocator.free(message);
-            if (ctx.current_session == null) {
-                ctx.setCurrentSession("main") catch |err| {
-                    logger.warn("Failed to set default session: {}", .{err});
-                };
-            }
-            if (ctx.current_session) |session_key| {
-                sendChatMessageRequest(allocator, &ctx, &ws_client, session_key, message);
+            const resolved = pickSessionForSend(&ctx);
+            if (resolved) |choice| {
+                if (choice.should_set) {
+                    ctx.setCurrentSession(choice.key) catch |err| {
+                        logger.warn("Failed to set session: {}", .{err});
+                    };
+                }
+                sendChatMessageRequest(allocator, &ctx, &ws_client, choice.key, message);
             } else {
-                logger.warn("Cannot send message without a session selected", .{});
+                sendChatMessageRequest(allocator, &ctx, &ws_client, "main", message);
             }
         }
 

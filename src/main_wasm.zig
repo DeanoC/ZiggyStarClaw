@@ -581,6 +581,24 @@ fn sendChatMessageRequest(session_key: []const u8, message: []const u8) void {
     }
 }
 
+fn pickSessionForSend() ?struct { key: []const u8, should_set: bool } {
+    if (ctx.current_session) |session| {
+        return .{ .key = session, .should_set = false };
+    }
+    if (ctx.sessions.items.len == 0) return null;
+
+    var best_index: usize = 0;
+    var best_updated: i64 = -1;
+    for (ctx.sessions.items, 0..) |session, index| {
+        const updated = session.updated_at orelse 0;
+        if (updated > best_updated) {
+            best_updated = updated;
+            best_index = index;
+        }
+    }
+    return .{ .key = ctx.sessions.items[best_index].key, .should_set = true };
+}
+
 fn openWebSocket() void {
     const url_z = std.mem.concat(allocator, u8, &.{ cfg.server_url, "\x00" }) catch return;
     defer allocator.free(url_z);
@@ -791,15 +809,16 @@ fn frame() callconv(.c) void {
 
     if (ui_action.send_message) |message| {
         defer allocator.free(message);
-        if (ctx.current_session == null) {
-            ctx.setCurrentSession("main") catch |err| {
-                logger.warn("Failed to set default session: {}", .{err});
-            };
-        }
-        if (ctx.current_session) |session_key| {
-            sendChatMessageRequest(session_key, message);
+        const resolved = pickSessionForSend();
+        if (resolved) |choice| {
+            if (choice.should_set) {
+                ctx.setCurrentSession(choice.key) catch |err| {
+                    logger.warn("Failed to set session: {}", .{err});
+                };
+            }
+            sendChatMessageRequest(choice.key, message);
         } else {
-            logger.warn("Cannot send message without a session selected", .{});
+            sendChatMessageRequest("main", message);
         }
     }
 

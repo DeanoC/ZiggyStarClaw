@@ -208,21 +208,29 @@ fn handleChatHistory(ctx: *state.ClientContext, payload: std.json.Value) !void {
         return;
     };
 
-    const list = try ctx.allocator.alloc(types.ChatMessage, items.len);
-    var filled: usize = 0;
+    var list = std.ArrayList(types.ChatMessage).empty;
     errdefer {
-        for (list[0..filled]) |*message| {
+        for (list.items) |*message| {
             freeChatMessageOwned(ctx.allocator, message);
         }
-        ctx.allocator.free(list);
+        list.deinit(ctx.allocator);
     }
 
-    for (items, 0..) |item, index| {
-        list[index] = try buildChatMessage(ctx.allocator, item);
-        filled = index + 1;
+    for (items) |item| {
+        try list.append(ctx.allocator, try buildChatMessage(ctx.allocator, item));
     }
 
-    ctx.setMessagesOwned(list);
+    if (ctx.messages.items.len > 0) {
+        for (ctx.messages.items) |existing| {
+            if (!messageListHasId(list.items, existing.id)) {
+                try list.append(ctx.allocator, try cloneChatMessageExisting(ctx.allocator, existing));
+            }
+        }
+    }
+
+    const owned = try list.toOwnedSlice(ctx.allocator);
+    list.deinit(ctx.allocator);
+    ctx.setMessagesOwned(owned);
     if (ctx.current_session) |session| {
         ctx.setHistorySession(session) catch {};
     }
@@ -246,11 +254,13 @@ fn selectPreferredSession(ctx: *state.ClientContext) void {
     }
 
     const chosen = ctx.sessions.items[best_index].key;
-        ctx.setCurrentSession(chosen) catch |err| {
+    ctx.setCurrentSession(chosen) catch |err| {
         logger.warn("Failed to select session: {}", .{err});
         return;
     };
-    ctx.clearMessages();
+    if (ctx.messages.items.len == 0) {
+        ctx.clearMessages();
+    }
     ctx.clearStreamText();
     ctx.clearStreamRunId();
     ctx.clearPendingHistoryRequest();
@@ -264,7 +274,24 @@ fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
 
     const event = parsed.value;
     if (ctx.current_session) |session| {
-        if (!std.mem.eql(u8, session, event.sessionKey)) return;
+        if (!std.mem.eql(u8, session, event.sessionKey)) {
+            if (ctx.messages.items.len == 0 and ctx.history_session == null) {
+                logger.warn(
+                    "Chat event session mismatch; switching session to {s} (was {s})",
+                    .{ event.sessionKey, session },
+                );
+                ctx.setCurrentSession(event.sessionKey) catch |err| {
+                    logger.warn("Failed to switch session: {}", .{err});
+                    return;
+                };
+            } else {
+                logger.debug(
+                    "Ignoring chat event for session {s} (current {s})",
+                    .{ event.sessionKey, session },
+                );
+                return;
+            }
+        }
     }
 
     if (std.mem.eql(u8, event.state, "delta")) {
@@ -437,11 +464,48 @@ fn extractChatText(allocator: std.mem.Allocator, msg: chat.ChatHistoryMessage) !
     return allocator.dupe(u8, "");
 }
 
-fn freeSessionOwned(allocator: std.mem.Allocator, session: *types.Session) void {
-    allocator.free(session.key);
-    if (session.display_name) |name| allocator.free(name);
-    if (session.label) |label| allocator.free(label);
-    if (session.kind) |kind| allocator.free(kind);
+fn messageListHasId(list: []const types.ChatMessage, id: []const u8) bool {
+    for (list) |msg| {
+        if (std.mem.eql(u8, msg.id, id)) return true;
+    }
+    return false;
+}
+
+fn cloneAttachmentExisting(allocator: std.mem.Allocator, attachment: types.ChatAttachment) !types.ChatAttachment {
+    return .{
+        .kind = try allocator.dupe(u8, attachment.kind),
+        .url = try allocator.dupe(u8, attachment.url),
+        .name = if (attachment.name) |name| try allocator.dupe(u8, name) else null,
+    };
+}
+
+fn cloneChatMessageExisting(allocator: std.mem.Allocator, msg: types.ChatMessage) !types.ChatMessage {
+    var attachments_copy: ?[]types.ChatAttachment = null;
+    if (msg.attachments) |attachments| {
+        const list = try allocator.alloc(types.ChatAttachment, attachments.len);
+        var filled: usize = 0;
+        errdefer {
+            for (list[0..filled]) |*attachment| {
+                allocator.free(attachment.kind);
+                allocator.free(attachment.url);
+                if (attachment.name) |name| allocator.free(name);
+            }
+            allocator.free(list);
+        }
+        for (attachments, 0..) |attachment, index| {
+            list[index] = try cloneAttachmentExisting(allocator, attachment);
+            filled = index + 1;
+        }
+        attachments_copy = list;
+    }
+
+    return .{
+        .id = try allocator.dupe(u8, msg.id),
+        .role = try allocator.dupe(u8, msg.role),
+        .content = try allocator.dupe(u8, msg.content),
+        .timestamp = msg.timestamp,
+        .attachments = attachments_copy,
+    };
 }
 
 fn freeChatMessageOwned(allocator: std.mem.Allocator, msg: *types.ChatMessage) void {
@@ -456,4 +520,11 @@ fn freeChatMessageOwned(allocator: std.mem.Allocator, msg: *types.ChatMessage) v
         }
         allocator.free(attachments);
     }
+}
+
+fn freeSessionOwned(allocator: std.mem.Allocator, session: *types.Session) void {
+    allocator.free(session.key);
+    if (session.display_name) |name| allocator.free(name);
+    if (session.label) |label| allocator.free(label);
+    if (session.kind) |kind| allocator.free(kind);
 }
