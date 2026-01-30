@@ -490,7 +490,7 @@ fn downloadFile(
             const location_trim = std.mem.trim(u8, location, " \t\r\n");
             if (location_trim.len == 0) return error.UpdateDownloadFailed;
             allocator.free(current_url);
-            current_url = try allocator.dupe(u8, location_trim);
+            current_url = try resolveRedirectUrl(allocator, uri, location_trim);
             redirects_left -= 1;
             continue;
         }
@@ -532,6 +532,62 @@ fn downloadFile(
         state.download_verified = true;
         state.mutex.unlock();
     }
+}
+
+fn resolveRedirectUrl(allocator: std.mem.Allocator, base: std.Uri, location: []const u8) ![]u8 {
+    if (std.mem.indexOf(u8, location, "://") != null) {
+        return allocator.dupe(u8, location);
+    }
+    if (std.mem.startsWith(u8, location, "//")) {
+        return std.fmt.allocPrint(allocator, "{s}:{s}", .{ base.scheme, location });
+    }
+
+    const host = try base.getHostAlloc(allocator);
+    defer allocator.free(host);
+    const port_suffix = if (base.port) |p|
+        try std.fmt.allocPrint(allocator, ":{d}", .{p})
+    else
+        try allocator.dupe(u8, "");
+    defer allocator.free(port_suffix);
+
+    if (std.mem.startsWith(u8, location, "/")) {
+        return std.fmt.allocPrint(allocator, "{s}://{s}{s}{s}", .{
+            base.scheme,
+            host,
+            port_suffix,
+            location,
+        });
+    }
+
+    var base_path: []const u8 = "";
+    var base_path_alloc: ?[]u8 = null;
+    switch (base.path) {
+        .raw => |raw| base_path = raw,
+        .percent_encoded => |encoded| {
+            if (std.mem.indexOfScalar(u8, encoded, '%')) |_| {
+                base_path_alloc = try std.fmt.allocPrint(allocator, "{f}", .{std.fmt.alt(base.path, .formatRaw)});
+                base_path = base_path_alloc.?;
+            } else {
+                base_path = encoded;
+            }
+        },
+    }
+    defer if (base_path_alloc) |buf| allocator.free(buf);
+
+    var dir: []const u8 = "/";
+    if (base_path.len > 0) {
+        if (std.mem.lastIndexOfScalar(u8, base_path, '/')) |idx| {
+            dir = base_path[0 .. idx + 1];
+        }
+    }
+
+    return std.fmt.allocPrint(allocator, "{s}://{s}{s}{s}{s}", .{
+        base.scheme,
+        host,
+        port_suffix,
+        dir,
+        location,
+    });
 }
 
 fn computeSha256Hex(allocator: std.mem.Allocator, file: std.fs.File) ![]u8 {
