@@ -288,7 +288,10 @@ pub fn build(b: *std.Build) void {
         });
 
         apk.setAndroidManifest(b.path("android/AndroidManifest.xml"));
-        apk.addResourceDirectory(b.path("android/res"));
+        const android_res = b.addWriteFiles();
+        _ = android_res.addCopyFile(b.path("android/res/values/strings.xml"), "values/strings.xml");
+        _ = android_res.addCopyFile(b.path("android/res/drawable/app_icon.png"), "drawable/app_icon.png");
+        apk.addResourceDirectory(android_res.getDirectory());
         apk.setKeyStore(android_sdk.createKeyStore(.example));
 
         const sdl_java_root = b.dependency("SDL", .{
@@ -390,5 +393,6 @@ pub fn build(b: *std.Build) void {
         const apk_install = apk.addInstallApk();
         const apk_step = b.step("apk", "Build Android APK");
         apk_step.dependOn(&apk_install.step);
+        b.getInstallStep().dependOn(&apk_install.step);
     }
 }
