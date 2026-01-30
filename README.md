@@ -8,7 +8,7 @@ Built with Zig (hence Ziggy) using Imgui UI, its runs on Linux, Windows, Android
 
 Designed  to be used over tailscale VPS (not tested outside that). 
 
-The aim is to provide a small alternative to the offical companion apps, at the moment its just chat but hoping to provide other services including node usage.  
+The aim is to provide a small alternative to the offical companion apps (hence Lobsters From Mars, they are aliens!), at the moment its just chat but hoping to provide other services including node usage.
 
 
 ## Status
