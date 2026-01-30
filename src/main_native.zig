@@ -65,6 +65,117 @@ fn openUrl(allocator: std.mem.Allocator, url: []const u8) void {
     };
 }
 
+fn openPath(allocator: std.mem.Allocator, path: []const u8) void {
+    const argv: []const []const u8 = switch (builtin.os.tag) {
+        .windows => &.{ "cmd", "/c", "start", "", path },
+        .macos => &.{ "open", path },
+        else => &.{ "xdg-open", path },
+    };
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    if (builtin.os.tag == .windows) {
+        child.create_no_window = true;
+    }
+    child.spawn() catch |err| {
+        logger.warn("Failed to open path: {}", .{err});
+    };
+}
+
+fn installUpdate(allocator: std.mem.Allocator, archive_path: []const u8) bool {
+    if (!(builtin.os.tag == .windows or builtin.os.tag == .linux or builtin.os.tag == .macos)) {
+        return false;
+    }
+
+    const exe_path = std.fs.selfExePathAlloc(allocator) catch |err| {
+        logger.warn("Failed to resolve self path: {}", .{err});
+        return false;
+    };
+    defer allocator.free(exe_path);
+
+    const pid: u32 = switch (builtin.os.tag) {
+        .windows => std.os.windows.GetCurrentProcessId(),
+        else => @intCast(std.c.getpid()),
+    };
+    const pid_buf = std.fmt.allocPrint(allocator, "{d}", .{pid}) catch return false;
+    defer allocator.free(pid_buf);
+
+    std.fs.cwd().makePath("updates") catch {};
+
+    const script_path = if (builtin.os.tag == .windows)
+        "updates/install_update.ps1"
+    else
+        "updates/install_update.sh";
+
+    const script_contents = if (builtin.os.tag == .windows)
+        \\param([string]$Archive,[string]$Exe,[int]$Pid)
+        \\$dir = Split-Path -Parent $Archive
+        \\$stage = Join-Path $dir "staged"
+        \\if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+        \\New-Item -ItemType Directory -Path $stage | Out-Null
+        \\Expand-Archive -Force -Path $Archive -DestinationPath $stage
+        \\$newExe = Join-Path $stage "windows\\ziggystarclaw-client.exe"
+        \\if (-not (Test-Path $newExe)) { Write-Host "Missing updated binary"; exit 1 }
+        \\if ($Pid -gt 0) { try { Wait-Process -Id $Pid -Timeout 30 } catch {} }
+        \\Copy-Item -Force $newExe $Exe
+        \\Start-Process -FilePath $Exe
+    else
+        \\#!/bin/sh
+        \\set -e
+        \\ARCHIVE=\"$1\"
+        \\EXE=\"$2\"
+        \\PID=\"$3\"
+        \\DIR=$(dirname \"$ARCHIVE\")
+        \\STAGE=\"$DIR/staged\"
+        \\rm -rf \"$STAGE\"
+        \\mkdir -p \"$STAGE\"
+        \\case \"$ARCHIVE\" in
+        \\  *.tar.gz|*.tgz) tar -xzf \"$ARCHIVE\" -C \"$STAGE\" ;;
+        \\  *.zip) unzip -o \"$ARCHIVE\" -d \"$STAGE\" ;;
+        \\  *) echo \"Unknown archive\"; exit 1 ;;
+        \\esac
+        \\NEW_BIN=\"$STAGE/linux/ziggystarclaw-client\"
+        \\if [ -f \"$STAGE/macos/ziggystarclaw-client\" ]; then NEW_BIN=\"$STAGE/macos/ziggystarclaw-client\"; fi
+        \\if [ ! -f \"$NEW_BIN\" ]; then echo \"Missing updated binary\"; exit 1; fi
+        \\if [ -n \"$PID\" ]; then
+        \\  while kill -0 \"$PID\" 2>/dev/null; do sleep 0.2; done
+        \\fi
+        \\cp -f \"$NEW_BIN\" \"$EXE\"
+        \\chmod +x \"$EXE\"
+        \\\"$EXE\" >/dev/null 2>&1 &
+    ;
+
+    {
+        var file = std.fs.cwd().createFile(script_path, .{ .truncate = true }) catch |err| {
+            logger.warn("Failed to write update script: {}", .{err});
+            return false;
+        };
+        defer file.close();
+        file.writeAll(script_contents) catch |err| {
+            logger.warn("Failed to write update script: {}", .{err});
+            return false;
+        };
+    }
+
+    const argv: []const []const u8 = switch (builtin.os.tag) {
+        .windows => &.{ "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script_path, "-Archive", archive_path, "-Exe", exe_path, "-Pid", pid_buf },
+        else => &.{ "sh", script_path, archive_path, exe_path, pid_buf },
+    };
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    if (builtin.os.tag == .windows) {
+        child.create_no_window = true;
+    }
+    child.spawn() catch |err| {
+        logger.warn("Failed to launch update installer: {}", .{err});
+        return false;
+    };
+    return true;
+}
+
 const MessageQueue = struct {
     mutex: std.Thread.Mutex = .{},
     items: std.ArrayList([]u8) = .empty,
@@ -518,6 +629,20 @@ pub fn main() !void {
             const release_url = snapshot.release_url orelse
                 "https://github.com/DeanoC/ZiggyStarClaw/releases/latest";
             openUrl(allocator, release_url);
+        }
+        if (ui_action.open_download) {
+            const snapshot = ctx.update_state.snapshot();
+            if (snapshot.download_path) |path| {
+                openPath(allocator, path);
+            }
+        }
+        if (ui_action.install_update) {
+            const snapshot = ctx.update_state.snapshot();
+            if (snapshot.download_path) |path| {
+                if (installUpdate(allocator, path)) {
+                    glfw.setWindowShouldClose(window, true);
+                }
+            }
         }
         if (ui_action.clear_saved) {
             cfg.deinit(allocator);

@@ -14,6 +14,8 @@ pub const SettingsAction = struct {
     check_updates: bool = false,
     open_release: bool = false,
     download_update: bool = false,
+    open_download: bool = false,
+    install_update: bool = false,
 };
 
 var server_buf: [256:0]u8 = [_:0]u8{0} ** 256;
@@ -133,6 +135,9 @@ pub fn draw(
             if (zgui.button("Open Release Page", .{})) {
                 action.open_release = true;
             }
+            if (snapshot.download_sha256) |sha| {
+                zgui.textWrapped("SHA256: {s}", .{sha});
+            }
             if (snapshot.download_url != null and snapshot.download_status == .idle) {
                 zgui.sameLine(.{});
                 if (zgui.button("Download Update", .{})) {
@@ -149,7 +154,23 @@ pub fn draw(
                 );
             }
             if (snapshot.download_status == .complete) {
-                zgui.textWrapped("Download complete.", .{});
+                if (snapshot.download_sha256 != null) {
+                    const verify_status = if (snapshot.download_verified) "verified" else "not verified";
+                    zgui.textWrapped("Download complete ({s}).", .{verify_status});
+                } else {
+                    zgui.textWrapped("Download complete.", .{});
+                }
+                if (snapshot.download_path != null) {
+                    if (zgui.button("Open Downloaded File", .{})) {
+                        action.open_download = true;
+                    }
+                    if (builtin.target.os.tag == .linux or builtin.target.os.tag == .windows or builtin.target.os.tag == .macos) {
+                        zgui.sameLine(.{});
+                        if (zgui.button("Install Update", .{})) {
+                            action.install_update = true;
+                        }
+                    }
+                }
             }
         }
 

@@ -27,10 +27,12 @@ pub const UpdateState = struct {
     download_url: ?[]const u8 = null,
     download_file: ?[]const u8 = null,
     download_path: ?[]const u8 = null,
+    download_sha256: ?[]const u8 = null,
     download_status: DownloadStatus = .idle,
     download_bytes: u64 = 0,
     download_total: ?u64 = null,
     download_error_message: ?[]const u8 = null,
+    download_verified: bool = false,
     error_message: ?[]const u8 = null,
     last_checked_ms: ?i64 = null,
     in_flight: bool = false,
@@ -61,10 +63,12 @@ pub const UpdateState = struct {
             .download_url = self.download_url,
             .download_file = self.download_file,
             .download_path = self.download_path,
+            .download_sha256 = self.download_sha256,
             .download_status = self.download_status,
             .download_bytes = self.download_bytes,
             .download_total = self.download_total,
             .download_error_message = self.download_error_message,
+            .download_verified = self.download_verified,
             .last_checked_ms = self.last_checked_ms,
             .in_flight = self.in_flight,
         };
@@ -142,6 +146,7 @@ pub const UpdateState = struct {
         self.download_status = .downloading;
         self.download_bytes = 0;
         self.download_total = null;
+        self.download_verified = false;
 
         const url_copy = allocator.dupe(u8, url) catch {
             self.download_status = .failed;
@@ -178,6 +183,9 @@ pub const UpdateState = struct {
         if (self.download_path) |value| {
             allocator.free(value);
         }
+        if (self.download_sha256) |value| {
+            allocator.free(value);
+        }
         if (self.download_error_message) |value| {
             allocator.free(value);
         }
@@ -189,10 +197,12 @@ pub const UpdateState = struct {
         self.download_url = null;
         self.download_file = null;
         self.download_path = null;
+        self.download_sha256 = null;
         self.download_error_message = null;
         self.download_status = .idle;
         self.download_bytes = 0;
         self.download_total = null;
+        self.download_verified = false;
         self.error_message = null;
     }
 
@@ -222,6 +232,7 @@ pub const UpdateState = struct {
         if (self.download_error_message) |value| allocator.free(value);
         self.download_error_message = allocator.dupe(u8, message) catch null;
         self.download_status = .failed;
+        self.download_verified = false;
     }
 
     fn setDownloadUnsupported(self: *UpdateState, allocator: std.mem.Allocator) void {
@@ -230,6 +241,7 @@ pub const UpdateState = struct {
         if (self.download_error_message) |value| allocator.free(value);
         self.download_error_message = allocator.dupe(u8, "Auto-download is not supported on this platform.") catch null;
         self.download_status = .unsupported;
+        self.download_verified = false;
     }
 };
 
@@ -241,10 +253,12 @@ pub const Snapshot = struct {
     download_url: ?[]const u8,
     download_file: ?[]const u8,
     download_path: ?[]const u8,
+    download_sha256: ?[]const u8,
     download_status: DownloadStatus,
     download_bytes: u64,
     download_total: ?u64,
     download_error_message: ?[]const u8,
+    download_verified: bool,
     last_checked_ms: ?i64,
     in_flight: bool,
 };
@@ -275,6 +289,7 @@ fn checkThread(
     state.release_url = latest_version.release_url;
     state.download_url = latest_version.download_url;
     state.download_file = latest_version.download_file;
+    state.download_sha256 = latest_version.download_sha256;
     state.last_checked_ms = std.time.milliTimestamp();
     state.in_flight = false;
     if (isNewerVersion(latest_version.version, current_version)) {
@@ -298,6 +313,7 @@ const UpdateInfo = struct {
     release_url: ?[]const u8,
     download_url: ?[]const u8,
     download_file: ?[]const u8,
+    download_sha256: ?[]const u8,
 };
 
 fn checkForUpdates(
@@ -337,6 +353,7 @@ fn checkForUpdates(
     var base_url_raw: ?[]const u8 = null;
     var download_url: ?[]const u8 = null;
     var download_file: ?[]const u8 = null;
+    var download_sha256: ?[]const u8 = null;
     const platform_key = platformKey();
     if (parsed.value.object.get("release_url")) |rel| {
         if (rel == .string and rel.string.len > 0) {
@@ -356,6 +373,11 @@ fn checkForUpdates(
                         if (platform.object.get("file")) |file| {
                             if (file == .string and file.string.len > 0) {
                                 download_file = try allocator.dupe(u8, file.string);
+                            }
+                        }
+                        if (platform.object.get("sha256")) |sha| {
+                            if (sha == .string and sha.string.len > 0) {
+                                download_sha256 = try allocator.dupe(u8, sha.string);
                             }
                         }
                     }
@@ -391,6 +413,7 @@ fn checkForUpdates(
         .release_url = release_url,
         .download_url = download_url,
         .download_file = download_file,
+        .download_sha256 = download_sha256,
     };
 }
 
@@ -414,7 +437,11 @@ fn downloadThread(
 
     const result = downloadFile(allocator, state, url, file_name) catch |err| {
         logger.warn("Download failed: {}", .{err});
-        state.setDownloadError(allocator, @errorName(err));
+        const message = switch (err) {
+            error.UpdateHashMismatch => "SHA256 mismatch",
+            else => @errorName(err),
+        };
+        state.setDownloadError(allocator, message);
         return;
     };
     _ = result;
@@ -462,6 +489,39 @@ fn downloadFile(
         error.ReadFailed => return error.UpdateDownloadFailed,
         error.WriteFailed => return error.UpdateDownloadFailed,
     };
+
+    var expected_sha: ?[]const u8 = null;
+    state.mutex.lock();
+    expected_sha = state.download_sha256;
+    state.mutex.unlock();
+    if (expected_sha) |expected| {
+        try file.seekTo(0);
+        const actual = try computeSha256Hex(allocator, file);
+        defer allocator.free(actual);
+        if (!std.ascii.eqlIgnoreCase(expected, actual)) {
+            state.mutex.lock();
+            state.download_verified = false;
+            state.mutex.unlock();
+            return error.UpdateHashMismatch;
+        }
+        state.mutex.lock();
+        state.download_verified = true;
+        state.mutex.unlock();
+    }
+}
+
+fn computeSha256Hex(allocator: std.mem.Allocator, file: std.fs.File) ![]u8 {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    var buf: [32 * 1024]u8 = undefined;
+    while (true) {
+        const n = try file.read(&buf);
+        if (n == 0) break;
+        hasher.update(buf[0..n]);
+    }
+    var digest: [32]u8 = undefined;
+    hasher.final(&digest);
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    return allocator.dupe(u8, &hex);
 }
 
 const DownloadWriter = struct {

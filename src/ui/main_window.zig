@@ -21,6 +21,8 @@ pub const UiAction = struct {
     check_updates: bool = false,
     open_release: bool = false,
     download_update: bool = false,
+    open_download: bool = false,
+    install_update: bool = false,
 };
 
 var safe_insets: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };
@@ -123,6 +125,8 @@ pub fn draw(
                 action.check_updates = settings_action.check_updates;
                 action.open_release = settings_action.open_release;
                 action.download_update = settings_action.download_update;
+                action.open_download = settings_action.open_download;
+                action.install_update = settings_action.install_update;
             }
             zgui.endChild();
         } else {
@@ -173,6 +177,8 @@ pub fn draw(
                 action.check_updates = settings_action.check_updates;
                 action.open_release = settings_action.open_release;
                 action.download_update = settings_action.download_update;
+                action.open_download = settings_action.open_download;
+                action.install_update = settings_action.install_update;
             }
             zgui.endChild();
         }
