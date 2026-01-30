@@ -35,5 +35,8 @@ zig build -Dwasm=true
 
 Outputs are installed under `zig-out/web/`.
 
+## Packaging
+See `docs/PACKAGING.md` and `docs/RELEASE_CHECKLIST.md` for release packaging and checklist steps.
+
 ## Layout
 See `docs/ZIGGYSTARCLAW_IMPLEMENTATION_PLAN.md` for the full design and roadmap.
