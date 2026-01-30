@@ -51,8 +51,13 @@ pub fn build(b: *std.Build) void {
         });
 
         native_exe.root_module.addIncludePath(zgui_pkg.path("libs/imgui/backends"));
+        native_exe.root_module.addIncludePath(b.path("src"));
         native_exe.root_module.addCSourceFile(.{
             .file = b.path("src/opengl_loader.c"),
+            .flags = &.{},
+        });
+        native_exe.root_module.addCSourceFile(.{
+            .file = b.path("src/icon_loader.c"),
             .flags = &.{},
         });
 
@@ -64,6 +69,11 @@ pub fn build(b: *std.Build) void {
             .windows => native_exe.root_module.linkSystemLibrary("opengl32", .{}),
             .macos => native_exe.root_module.linkFramework("OpenGL", .{}),
             else => {},
+        }
+        if (target.result.os.tag == .windows) {
+            native_exe.root_module.addWin32ResourceFile(.{
+                .file = b.path("assets/icons/ziggystarclaw.rc"),
+            });
         }
 
         b.installArtifact(native_exe);

@@ -36,4 +36,4 @@ zig build -Dwasm=true
 Outputs are installed under `zig-out/web/`.
 
 ## Layout
-See `docs/MOLTBOT_ZIG_CLIENT_IMPLEMENTATION_PLAN.md` for the full design and roadmap.
+See `docs/ZIGGYSTARCLAW_IMPLEMENTATION_PLAN.md` for the full design and roadmap.

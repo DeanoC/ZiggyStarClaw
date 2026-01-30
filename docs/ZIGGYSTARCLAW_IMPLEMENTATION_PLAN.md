@@ -1,4 +1,4 @@
-# Zig MoltBot Client - Comprehensive Implementation Plan
+# ZiggyStarClaw - Comprehensive Implementation Plan
 
 **Project:** A clean, performant browser-based and native MoltBot client built in Zig with ImGui UI
 **Author:** Deano (Game Designer, Zig enthusiast)
@@ -50,7 +50,7 @@ This project aims to create a replacement for MoltBot's built-in UI with a clean
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    MoltBot Client (Zig)                 │
+│                     ZiggyStarClaw (Zig)                 │
 ├─────────────────────────────────────────────────────────┤
 │                                                           │
 │  ┌──────────────────────────────────────────────────┐   │

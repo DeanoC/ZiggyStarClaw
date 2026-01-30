@@ -13,6 +13,10 @@ const sessions_proto = @import("protocol/sessions.zig");
 const chat_proto = @import("protocol/chat.zig");
 const types = @import("protocol/types.zig");
 
+const icon = @cImport({
+    @cInclude("icon_loader.h");
+});
+
 extern fn zgui_opengl_load() c_int;
 extern fn zgui_glViewport(x: c_int, y: c_int, w: c_int, h: c_int) void;
 extern fn zgui_glClearColor(r: f32, g: f32, b: f32, a: f32) void;
@@ -24,6 +28,21 @@ fn glfwErrorCallback(code: glfw.ErrorCode, desc: ?[*:0]const u8) callconv(.c) vo
     } else {
         logger.err("GLFW error {d}: (no description)", .{ @as(i32, @intCast(code)) });
     }
+}
+
+fn setWindowIcon(window: *glfw.Window) void {
+    const icon_png = @embedFile("assets/icons/ZiggyStarClaw_Icon.png");
+    var width: c_int = 0;
+    var height: c_int = 0;
+    const pixels = icon.zsc_load_icon_rgba_from_memory(icon_png.ptr, @intCast(icon_png.len), &width, &height);
+    if (pixels == null or width <= 0 or height <= 0) return;
+    defer icon.zsc_free_icon(pixels);
+    const image = glfw.Image{
+        .width = width,
+        .height = height,
+        .pixels = @ptrCast(pixels),
+    };
+    glfw.setWindowIcon(window, &.{image});
 }
 
 const MessageQueue = struct {
@@ -321,6 +340,7 @@ pub fn main() !void {
 
     const window = try glfw.Window.create(1280, 720, "ZiggyStarClaw", null, null);
     defer window.destroy();
+    setWindowIcon(window);
 
     glfw.makeContextCurrent(window);
     glfw.swapInterval(1);
