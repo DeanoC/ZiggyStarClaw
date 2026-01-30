@@ -239,6 +239,13 @@ pub fn build(b: *std.Build) void {
             },
         );
 
+        const web_assets = b.addInstallDirectory(.{
+            .source_dir = b.path("web"),
+            .install_dir = .{ .custom = "web" },
+            .install_subdir = "",
+        });
+        emcc_step.dependOn(&web_assets.step);
+
         const chmod_emcc = b.addSystemCommand(&.{ "chmod", "+x", zemscripten_build.emccPath(b) });
         emcc_step.dependOn(&chmod_emcc.step);
 
