@@ -1,10 +1,15 @@
-# ZiggyStarClaw
+# Ziggy StarClaw and the Lobsters From Mars
 ![ZiggyStarClaw](assets/ZiggyStarClaw.png)
 
 
-ZiggyStarClaw and the Lobsters From Mars.
+Ziggy StarClaw and the Lobsters From Mars AKA ZiggyStartClaw is a implementation of ![OpenClaw](https://github.com/openclaw/openclaw) operator client.
 
-A clean, performant MoltBot client built in Zig with an ImGui-based UI. Targets native desktop and optional WASM.
+Built with Zig (hence Ziggy) using Imgui UI, its runs on Linux, Windows, Android and WASM (web) and talks via OpenClaw websocket interface. 
+
+Designed  to be used over tailscale VPS (not tested outside that). 
+
+The aim is to provide a small alternative to the offical companion apps, at the moment its just chat but hoping to provide other services including node usage.  
+
 
 ## Status
 Planning → initial scaffolding in progress.
