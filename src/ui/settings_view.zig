@@ -12,6 +12,7 @@ pub const SettingsAction = struct {
     clear_saved: bool = false,
     config_updated: bool = false,
     check_updates: bool = false,
+    open_release: bool = false,
 };
 
 var server_buf: [256:0]u8 = [_:0]u8{0} ** 256;
@@ -121,6 +122,15 @@ pub fn draw(
                 "Status: unsupported ({s})",
                 .{snapshot.error_message orelse "not supported"},
             ),
+        }
+
+        if (snapshot.status == .update_available) {
+            const fallback_release = "https://github.com/DeanoC/ZiggyStarClaw/releases/latest";
+            const release_url = snapshot.release_url orelse fallback_release;
+            zgui.textWrapped("Release: {s}", .{release_url});
+            if (zgui.button("Open Release Page", .{})) {
+                action.open_release = true;
+            }
         }
     }
     zgui.endChild();

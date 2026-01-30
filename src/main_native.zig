@@ -47,6 +47,24 @@ fn setWindowIcon(window: *glfw.Window) void {
     glfw.setWindowIcon(window, &.{image});
 }
 
+fn openUrl(allocator: std.mem.Allocator, url: []const u8) void {
+    const argv: []const []const u8 = switch (builtin.os.tag) {
+        .windows => &.{ "cmd", "/c", "start", "", url },
+        .macos => &.{ "open", url },
+        else => &.{ "xdg-open", url },
+    };
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    if (builtin.os.tag == .windows) {
+        child.create_no_window = true;
+    }
+    child.spawn() catch |err| {
+        logger.warn("Failed to open URL: {}", .{err});
+    };
+}
+
 const MessageQueue = struct {
     mutex: std.Thread.Mutex = .{},
     items: std.ArrayList([]u8) = .empty,
@@ -486,6 +504,12 @@ pub fn main() !void {
                 manifest_url,
                 build_options.app_version,
             );
+        }
+        if (ui_action.open_release) {
+            const snapshot = ctx.update_state.snapshot();
+            const release_url = snapshot.release_url orelse
+                "https://github.com/DeanoC/ZiggyStarClaw/releases/latest";
+            openUrl(allocator, release_url);
         }
         if (ui_action.clear_saved) {
             cfg.deinit(allocator);

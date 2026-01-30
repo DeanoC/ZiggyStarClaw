@@ -15,6 +15,7 @@ pub const UpdateState = struct {
     mutex: std.Thread.Mutex = .{},
     status: UpdateStatus = .idle,
     latest_version: ?[]const u8 = null,
+    release_url: ?[]const u8 = null,
     error_message: ?[]const u8 = null,
     last_checked_ms: ?i64 = null,
     in_flight: bool = false,
@@ -34,6 +35,7 @@ pub const UpdateState = struct {
         return .{
             .status = self.status,
             .latest_version = self.latest_version,
+            .release_url = self.release_url,
             .error_message = self.error_message,
             .last_checked_ms = self.last_checked_ms,
             .in_flight = self.in_flight,
@@ -89,10 +91,14 @@ pub const UpdateState = struct {
         if (self.latest_version) |value| {
             allocator.free(value);
         }
+        if (self.release_url) |value| {
+            allocator.free(value);
+        }
         if (self.error_message) |value| {
             allocator.free(value);
         }
         self.latest_version = null;
+        self.release_url = null;
         self.error_message = null;
     }
 
@@ -120,6 +126,7 @@ pub const UpdateState = struct {
 pub const Snapshot = struct {
     status: UpdateStatus,
     latest_version: ?[]const u8,
+    release_url: ?[]const u8,
     error_message: ?[]const u8,
     last_checked_ms: ?i64,
     in_flight: bool,
@@ -143,21 +150,27 @@ fn checkThread(
     state.mutex.lock();
     defer state.mutex.unlock();
     state.clearLocked(allocator);
-    state.latest_version = latest_version;
+    state.latest_version = latest_version.version;
+    state.release_url = latest_version.release_url;
     state.last_checked_ms = std.time.milliTimestamp();
     state.in_flight = false;
-    if (isNewerVersion(latest_version, current_version)) {
+    if (isNewerVersion(latest_version.version, current_version)) {
         state.status = .update_available;
     } else {
         state.status = .up_to_date;
     }
 }
 
+const UpdateInfo = struct {
+    version: []const u8,
+    release_url: ?[]const u8,
+};
+
 fn checkForUpdates(
     allocator: std.mem.Allocator,
     manifest_url: []const u8,
     current_version: []const u8,
-) ![]const u8 {
+) !UpdateInfo {
     _ = current_version;
     var client = std.http.Client{ .allocator = allocator };
     defer client.deinit();
@@ -186,7 +199,17 @@ fn checkForUpdates(
     const version = version_value.string;
     if (version.len == 0) return error.UpdateManifestMissingVersion;
 
-    return allocator.dupe(u8, version);
+    var release_url: ?[]const u8 = null;
+    if (parsed.value.object.get("release_url")) |rel| {
+        if (rel == .string and rel.string.len > 0) {
+            release_url = try allocator.dupe(u8, rel.string);
+        }
+    }
+
+    return .{
+        .version = try allocator.dupe(u8, version),
+        .release_url = release_url,
+    };
 }
 
 fn isNewerVersion(latest: []const u8, current: []const u8) bool {

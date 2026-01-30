@@ -31,6 +31,16 @@ extern fn ImGui_ImplSDL2_SetSafeOffset(x: f32, y: f32) void;
 
 var ui_scale: f32 = 1.0;
 
+fn openUrl(allocator: std.mem.Allocator, url: []const u8) void {
+    const buf = allocator.alloc(u8, url.len + 1) catch return;
+    defer allocator.free(buf);
+    @memcpy(buf[0..url.len], url);
+    buf[url.len] = 0;
+    if (c.SDL_OpenURL(@ptrCast(buf.ptr)) != 0) {
+        logger.warn("Failed to open URL: {s}", .{url});
+    }
+}
+
 const MessageQueue = struct {
     mutex: std.Thread.Mutex = .{},
     items: std.ArrayList([]u8) = .empty,
@@ -677,6 +687,12 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
                 manifest_url,
                 build_options.app_version,
             );
+        }
+        if (ui_action.open_release) {
+            const snapshot = ctx.update_state.snapshot();
+            const release_url = snapshot.release_url orelse
+                "https://github.com/DeanoC/ZiggyStarClaw/releases/latest";
+            openUrl(allocator, release_url);
         }
         if (ui_action.clear_saved) {
             cfg.deinit(allocator);

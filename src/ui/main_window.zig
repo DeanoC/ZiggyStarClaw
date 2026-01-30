@@ -19,6 +19,7 @@ pub const UiAction = struct {
     refresh_sessions: bool = false,
     select_session: ?[]u8 = null,
     check_updates: bool = false,
+    open_release: bool = false,
 };
 
 var safe_insets: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };
@@ -119,6 +120,7 @@ pub fn draw(
                 action.clear_saved = settings_action.clear_saved;
                 action.config_updated = settings_action.config_updated;
                 action.check_updates = settings_action.check_updates;
+                action.open_release = settings_action.open_release;
             }
             zgui.endChild();
         } else {
@@ -167,6 +169,7 @@ pub fn draw(
                 action.clear_saved = settings_action.clear_saved;
                 action.config_updated = settings_action.config_updated;
                 action.check_updates = settings_action.check_updates;
+                action.open_release = settings_action.open_release;
             }
             zgui.endChild();
         }

@@ -35,6 +35,7 @@ extern fn molt_ws_open(url: [*:0]const u8) void;
 extern fn molt_ws_send(text: [*:0]const u8) void;
 extern fn molt_ws_close() void;
 extern fn molt_ws_ready_state() c_int;
+extern fn molt_open_url(url: [*:0]const u8) void;
 
 pub const panic = zemscripten.panic;
 
@@ -351,6 +352,14 @@ fn sendWsText(payload: []const u8) bool {
     const z: [:0]const u8 = buf[0..payload.len :0];
     molt_ws_send(z.ptr);
     return true;
+}
+
+fn openUrl(url: []const u8) void {
+    const buf = allocator.alloc(u8, url.len + 1) catch return;
+    defer allocator.free(buf);
+    @memcpy(buf[0..url.len], url);
+    buf[url.len] = 0;
+    molt_open_url(@ptrCast(buf.ptr));
 }
 
 fn sendConnectRequest(nonce: ?[]const u8) void {
@@ -783,6 +792,12 @@ fn frame() callconv(.c) void {
             manifest_url,
             build_options.app_version,
         );
+    }
+    if (ui_action.open_release) {
+        const snapshot = ctx.update_state.snapshot();
+        const release_url = snapshot.release_url orelse
+            "https://github.com/DeanoC/ZiggyStarClaw/releases/latest";
+        openUrl(release_url);
     }
     if (ui_action.clear_saved) {
         wasm_storage.remove(config_storage_key);

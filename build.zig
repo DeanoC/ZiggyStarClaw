@@ -209,6 +209,10 @@ pub fn build(b: *std.Build) void {
             .file = b.path("src/wasm_storage.cpp"),
             .flags = imgui_backend_flags,
         });
+        wasm.root_module.addCSourceFile(.{
+            .file = b.path("src/wasm_open_url.cpp"),
+            .flags = imgui_backend_flags,
+        });
         const zgui_wasm_imgui = zgui_wasm_pkg.artifact("imgui");
         zgui_wasm_imgui.root_module.addSystemIncludePath(.{ .cwd_relative = emsdk_sysroot_include });
         wasm.linkLibrary(zgui_wasm_imgui);
