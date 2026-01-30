@@ -6,6 +6,8 @@ const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
 const websocket_client = @import("client/websocket_client.zig");
+const update_checker = @import("client/update_checker.zig");
+const build_options = @import("build_options");
 const logger = @import("utils/logger.zig");
 const requests = @import("protocol/requests.zig");
 const sessions_proto = @import("protocol/sessions.zig");
@@ -645,7 +647,7 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
         }
 
         beginFrame(window);
-        const ui_action = ui.draw(allocator, &ctx, &cfg, ws_client.is_connected);
+        const ui_action = ui.draw(allocator, &ctx, &cfg, ws_client.is_connected, build_options.app_version);
         const want_text = zgui.io.getWantTextInput();
         if (want_text and !text_input_active) {
             c.SDL_StartTextInput();
@@ -666,6 +668,15 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
             config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
                 logger.err("Failed to save config: {}", .{err});
             };
+        }
+        if (ui_action.check_updates) {
+            const manifest_url = cfg.update_manifest_url orelse "";
+            update_checker.UpdateState.startCheck(
+                &ctx.update_state,
+                allocator,
+                manifest_url,
+                build_options.app_version,
+            );
         }
         if (ui_action.clear_saved) {
             cfg.deinit(allocator);

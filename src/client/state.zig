@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("../protocol/types.zig");
+const update_checker = @import("update_checker.zig");
 
 pub const ClientState = enum {
     disconnected,
@@ -25,6 +26,7 @@ pub const ClientContext = struct {
     pending_history_request_id: ?[]const u8 = null,
     pending_send_request_id: ?[]const u8 = null,
     last_error: ?[]const u8 = null,
+    update_state: update_checker.UpdateState = .{},
 
     pub fn init(allocator: std.mem.Allocator) !ClientContext {
         return .{
@@ -43,10 +45,12 @@ pub const ClientContext = struct {
             .pending_history_request_id = null,
             .pending_send_request_id = null,
             .last_error = null,
+            .update_state = .{},
         };
     }
 
     pub fn deinit(self: *ClientContext) void {
+        self.update_state.deinit(self.allocator);
         if (self.current_session) |session| {
             self.allocator.free(session);
             self.current_session = null;

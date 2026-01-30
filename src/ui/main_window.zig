@@ -18,6 +18,7 @@ pub const UiAction = struct {
     config_updated: bool = false,
     refresh_sessions: bool = false,
     select_session: ?[]u8 = null,
+    check_updates: bool = false,
 };
 
 var safe_insets: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };
@@ -31,6 +32,7 @@ pub fn draw(
     ctx: *state.ClientContext,
     cfg: *config.Config,
     is_connected: bool,
+    app_version: []const u8,
 ) UiAction {
     var action = UiAction{};
 
@@ -103,12 +105,20 @@ pub fn draw(
             zgui.endChild();
 
             if (zgui.beginChild("RightPanel", .{ .w = avail[0], .h = settings_h, .child_flags = .{ .border = true } })) {
-                const settings_action = settings_view.draw(allocator, cfg, ctx.state, is_connected);
+                const settings_action = settings_view.draw(
+                    allocator,
+                    cfg,
+                    ctx.state,
+                    is_connected,
+                    &ctx.update_state,
+                    app_version,
+                );
                 action.connect = settings_action.connect;
                 action.disconnect = settings_action.disconnect;
                 action.save_config = settings_action.save;
                 action.clear_saved = settings_action.clear_saved;
                 action.config_updated = settings_action.config_updated;
+                action.check_updates = settings_action.check_updates;
             }
             zgui.endChild();
         } else {
@@ -143,12 +153,20 @@ pub fn draw(
             zgui.sameLine(.{});
 
             if (zgui.beginChild("RightPanel", .{ .w = right_width, .h = usable_h, .child_flags = .{ .border = true } })) {
-                const settings_action = settings_view.draw(allocator, cfg, ctx.state, is_connected);
+                const settings_action = settings_view.draw(
+                    allocator,
+                    cfg,
+                    ctx.state,
+                    is_connected,
+                    &ctx.update_state,
+                    app_version,
+                );
                 action.connect = settings_action.connect;
                 action.disconnect = settings_action.disconnect;
                 action.save_config = settings_action.save;
                 action.clear_saved = settings_action.clear_saved;
                 action.config_updated = settings_action.config_updated;
+                action.check_updates = settings_action.check_updates;
             }
             zgui.endChild();
         }

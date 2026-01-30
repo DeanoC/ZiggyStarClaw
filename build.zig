@@ -8,6 +8,9 @@ pub fn build(b: *std.Build) void {
     const build_wasm = b.option(bool, "wasm", "Build wasm target") orelse false;
     const android_targets = android.standardTargets(b, target);
     const build_android = android_targets.len > 0;
+    const app_version = readAppVersion(b);
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "app_version", app_version);
 
     const app_module = b.addModule("ziggystarclaw", .{
         .root_source_file = b.path("src/root.zig"),
@@ -50,6 +53,7 @@ pub fn build(b: *std.Build) void {
             .name = "ziggystarclaw-client",
             .root_module = native_module,
         });
+        native_exe.root_module.addOptions("build_options", build_options);
 
         native_exe.root_module.addIncludePath(zgui_pkg.path("libs/imgui/backends"));
         native_exe.root_module.addIncludePath(b.path("src"));
@@ -93,6 +97,7 @@ pub fn build(b: *std.Build) void {
             .name = "ziggystarclaw-cli",
             .root_module = cli_module,
         });
+        cli_exe.root_module.addOptions("build_options", build_options);
 
         b.installArtifact(cli_exe);
 
@@ -161,6 +166,7 @@ pub fn build(b: *std.Build) void {
             .root_module = wasm_module,
             .linkage = .static,
         });
+        wasm.root_module.addOptions("build_options", build_options);
 
         const zgui_wasm_pkg = b.dependency("zgui", .{
             .target = wasm_target,
@@ -338,6 +344,7 @@ pub fn build(b: *std.Build) void {
                 .root_module = android_module,
                 .linkage = .dynamic,
             });
+            android_lib.root_module.addOptions("build_options", build_options);
             android_lib.root_module.link_libc = true;
             android_lib.root_module.link_libcpp = true;
             android_lib.root_module.linkSystemLibrary("GLESv2", .{});
@@ -395,4 +402,15 @@ pub fn build(b: *std.Build) void {
         apk_step.dependOn(&apk_install.step);
         b.getInstallStep().dependOn(&apk_install.step);
     }
+}
+
+fn readAppVersion(b: *std.Build) []const u8 {
+    const data = std.fs.cwd().readFileAlloc(b.allocator, "build.zig.zon", 64 * 1024) catch return "0.0.0";
+    const needle = ".version";
+    const idx = std.mem.indexOf(u8, data, needle) orelse return "0.0.0";
+    const slice = data[idx..];
+    const quote_start = std.mem.indexOfScalar(u8, slice, '"') orelse return "0.0.0";
+    const after_start = slice[quote_start + 1 ..];
+    const quote_end = std.mem.indexOfScalar(u8, after_start, '"') orelse return "0.0.0";
+    return after_start[0..quote_end];
 }

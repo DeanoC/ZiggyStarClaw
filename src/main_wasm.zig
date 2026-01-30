@@ -16,6 +16,8 @@ const identity = @import("client/device_identity_wasm.zig");
 const wasm_storage = @import("platform/wasm_storage.zig");
 const logger = @import("utils/logger.zig");
 const builtin = @import("builtin");
+const update_checker = @import("client/update_checker.zig");
+const build_options = @import("build_options");
 
 const c = @cImport({
     @cInclude("GLES3/gl3.h");
@@ -278,6 +280,14 @@ fn loadConfigFromStorage() !config.Config {
                     allocator.free(prev);
                 }
                 cfg_local.connect_host_override = try allocator.dupe(u8, value.string);
+            }
+        }
+        if (obj.get("update_manifest_url")) |value| {
+            if (value == .string) {
+                if (cfg_local.update_manifest_url) |prev| {
+                    allocator.free(prev);
+                }
+                cfg_local.update_manifest_url = try allocator.dupe(u8, value.string);
             }
         }
     }
@@ -755,7 +765,7 @@ fn frame() callconv(.c) void {
     }
 
     beginFrame(win_width, win_height, fb_width, fb_height);
-    const ui_action = ui.draw(allocator, &ctx, &cfg, ws_connected);
+    const ui_action = ui.draw(allocator, &ctx, &cfg, ws_connected, build_options.app_version);
 
     if (ui_action.config_updated) {
         // config updated in-place
@@ -764,6 +774,15 @@ fn frame() callconv(.c) void {
 
     if (ui_action.save_config) {
         saveConfigToStorage();
+    }
+    if (ui_action.check_updates) {
+        const manifest_url = cfg.update_manifest_url orelse "";
+        update_checker.UpdateState.startCheck(
+            &ctx.update_state,
+            allocator,
+            manifest_url,
+            build_options.app_version,
+        );
     }
     if (ui_action.clear_saved) {
         wasm_storage.remove(config_storage_key);

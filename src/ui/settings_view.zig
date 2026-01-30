@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const zgui = @import("zgui");
 const config = @import("../client/config.zig");
 const state = @import("../client/state.zig");
+const update_checker = @import("../client/update_checker.zig");
 
 pub const SettingsAction = struct {
     connect: bool = false,
@@ -10,11 +11,13 @@ pub const SettingsAction = struct {
     save: bool = false,
     clear_saved: bool = false,
     config_updated: bool = false,
+    check_updates: bool = false,
 };
 
 var server_buf: [256:0]u8 = [_:0]u8{0} ** 256;
 var token_buf: [256:0]u8 = [_:0]u8{0} ** 256;
 var connect_host_buf: [256:0]u8 = [_:0]u8{0} ** 256;
+var update_url_buf: [512:0]u8 = [_:0]u8{0} ** 512;
 var insecure_tls_value = false;
 var initialized = false;
 
@@ -23,6 +26,8 @@ pub fn draw(
     cfg: *config.Config,
     client_state: state.ClientState,
     is_connected: bool,
+    update_state: *update_checker.UpdateState,
+    app_version: []const u8,
 ) SettingsAction {
     var action = SettingsAction{};
     const show_insecure_tls = builtin.target.os.tag != .emscripten;
@@ -48,14 +53,16 @@ pub fn draw(
         const server_text = std.mem.sliceTo(&server_buf, 0);
         const connect_host_text = std.mem.sliceTo(&connect_host_buf, 0);
         const token_text = std.mem.sliceTo(&token_buf, 0);
+        const update_url_text = std.mem.sliceTo(&update_url_buf, 0);
         const dirty = !std.mem.eql(u8, server_text, cfg.server_url) or
             !std.mem.eql(u8, token_text, cfg.token) or
             !std.mem.eql(u8, connect_host_text, cfg.connect_host_override orelse "") or
+            !std.mem.eql(u8, update_url_text, cfg.update_manifest_url orelse "") or
             (show_insecure_tls and insecure_tls_value != cfg.insecure_tls);
 
         zgui.beginDisabled(.{ .disabled = !dirty });
         if (zgui.button("Apply", .{})) {
-            if (applyConfig(allocator, cfg, server_text, connect_host_text, token_text)) {
+            if (applyConfig(allocator, cfg, server_text, connect_host_text, token_text, update_url_text)) {
                 action.config_updated = true;
             }
         }
@@ -78,13 +85,43 @@ pub fn draw(
             }
         } else {
             if (zgui.button("Connect", .{})) {
-                if (dirty and applyConfig(allocator, cfg, server_text, connect_host_text, token_text)) {
+                if (dirty and applyConfig(allocator, cfg, server_text, connect_host_text, token_text, update_url_text)) {
                     action.config_updated = true;
                 }
                 action.connect = true;
             }
         }
         zgui.textWrapped("State: {s}", .{@tagName(client_state)});
+
+        zgui.separator();
+        zgui.text("Updates", .{});
+        _ = zgui.inputText("Update Manifest URL", .{ .buf = update_url_buf[0.. :0] });
+        zgui.textWrapped("Current version: {s}", .{app_version});
+
+        const snapshot = update_state.snapshot();
+        zgui.beginDisabled(.{ .disabled = snapshot.in_flight or update_url_text.len == 0 });
+        if (zgui.button("Check Updates", .{})) {
+            action.check_updates = true;
+        }
+        zgui.endDisabled();
+
+        switch (snapshot.status) {
+            .idle => zgui.textWrapped("Status: idle", .{}),
+            .checking => zgui.textWrapped("Status: checking...", .{}),
+            .up_to_date => zgui.textWrapped("Status: up to date", .{}),
+            .update_available => zgui.textWrapped(
+                "Status: update available ({s})",
+                .{snapshot.latest_version orelse "?"},
+            ),
+            .failed => zgui.textWrapped(
+                "Status: error ({s})",
+                .{snapshot.error_message orelse "unknown"},
+            ),
+            .unsupported => zgui.textWrapped(
+                "Status: unsupported ({s})",
+                .{snapshot.error_message orelse "not supported"},
+            ),
+        }
     }
     zgui.endChild();
 
@@ -97,13 +134,15 @@ pub fn syncFromConfig(cfg: config.Config) void {
 
 fn syncBuffers(cfg: config.Config) void {
     initialized = true;
-    fillBuffer(&server_buf, cfg.server_url);
-    fillBuffer(&connect_host_buf, cfg.connect_host_override orelse "");
-    fillBuffer(&token_buf, cfg.token);
+    fillBuffer(server_buf[0..], cfg.server_url);
+    fillBuffer(connect_host_buf[0..], cfg.connect_host_override orelse "");
+    fillBuffer(token_buf[0..], cfg.token);
+    fillBuffer(update_url_buf[0..], cfg.update_manifest_url orelse "");
     insecure_tls_value = cfg.insecure_tls;
 }
 
-fn fillBuffer(buf: *[256:0]u8, value: []const u8) void {
+fn fillBuffer(buf: []u8, value: []const u8) void {
+    if (buf.len == 0) return;
     @memset(buf, 0);
     const len = @min(value.len, buf.len - 1);
     @memcpy(buf[0..len], value[0..len]);
@@ -116,6 +155,7 @@ fn applyConfig(
     server_text: []const u8,
     connect_host_text: []const u8,
     token_text: []const u8,
+    update_url_text: []const u8,
 ) bool {
     var changed = false;
 
@@ -147,6 +187,18 @@ fn applyConfig(
 
     if (cfg.insecure_tls != insecure_tls_value) {
         cfg.insecure_tls = insecure_tls_value;
+        changed = true;
+    }
+
+    const current_update = cfg.update_manifest_url orelse "";
+    if (!std.mem.eql(u8, current_update, update_url_text)) {
+        if (cfg.update_manifest_url) |value| {
+            allocator.free(value);
+            cfg.update_manifest_url = null;
+        }
+        if (update_url_text.len > 0) {
+            cfg.update_manifest_url = allocator.dupe(u8, update_url_text) catch return changed;
+        }
         changed = true;
     }
 

@@ -5,11 +5,15 @@ pub const Config = struct {
     token: []const u8,
     insecure_tls: bool = false,
     connect_host_override: ?[]const u8 = null,
+    update_manifest_url: ?[]const u8 = null,
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         allocator.free(self.server_url);
         allocator.free(self.token);
         if (self.connect_host_override) |value| {
+            allocator.free(value);
+        }
+        if (self.update_manifest_url) |value| {
             allocator.free(value);
         }
     }
@@ -21,6 +25,10 @@ pub fn initDefault(allocator: std.mem.Allocator) !Config {
         .token = try allocator.dupe(u8, ""),
         .insecure_tls = false,
         .connect_host_override = null,
+        .update_manifest_url = try allocator.dupe(
+            u8,
+            "https://github.com/DeanoC/ZiggyStarClaw/releases/latest/download/update.json",
+        ),
     };
 }
 
@@ -42,6 +50,10 @@ pub fn loadOrDefault(allocator: std.mem.Allocator, path: []const u8) !Config {
         .token = try allocator.dupe(u8, parsed.value.token),
         .insecure_tls = parsed.value.insecure_tls,
         .connect_host_override = if (parsed.value.connect_host_override) |value|
+            try allocator.dupe(u8, value)
+        else
+            null,
+        .update_manifest_url = if (parsed.value.update_manifest_url) |value|
             try allocator.dupe(u8, value)
         else
             null,
