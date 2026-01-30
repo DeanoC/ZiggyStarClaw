@@ -4,10 +4,14 @@ pub const Config = struct {
     server_url: []const u8,
     token: []const u8,
     insecure_tls: bool = false,
+    connect_host_override: ?[]const u8 = null,
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         allocator.free(self.server_url);
         allocator.free(self.token);
+        if (self.connect_host_override) |value| {
+            allocator.free(value);
+        }
     }
 };
 
@@ -16,6 +20,7 @@ pub fn initDefault(allocator: std.mem.Allocator) !Config {
         .server_url = try allocator.dupe(u8, ""),
         .token = try allocator.dupe(u8, ""),
         .insecure_tls = false,
+        .connect_host_override = null,
     };
 }
 
@@ -36,6 +41,10 @@ pub fn loadOrDefault(allocator: std.mem.Allocator, path: []const u8) !Config {
         .server_url = try allocator.dupe(u8, parsed.value.server_url),
         .token = try allocator.dupe(u8, parsed.value.token),
         .insecure_tls = parsed.value.insecure_tls,
+        .connect_host_override = if (parsed.value.connect_host_override) |value|
+            try allocator.dupe(u8, value)
+        else
+            null,
     };
 }
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const zgui = @import("zgui");
+const builtin = @import("builtin");
 const ui = @import("ui/main_window.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
@@ -24,6 +25,9 @@ extern fn ImGui_ImplSDL2_InitForOpenGL(window: *const anyopaque, sdl_gl_context:
 extern fn ImGui_ImplSDL2_Shutdown() void;
 extern fn ImGui_ImplSDL2_NewFrame() void;
 extern fn ImGui_ImplSDL2_ProcessEvent(event: *const anyopaque) bool;
+extern fn ImGui_ImplSDL2_SetSafeOffset(x: f32, y: f32) void;
+
+var ui_scale: f32 = 1.0;
 
 const MessageQueue = struct {
     mutex: std.Thread.Mutex = .{},
@@ -63,6 +67,82 @@ const ReadLoop = struct {
     last_receive_ms: i64 = 0,
     last_payload_len: usize = 0,
 };
+
+const ConnectJob = struct {
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    mutex: std.Thread.Mutex = .{},
+    thread: ?std.Thread = null,
+    status: std.atomic.Value(u8) = std.atomic.Value(u8).init(0),
+    cancel_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    error_msg: ?[]u8 = null,
+
+    const Status = enum(u8) { idle = 0, running = 1, success = 2, failed = 3 };
+
+    fn start(self: *ConnectJob) !bool {
+        if (self.status.load(.monotonic) == @intFromEnum(Status.running)) return false;
+        if (self.thread != null) return false;
+        self.cancel_requested.store(false, .monotonic);
+        self.clearError();
+        self.status.store(@intFromEnum(Status.running), .monotonic);
+        self.thread = try std.Thread.spawn(.{}, connectThreadMain, .{self});
+        return true;
+    }
+
+    fn requestCancel(self: *ConnectJob) void {
+        self.cancel_requested.store(true, .monotonic);
+    }
+
+    fn isRunning(self: *ConnectJob) bool {
+        return self.status.load(.monotonic) == @intFromEnum(Status.running);
+    }
+
+    fn takeResult(self: *ConnectJob) ?struct { ok: bool, err: ?[]u8, canceled: bool } {
+        const status = self.status.load(.monotonic);
+        if (status == @intFromEnum(Status.idle) or status == @intFromEnum(Status.running)) return null;
+        if (self.thread) |handle| {
+            handle.join();
+            self.thread = null;
+        }
+        const ok = status == @intFromEnum(Status.success);
+        self.status.store(@intFromEnum(Status.idle), .monotonic);
+        const canceled = self.cancel_requested.load(.monotonic);
+        self.cancel_requested.store(false, .monotonic);
+        self.mutex.lock();
+        const err_msg = self.error_msg;
+        self.error_msg = null;
+        self.mutex.unlock();
+        return .{ .ok = ok, .err = err_msg, .canceled = canceled };
+    }
+
+    fn setError(self: *ConnectJob, message: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.error_msg) |msg| {
+            self.allocator.free(msg);
+        }
+        self.error_msg = self.allocator.dupe(u8, message) catch null;
+    }
+
+    fn clearError(self: *ConnectJob) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.error_msg) |msg| {
+            self.allocator.free(msg);
+            self.error_msg = null;
+        }
+    }
+};
+
+fn connectThreadMain(job: *ConnectJob) void {
+    const result = job.ws_client.connect();
+    if (result) |_| {
+        job.status.store(@intFromEnum(ConnectJob.Status.success), .monotonic);
+    } else |err| {
+        job.setError(@errorName(err));
+        job.status.store(@intFromEnum(ConnectJob.Status.failed), .monotonic);
+    }
+}
 
 fn readLoopMain(loop: *ReadLoop) void {
     loop.running.store(true, .monotonic);
@@ -266,6 +346,46 @@ fn buildUserMessage(
     };
 }
 
+const Insets = struct {
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+};
+
+fn computeSafeInsets(window: *c.SDL_Window, win_w: c_int, win_h: c_int) Insets {
+    var full: c.SDL_Rect = undefined;
+    var usable: c.SDL_Rect = undefined;
+    const display_index = c.SDL_GetWindowDisplayIndex(window);
+    if (display_index < 0) return .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+    if (c.SDL_GetDisplayBounds(display_index, &full) != 0) {
+        return .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+    }
+    if (c.SDL_GetDisplayUsableBounds(display_index, &usable) != 0) {
+        return .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+    }
+    if (full.w <= 0 or full.h <= 0 or win_w <= 0 or win_h <= 0) {
+        return .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+    }
+    const scale_x = @as(f32, @floatFromInt(win_w)) / @as(f32, @floatFromInt(full.w));
+    const scale_y = @as(f32, @floatFromInt(win_h)) / @as(f32, @floatFromInt(full.h));
+    const left = @as(f32, @floatFromInt(usable.x - full.x)) * scale_x;
+    const top = @as(f32, @floatFromInt(usable.y - full.y)) * scale_y;
+    const right = @as(f32, @floatFromInt((full.x + full.w) - (usable.x + usable.w))) * scale_x;
+    const bottom = @as(f32, @floatFromInt((full.y + full.h) - (usable.y + usable.h))) * scale_y;
+    var top_out = @max(0.0, top);
+    const bottom_out = @max(0.0, bottom);
+    if (builtin.abi == .android and top_out == 0.0) {
+        top_out = 64.0 * ui_scale;
+    }
+    return .{
+        .left = @max(0.0, left),
+        .top = top_out,
+        .right = @max(0.0, right),
+        .bottom = bottom_out,
+    };
+}
+
 fn beginFrame(window: *c.SDL_Window) void {
     var win_w: c_int = 0;
     var win_h: c_int = 0;
@@ -274,14 +394,16 @@ fn beginFrame(window: *c.SDL_Window) void {
     c.SDL_GetWindowSize(window, &win_w, &win_h);
     c.SDL_GL_GetDrawableSize(window, &fb_w, &fb_h);
 
+    const insets = computeSafeInsets(window, win_w, win_h);
+    ui.setSafeInsets(insets.left, insets.top, insets.right, insets.bottom);
+    ImGui_ImplSDL2_SetSafeOffset(0.0, insets.top);
+
     ImGui_ImplSDL2_NewFrame();
     ImGui_ImplOpenGL3_NewFrame();
 
-    const size_w: c_int = if (win_w > 0) win_w else fb_w;
-    const size_h: c_int = if (win_h > 0) win_h else fb_h;
     zgui.io.setDisplaySize(
-        @as(f32, @floatFromInt(size_w)),
-        @as(f32, @floatFromInt(size_h)),
+        @as(f32, @floatFromInt(@max(1, win_w))),
+        @as(f32, @floatFromInt(@max(1, win_h))),
     );
 
     var scale_x: f32 = 1.0;
@@ -294,6 +416,44 @@ fn beginFrame(window: *c.SDL_Window) void {
 
     zgui.newFrame();
 }
+
+fn applyDpiScale(scale: f32) void {
+    if (scale <= 0.0 or scale == 1.0) return;
+
+    var cfg = zgui.FontConfig.init();
+    cfg.size_pixels = 16.0 * scale;
+    const font = zgui.io.addFontDefault(cfg);
+    zgui.io.setDefaultFont(font);
+
+    const style = zgui.getStyle();
+    style.scaleAllSizes(scale);
+}
+
+fn guessDpiScale(window: *c.SDL_Window) f32 {
+    const display_index = c.SDL_GetWindowDisplayIndex(window);
+    if (display_index >= 0) {
+        var ddpi: f32 = 0.0;
+        if (c.SDL_GetDisplayDPI(display_index, &ddpi, null, null) == 0 and ddpi > 0.0) {
+            const baseline: f32 = if (builtin.abi == .android) 160.0 else 96.0;
+            const scale = ddpi / baseline;
+            if (scale > 0.0) return scale;
+        }
+    }
+    var win_w: c_int = 0;
+    var win_h: c_int = 0;
+    var fb_w: c_int = 0;
+    var fb_h: c_int = 0;
+    c.SDL_GetWindowSize(window, &win_w, &win_h);
+    c.SDL_GL_GetDrawableSize(window, &fb_w, &fb_h);
+    if (win_w <= 0 or win_h <= 0 or fb_w <= 0 or fb_h <= 0) return 1.0;
+    const scale_x = @as(f32, @floatFromInt(fb_w)) / @as(f32, @floatFromInt(win_w));
+    const scale_y = @as(f32, @floatFromInt(fb_h)) / @as(f32, @floatFromInt(win_h));
+    const scale = if (scale_x > scale_y) scale_x else scale_y;
+    if (scale >= 1.0) return scale;
+    if (builtin.abi == .android) return 2.0;
+    return 1.0;
+}
+
 
 pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
     _ = argc;
@@ -308,6 +468,8 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
         return 1;
     }
     defer c.SDL_Quit();
+
+    _ = c.SDL_SetHint(c.SDL_HINT_IME_SHOW_UI, "1");
 
     const pref_path_c = c.SDL_GetPrefPath("deanoc", "moltbot");
     if (pref_path_c != null) {
@@ -353,7 +515,17 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
     defer cfg.deinit(allocator);
     ui.syncSettings(cfg);
 
-    var ws_client = websocket_client.WebSocketClient.init(allocator, cfg.server_url, cfg.token, cfg.insecure_tls);
+    var ws_client = websocket_client.WebSocketClient.init(
+        allocator,
+        cfg.server_url,
+        cfg.token,
+        cfg.insecure_tls,
+        cfg.connect_host_override,
+    );
+    var connect_job = ConnectJob{
+        .allocator = allocator,
+        .ws_client = &ws_client,
+    };
     ws_client.setReadTimeout(15_000);
     defer ws_client.deinit();
 
@@ -361,6 +533,8 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
     zgui.styleColorsDark(zgui.getStyle());
     _ = ImGui_ImplSDL2_InitForOpenGL(@ptrCast(window), @ptrCast(gl_ctx));
     ImGui_ImplOpenGL3_Init("#version 100");
+    ui_scale = guessDpiScale(window);
+    applyDpiScale(ui_scale);
 
     var message_queue = MessageQueue{};
     defer message_queue.deinit(allocator);
@@ -378,6 +552,7 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
 
     var running = true;
     var event: c.SDL_Event = undefined;
+    var text_input_active = false;
     while (running) {
         while (c.SDL_PollEvent(&event) != 0) {
             _ = ImGui_ImplSDL2_ProcessEvent(@ptrCast(&event));
@@ -452,11 +627,20 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
 
         beginFrame(window);
         const ui_action = ui.draw(allocator, &ctx, &cfg, ws_client.is_connected);
+        const want_text = zgui.io.getWantTextInput();
+        if (want_text and !text_input_active) {
+            c.SDL_StartTextInput();
+            text_input_active = true;
+        } else if (!want_text and text_input_active) {
+            c.SDL_StopTextInput();
+            text_input_active = false;
+        }
 
         if (ui_action.config_updated) {
             ws_client.url = cfg.server_url;
             ws_client.token = cfg.token;
             ws_client.insecure_tls = cfg.insecure_tls;
+            ws_client.connect_host_override = cfg.connect_host_override;
         }
 
         if (ui_action.save_config) {
@@ -474,6 +658,7 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
             ws_client.url = cfg.server_url;
             ws_client.token = cfg.token;
             ws_client.insecure_tls = cfg.insecure_tls;
+            ws_client.connect_host_override = cfg.connect_host_override;
             ui.syncSettings(cfg);
         }
 
@@ -483,25 +668,27 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
             ws_client.url = cfg.server_url;
             ws_client.token = cfg.token;
             ws_client.insecure_tls = cfg.insecure_tls;
+            ws_client.connect_host_override = cfg.connect_host_override;
             should_reconnect = true;
             reconnect_backoff_ms = 500;
             next_reconnect_at_ms = 0;
-            ws_client.connect() catch |err| {
-                logger.err("WebSocket connect failed: {}", .{err});
+            const started = connect_job.start() catch |err| blk: {
+                logger.err("Failed to start connect thread: {}", .{err});
                 ctx.state = .error_state;
+                ctx.setError(@errorName(err)) catch {};
+                break :blk false;
             };
-            if (ws_client.is_connected) {
-                ctx.state = .authenticating;
-                next_ping_at_ms = 0;
-                startReadThread(&read_loop, &read_thread) catch |err| {
-                    logger.err("Failed to start read thread: {}", .{err});
-                };
+            if (!started) {
+                logger.warn("Connect attempt already in progress", .{});
             }
         }
 
         if (ui_action.disconnect) {
+            connect_job.requestCancel();
             stopReadThread(&read_loop, &read_thread);
-            ws_client.disconnect();
+            if (!connect_job.isRunning()) {
+                ws_client.disconnect();
+            }
             should_reconnect = false;
             next_reconnect_at_ms = 0;
             reconnect_backoff_ms = 500;
@@ -544,6 +731,37 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
             }
         }
 
+        if (connect_job.takeResult()) |result| {
+            if (result.canceled) {
+                if (result.err) |err_msg| {
+                    allocator.free(err_msg);
+                }
+                ws_client.disconnect();
+                ctx.state = .disconnected;
+                ctx.clearError();
+                next_ping_at_ms = 0;
+            } else if (result.ok) {
+                ctx.clearError();
+                ctx.state = .authenticating;
+                next_ping_at_ms = 0;
+                startReadThread(&read_loop, &read_thread) catch |err| {
+                    logger.err("Failed to start read thread: {}", .{err});
+                };
+            } else {
+                ctx.state = .error_state;
+                if (result.err) |err_msg| {
+                    ctx.setError(err_msg) catch {};
+                    allocator.free(err_msg);
+                }
+                if (should_reconnect) {
+                    const now_ms = std.time.milliTimestamp();
+                    next_reconnect_at_ms = now_ms + reconnect_backoff_ms;
+                    const grown = reconnect_backoff_ms + reconnect_backoff_ms / 2;
+                    reconnect_backoff_ms = if (grown > 15_000) 15_000 else grown;
+                }
+            }
+        }
+
         if (should_reconnect and !ws_client.is_connected and read_thread == null) {
             const now_ms = std.time.milliTimestamp();
             if (next_reconnect_at_ms == 0 or now_ms >= next_reconnect_at_ms) {
@@ -551,24 +769,17 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
                 ws_client.url = cfg.server_url;
                 ws_client.token = cfg.token;
                 ws_client.insecure_tls = cfg.insecure_tls;
-                ws_client.connect() catch |err| {
-                    logger.err("WebSocket reconnect failed: {}", .{err});
-                    ctx.state = .error_state;
-                };
-                if (ws_client.is_connected) {
-                    ctx.clearError();
-                    ctx.state = .authenticating;
-                    reconnect_backoff_ms = 500;
-                    next_reconnect_at_ms = 0;
-                    next_ping_at_ms = 0;
-                    startReadThread(&read_loop, &read_thread) catch |err| {
-                        logger.err("Failed to start read thread: {}", .{err});
+                ws_client.connect_host_override = cfg.connect_host_override;
+                if (!connect_job.isRunning()) {
+                    const started = connect_job.start() catch blk: {
+                        break :blk false;
                     };
-                } else {
-                    next_reconnect_at_ms = now_ms + reconnect_backoff_ms;
-                    const grown = reconnect_backoff_ms + reconnect_backoff_ms / 2;
-                    reconnect_backoff_ms = if (grown > 15_000) 15_000 else grown;
-                    logger.info("Reconnect scheduled in {d}ms", .{reconnect_backoff_ms});
+                    if (!started) {
+                        next_reconnect_at_ms = now_ms + reconnect_backoff_ms;
+                        const grown = reconnect_backoff_ms + reconnect_backoff_ms / 2;
+                        reconnect_backoff_ms = if (grown > 15_000) 15_000 else grown;
+                        logger.info("Reconnect scheduled in {d}ms", .{reconnect_backoff_ms});
+                    }
                 }
             }
         }

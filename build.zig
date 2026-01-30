@@ -232,7 +232,7 @@ pub fn build(b: *std.Build) void {
                 .use_preload_plugins = false,
                 .embed_paths = null,
                 .preload_paths = null,
-                .shell_file_path = null,
+                .shell_file_path = b.path("web/shell.html"),
                 .js_library_path = null,
                 .out_file_name = "moltbot-client.html",
                 .install_dir = .{ .custom = "web" },

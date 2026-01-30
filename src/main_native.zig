@@ -279,7 +279,13 @@ pub fn main() !void {
     var cfg = try config.loadOrDefault(allocator, "moltbot_config.json");
     defer cfg.deinit(allocator);
 
-    var ws_client = websocket_client.WebSocketClient.init(allocator, cfg.server_url, cfg.token, cfg.insecure_tls);
+    var ws_client = websocket_client.WebSocketClient.init(
+        allocator,
+        cfg.server_url,
+        cfg.token,
+        cfg.insecure_tls,
+        cfg.connect_host_override,
+    );
     ws_client.setReadTimeout(15_000);
     defer ws_client.deinit();
 
@@ -420,9 +426,10 @@ pub fn main() !void {
         const ui_action = ui.draw(allocator, &ctx, &cfg, ws_client.is_connected);
 
         if (ui_action.config_updated) {
-            ws_client.url = cfg.server_url;
-            ws_client.token = cfg.token;
-            ws_client.insecure_tls = cfg.insecure_tls;
+        ws_client.url = cfg.server_url;
+        ws_client.token = cfg.token;
+        ws_client.insecure_tls = cfg.insecure_tls;
+        ws_client.connect_host_override = cfg.connect_host_override;
         }
 
         if (ui_action.save_config) {

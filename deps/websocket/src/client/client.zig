@@ -6,6 +6,7 @@ const ascii = std.ascii;
 const net = std.net;
 const posix = std.posix;
 const tls = std.crypto.tls;
+const builtin = @import("builtin");
 const log = std.log.scoped(.websocket);
 
 const Reader = proto.Reader;
@@ -56,6 +57,8 @@ pub const Client = struct {
     pub const Config = struct {
         port: u16,
         host: []const u8,
+        connect_host: ?[]const u8 = null,
+        connect_timeout_ms: ?u32 = null,
         tls: bool = false,
         verify_host: bool = true,
         verify_cert: bool = true,
@@ -85,7 +88,11 @@ pub const Client = struct {
             return error.InvalidConfiguraion;
         }
 
-        const net_stream = try net.tcpConnectToHost(allocator, config.host, config.port);
+        const connect_host = config.connect_host orelse config.host;
+        const net_stream = if (config.connect_timeout_ms) |timeout_ms|
+            try tcpConnectToHostWithTimeout(allocator, connect_host, config.port, timeout_ms)
+        else
+            try net.tcpConnectToHost(allocator, connect_host, config.port);
 
         var tls_client: ?*TLSClient = null;
         if (config.tls) {
@@ -394,22 +401,96 @@ pub const Client = struct {
     }
 };
 
+fn tcpConnectToHostWithTimeout(
+    allocator: Allocator,
+    name: []const u8,
+    port: u16,
+    timeout_ms: u32,
+) net.TcpConnectToHostError!net.Stream {
+    if (builtin.target.os.tag == .windows) {
+        return net.tcpConnectToHost(allocator, name, port);
+    }
+
+    const list = try net.getAddressList(allocator, name, port);
+    defer list.deinit();
+
+    if (list.addrs.len == 0) return error.UnknownHostName;
+
+    for (list.addrs) |addr| {
+        return tcpConnectToAddressWithTimeout(addr, timeout_ms) catch |err| switch (err) {
+            error.ConnectionRefused => continue,
+            error.ConnectionTimedOut => continue,
+            else => return err,
+        };
+    }
+    return posix.ConnectError.ConnectionRefused;
+}
+
+fn tcpConnectToAddressWithTimeout(
+    address: net.Address,
+    timeout_ms: u32,
+) net.TcpConnectToAddressError!net.Stream {
+    const nonblock = posix.SOCK.NONBLOCK;
+    const sock_flags = posix.SOCK.STREAM | nonblock |
+        (if (builtin.target.os.tag == .windows) 0 else posix.SOCK.CLOEXEC);
+    const sockfd = try posix.socket(address.any.family, sock_flags, posix.IPPROTO.TCP);
+    errdefer net.Stream.close(.{ .handle = sockfd });
+
+    posix.connect(sockfd, &address.any, address.getOsSockLen()) catch |err| switch (err) {
+        error.WouldBlock, error.ConnectionPending => {},
+        else => return err,
+    };
+
+    var fds = [_]posix.pollfd{.{ .fd = sockfd, .events = posix.POLL.OUT, .revents = 0 }};
+    const timeout_i32: i32 = @intCast(timeout_ms);
+    const rc = posix.poll(fds[0..], timeout_i32) catch |err| switch (err) {
+        error.NetworkSubsystemFailed => return error.NetworkUnreachable,
+        error.SystemResources => return error.SystemResources,
+        error.Unexpected => return error.Unexpected,
+    };
+    if (rc == 0) return error.ConnectionTimedOut;
+
+    try posix.getsockoptError(sockfd);
+
+    const flags = posix.fcntl(sockfd, posix.F.GETFL, 0) catch |err| switch (err) {
+        error.PermissionDenied => return error.PermissionDenied,
+        error.ProcessFdQuotaExceeded => return error.ProcessFdQuotaExceeded,
+        else => return error.SystemResources,
+    };
+    const nonblock_mask_u32: u32 = @bitCast(posix.O{ .NONBLOCK = true });
+    const nonblock_mask: usize = @as(usize, nonblock_mask_u32);
+    _ = posix.fcntl(sockfd, posix.F.SETFL, flags & ~nonblock_mask) catch |err| switch (err) {
+        error.PermissionDenied => return error.PermissionDenied,
+        error.ProcessFdQuotaExceeded => return error.ProcessFdQuotaExceeded,
+        else => return error.SystemResources,
+    };
+
+    return net.Stream{ .handle = sockfd };
+}
+
 // wraps a net.Stream and optional a tls.Client
 pub const Stream = struct {
     stream: net.Stream,
     tls_client: ?*TLSClient = null,
+    closed: bool = false,
 
     pub fn init(stream: net.Stream, tls_client: ?*TLSClient) Stream {
         return .{
             .stream = stream,
             .tls_client = tls_client,
+            .closed = false,
         };
     }
 
     pub fn close(self: *Stream) void {
+        if (self.closed) return;
+        self.closed = true;
         const fd = self.stream.handle;
-        const builtin = @import("builtin");
         const native_os = builtin.os.tag;
+
+        if (native_os != .windows and @as(i64, fd) < 0) {
+            return;
+        }
 
         if (self.tls_client) |tls_client| {
             // Shutdown the socket first, so readLoop() can exit, before tls_client's buffers are freed

@@ -161,6 +161,7 @@ void     ImGui_ImplSDL2_NewFrame();
 bool     ImGui_ImplSDL2_ProcessEvent(const SDL_Event* event);
 float    ImGui_ImplSDL2_GetContentScaleForWindow(SDL_Window* window);
 float    ImGui_ImplSDL2_GetContentScaleForDisplay(int display_index);
+IMGUI_IMPL_API void ImGui_ImplSDL2_SetSafeOffset(float x, float y);
 
 }
 
@@ -199,6 +200,15 @@ struct ImGui_ImplSDL2_Data
     ImGui_ImplSDL2_Data()   { memset((void*)this, 0, sizeof(*this)); }
 };
 
+static float g_Molt_SafeOffsetX = 0.0f;
+static float g_Molt_SafeOffsetY = 0.0f;
+
+IMGUI_IMPL_API void ImGui_ImplSDL2_SetSafeOffset(float x, float y)
+{
+    g_Molt_SafeOffsetX = x;
+    g_Molt_SafeOffsetY = y;
+}
+
 // Backend data stored in io.BackendPlatformUserData to allow support for multiple Dear ImGui contexts
 // It is STRONGLY preferred that you use docking branch with multi-viewports (== single Dear ImGui context + multiple windows) instead of multiple Dear ImGui contexts.
 // FIXME: multi-context support is not well tested and probably dysfunctional in this backend.
@@ -234,8 +244,8 @@ static void ImGui_ImplSDL2_PlatformSetImeData(ImGuiContext*, ImGuiViewport* view
     if (data->WantVisible)
     {
         SDL_Rect r;
-        r.x = (int)(data->InputPos.x - viewport->Pos.x);
-        r.y = (int)(data->InputPos.y - viewport->Pos.y + data->InputLineHeight);
+        r.x = (int)(data->InputPos.x - viewport->Pos.x + g_Molt_SafeOffsetX);
+        r.y = (int)(data->InputPos.y - viewport->Pos.y + data->InputLineHeight + g_Molt_SafeOffsetY);
         r.w = 1;
         r.h = (int)data->InputLineHeight;
         SDL_SetTextInputRect(&r);

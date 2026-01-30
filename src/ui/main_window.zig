@@ -1,5 +1,6 @@
 const std = @import("std");
 const zgui = @import("zgui");
+const builtin = @import("builtin");
 const state = @import("../client/state.zig");
 const config = @import("../client/config.zig");
 const chat_view = @import("chat_view.zig");
@@ -19,6 +20,12 @@ pub const UiAction = struct {
     select_session: ?[]u8 = null,
 };
 
+var safe_insets: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };
+
+pub fn setSafeInsets(left: f32, top: f32, right: f32, bottom: f32) void {
+    safe_insets = .{ left, top, right, bottom };
+}
+
 pub fn draw(
     allocator: std.mem.Allocator,
     ctx: *state.ClientContext,
@@ -29,25 +36,44 @@ pub fn draw(
 
     const display = zgui.io.getDisplaySize();
     if (display[0] > 0.0 and display[1] > 0.0) {
-        zgui.setNextWindowPos(.{ .x = 0.0, .y = 0.0, .cond = .always });
-        zgui.setNextWindowSize(.{ .w = display[0], .h = display[1], .cond = .always });
+        const left = safe_insets[0];
+        const top = safe_insets[1];
+        const right = safe_insets[2];
+        const bottom = safe_insets[3];
+        const width = @max(1.0, display[0] - left - right);
+        const extra_bottom: f32 = if (builtin.abi == .android) 24.0 else 0.0;
+        const height = @max(1.0, display[1] - top - bottom - extra_bottom);
+        zgui.setNextWindowPos(.{ .x = left, .y = top, .cond = .always });
+        zgui.setNextWindowSize(.{ .w = width, .h = height, .cond = .always });
     }
 
-    if (zgui.begin("MoltBot Client", .{ .flags = .{ .no_collapse = true, .no_saved_settings = true } })) {
-        zgui.text("MoltBot Zig Client (ImGui)", .{});
-        zgui.separator();
+    const compact_header = builtin.abi == .android or (display[1] > 0.0 and display[1] < 720.0);
+    var flags = zgui.WindowFlags{ .no_collapse = true, .no_saved_settings = true };
+    if (compact_header) {
+        flags.no_title_bar = true;
+        flags.no_scrollbar = true;
+        flags.no_scroll_with_mouse = true;
+    }
+
+    if (zgui.begin("MoltBot Client", .{ .flags = flags })) {
+        if (!compact_header) {
+            zgui.text("MoltBot Zig Client (ImGui)", .{});
+            zgui.separator();
+        }
 
         const style = zgui.getStyle();
         const spacing_x = style.item_spacing[0];
         const spacing_y = style.item_spacing[1];
         const avail = zgui.getContentRegionAvail();
-        const left_width: f32 = 240.0;
-        const right_width: f32 = 320.0;
+        const status_height = zgui.getFrameHeightWithSpacing();
+        const usable_h = @max(1.0, avail[1] - status_height - spacing_y);
+        const left_width: f32 = if (builtin.abi == .android) 220.0 else 240.0;
+        const right_width: f32 = if (builtin.abi == .android) 360.0 else 320.0;
         const min_center_width: f32 = 160.0;
         const compact_layout = avail[0] < left_width + right_width + spacing_x * 2.0 + min_center_width;
 
         if (compact_layout) {
-            const total_h = avail[1];
+            const total_h = usable_h;
             const sessions_h = @min(200.0, total_h * 0.25);
             const settings_h = @min(220.0, total_h * 0.3);
             const chat_h = @max(140.0, total_h - sessions_h - settings_h - spacing_y * 2.0);
@@ -88,7 +114,7 @@ pub fn draw(
         } else {
             const center_width = @max(min_center_width, avail[0] - left_width - right_width - spacing_x * 2.0);
 
-            if (zgui.beginChild("LeftPanel", .{ .w = left_width, .child_flags = .{ .border = true } })) {
+            if (zgui.beginChild("LeftPanel", .{ .w = left_width, .h = usable_h, .child_flags = .{ .border = true } })) {
                 const sessions_action = session_list.draw(
                     allocator,
                     ctx.sessions.items,
@@ -102,7 +128,7 @@ pub fn draw(
 
             zgui.sameLine(.{});
 
-            if (zgui.beginChild("CenterPanel", .{ .w = center_width, .child_flags = .{ .border = true } })) {
+            if (zgui.beginChild("CenterPanel", .{ .w = center_width, .h = usable_h, .child_flags = .{ .border = true } })) {
                 const center_avail = zgui.getContentRegionAvail();
                 const input_height: f32 = 96.0;
                 const history_height = @max(80.0, center_avail[1] - input_height - spacing_y);
@@ -116,7 +142,7 @@ pub fn draw(
 
             zgui.sameLine(.{});
 
-            if (zgui.beginChild("RightPanel", .{ .w = right_width, .child_flags = .{ .border = true } })) {
+            if (zgui.beginChild("RightPanel", .{ .w = right_width, .h = usable_h, .child_flags = .{ .border = true } })) {
                 const settings_action = settings_view.draw(allocator, cfg, ctx.state, is_connected);
                 action.connect = settings_action.connect;
                 action.disconnect = settings_action.disconnect;

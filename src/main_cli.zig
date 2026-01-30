@@ -124,7 +124,13 @@ pub fn main() !void {
         return error.InvalidArguments;
     }
 
-    var ws_client = websocket_client.WebSocketClient.init(allocator, cfg.server_url, cfg.token, cfg.insecure_tls);
+    var ws_client = websocket_client.WebSocketClient.init(
+        allocator,
+        cfg.server_url,
+        cfg.token,
+        cfg.insecure_tls,
+        cfg.connect_host_override,
+    );
     ws_client.setReadTimeout(read_timeout_ms);
     defer ws_client.deinit();
 

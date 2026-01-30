@@ -272,6 +272,14 @@ fn loadConfigFromStorage() !config.Config {
                 cfg_local.insecure_tls = value.bool;
             }
         }
+        if (obj.get("connect_host_override")) |value| {
+            if (value == .string) {
+                if (cfg_local.connect_host_override) |prev| {
+                    allocator.free(prev);
+                }
+                cfg_local.connect_host_override = try allocator.dupe(u8, value.string);
+            }
+        }
     }
     if (builtin.target.os.tag == .emscripten) {
         cfg_local.insecure_tls = false;

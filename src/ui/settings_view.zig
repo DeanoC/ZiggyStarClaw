@@ -14,6 +14,7 @@ pub const SettingsAction = struct {
 
 var server_buf: [256:0]u8 = [_:0]u8{0} ** 256;
 var token_buf: [256:0]u8 = [_:0]u8{0} ** 256;
+var connect_host_buf: [256:0]u8 = [_:0]u8{0} ** 256;
 var insecure_tls_value = false;
 var initialized = false;
 
@@ -34,6 +35,8 @@ pub fn draw(
         zgui.text("Connection", .{});
 
         _ = zgui.inputText("Server URL", .{ .buf = server_buf[0.. :0] });
+        _ = zgui.inputText("Connect Host (override)", .{ .buf = connect_host_buf[0.. :0] });
+        zgui.textWrapped("Override can include :port (e.g. 100.108.141.120:18789).", .{});
         _ = zgui.inputText("Token", .{ .buf = token_buf[0.. :0], .flags = .{ .password = true } });
         if (show_insecure_tls) {
             _ = zgui.checkbox(
@@ -43,14 +46,16 @@ pub fn draw(
         }
 
         const server_text = std.mem.sliceTo(&server_buf, 0);
+        const connect_host_text = std.mem.sliceTo(&connect_host_buf, 0);
         const token_text = std.mem.sliceTo(&token_buf, 0);
         const dirty = !std.mem.eql(u8, server_text, cfg.server_url) or
             !std.mem.eql(u8, token_text, cfg.token) or
+            !std.mem.eql(u8, connect_host_text, cfg.connect_host_override orelse "") or
             (show_insecure_tls and insecure_tls_value != cfg.insecure_tls);
 
         zgui.beginDisabled(.{ .disabled = !dirty });
         if (zgui.button("Apply", .{})) {
-            if (applyConfig(allocator, cfg, server_text, token_text)) {
+            if (applyConfig(allocator, cfg, server_text, connect_host_text, token_text)) {
                 action.config_updated = true;
             }
         }
@@ -73,7 +78,7 @@ pub fn draw(
             }
         } else {
             if (zgui.button("Connect", .{})) {
-                if (dirty and applyConfig(allocator, cfg, server_text, token_text)) {
+                if (dirty and applyConfig(allocator, cfg, server_text, connect_host_text, token_text)) {
                     action.config_updated = true;
                 }
                 action.connect = true;
@@ -93,6 +98,7 @@ pub fn syncFromConfig(cfg: config.Config) void {
 fn syncBuffers(cfg: config.Config) void {
     initialized = true;
     fillBuffer(&server_buf, cfg.server_url);
+    fillBuffer(&connect_host_buf, cfg.connect_host_override orelse "");
     fillBuffer(&token_buf, cfg.token);
     insecure_tls_value = cfg.insecure_tls;
 }
@@ -108,6 +114,7 @@ fn applyConfig(
     allocator: std.mem.Allocator,
     cfg: *config.Config,
     server_text: []const u8,
+    connect_host_text: []const u8,
     token_text: []const u8,
 ) bool {
     var changed = false;
@@ -123,6 +130,18 @@ fn applyConfig(
         const new_value = allocator.dupe(u8, token_text) catch return changed;
         allocator.free(cfg.token);
         cfg.token = new_value;
+        changed = true;
+    }
+
+    const current_connect = cfg.connect_host_override orelse "";
+    if (!std.mem.eql(u8, current_connect, connect_host_text)) {
+        if (cfg.connect_host_override) |value| {
+            allocator.free(value);
+            cfg.connect_host_override = null;
+        }
+        if (connect_host_text.len > 0) {
+            cfg.connect_host_override = allocator.dupe(u8, connect_host_text) catch return changed;
+        }
         changed = true;
     }
 

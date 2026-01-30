@@ -12,6 +12,8 @@ pub const WebSocketClient = struct {
     url: []const u8,
     token: []const u8,
     insecure_tls: bool = false,
+    connect_host_override: ?[]const u8 = null,
+    connect_timeout_ms: u32 = 10_000,
     is_connected: bool = false,
     client: ?ws.Client = null,
     read_timeout_ms: u32 = 1,
@@ -20,12 +22,19 @@ pub const WebSocketClient = struct {
     connect_sent: bool = false,
     use_device_identity: bool = true,
 
-    pub fn init(allocator: std.mem.Allocator, url: []const u8, token: []const u8, insecure_tls: bool) WebSocketClient {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        url: []const u8,
+        token: []const u8,
+        insecure_tls: bool,
+        connect_host_override: ?[]const u8,
+    ) WebSocketClient {
         return .{
             .allocator = allocator,
             .url = url,
             .token = token,
             .insecure_tls = insecure_tls,
+            .connect_host_override = connect_host_override,
         };
     }
 
@@ -63,9 +72,21 @@ pub const WebSocketClient = struct {
         const aa = arena.allocator();
 
         const parsed = try parseServerUrl(aa, self.url);
+        var connect_host: ?[]const u8 = null;
+        var connect_port: u16 = parsed.port;
+        if (self.connect_host_override) |override| {
+            const trimmed = std.mem.trim(u8, override, " \t\r\n");
+            if (trimmed.len > 0) {
+                const parsed_override = parseConnectOverride(trimmed, parsed.port);
+                connect_host = parsed_override.host;
+                connect_port = parsed_override.port;
+            }
+        }
         var client = try ws.Client.init(self.allocator, .{
-            .port = parsed.port,
+            .port = connect_port,
             .host = parsed.host,
+            .connect_host = connect_host,
+            .connect_timeout_ms = self.connect_timeout_ms,
             .tls = parsed.tls,
             .verify_host = !self.insecure_tls,
             .verify_cert = !self.insecure_tls,
@@ -423,4 +444,38 @@ fn buildHeaders(allocator: std.mem.Allocator, host_header: []const u8, origin: [
         try writer.print("\r\nAuthorization: Bearer {s}", .{token});
     }
     return list.toOwnedSlice(allocator);
+}
+
+const ConnectOverride = struct {
+    host: []const u8,
+    port: u16,
+};
+
+fn parseConnectOverride(value: []const u8, default_port: u16) ConnectOverride {
+    if (value.len == 0) {
+        return .{ .host = value, .port = default_port };
+    }
+
+    if (value[0] == '[') {
+        if (std.mem.indexOfScalar(u8, value, ']')) |end_idx| {
+            const host = value[1..end_idx];
+            if (end_idx + 1 < value.len and value[end_idx + 1] == ':') {
+                const port_str = value[end_idx + 2 ..];
+                const port = std.fmt.parseInt(u16, port_str, 10) catch default_port;
+                return .{ .host = host, .port = port };
+            }
+            return .{ .host = host, .port = default_port };
+        }
+    }
+
+    if (std.mem.lastIndexOfScalar(u8, value, ':')) |idx| {
+        const host_part = value[0..idx];
+        const port_part = value[idx + 1 ..];
+        if (host_part.len > 0 and port_part.len > 0) {
+            const port = std.fmt.parseInt(u16, port_part, 10) catch default_port;
+            return .{ .host = host_part, .port = port };
+        }
+    }
+
+    return .{ .host = value, .port = default_port };
 }
