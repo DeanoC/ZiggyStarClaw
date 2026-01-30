@@ -426,10 +426,10 @@ pub fn main() !void {
         const ui_action = ui.draw(allocator, &ctx, &cfg, ws_client.is_connected);
 
         if (ui_action.config_updated) {
-        ws_client.url = cfg.server_url;
-        ws_client.token = cfg.token;
-        ws_client.insecure_tls = cfg.insecure_tls;
-        ws_client.connect_host_override = cfg.connect_host_override;
+            ws_client.url = cfg.server_url;
+            ws_client.token = cfg.token;
+            ws_client.insecure_tls = cfg.insecure_tls;
+            ws_client.connect_host_override = cfg.connect_host_override;
         }
 
         if (ui_action.save_config) {
@@ -441,12 +441,13 @@ pub fn main() !void {
             cfg.deinit(allocator);
             cfg = config.initDefault(allocator) catch |err| {
                 logger.err("Failed to reset config: {}", .{err});
-                cfg = config.initDefault(allocator) catch return;
+                return;
             };
             _ = std.fs.cwd().deleteFile("moltbot_config.json") catch {};
             ws_client.url = cfg.server_url;
             ws_client.token = cfg.token;
             ws_client.insecure_tls = cfg.insecure_tls;
+            ws_client.connect_host_override = cfg.connect_host_override;
             ui.syncSettings(cfg);
         }
 
@@ -456,6 +457,7 @@ pub fn main() !void {
             ws_client.url = cfg.server_url;
             ws_client.token = cfg.token;
             ws_client.insecure_tls = cfg.insecure_tls;
+            ws_client.connect_host_override = cfg.connect_host_override;
             should_reconnect = true;
             reconnect_backoff_ms = 500;
             next_reconnect_at_ms = 0;
