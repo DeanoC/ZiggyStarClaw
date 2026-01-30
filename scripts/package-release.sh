@@ -32,9 +32,9 @@ done
 if [[ -n "${VERSION_OVERRIDE}" ]]; then
   VERSION="${VERSION_OVERRIDE}"
 else
-  VERSION="$(python3 - <<'PY'
+  VERSION="$(python3 - <<PY
 import re, pathlib
-data = pathlib.Path("build.zig.zon").read_text(encoding="utf-8")
+data = pathlib.Path("${ROOT_DIR}/build.zig.zon").read_text(encoding="utf-8")
 m = re.search(r'\\.version\\s*=\\s*\"([^\"]+)\"', data)
 if not m:
     raise SystemExit("Could not parse version from build.zig.zon")

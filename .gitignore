@@ -1,5 +1,6 @@
 .zig-cache/
 zig-out/
+dist/
 .tools/
 .DS_Store
 *.log
