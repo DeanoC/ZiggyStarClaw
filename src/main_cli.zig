@@ -4,6 +4,9 @@ const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
 const websocket_client = @import("openclaw_transport.zig").websocket;
 const logger = @import("utils/logger.zig");
+const chat = @import("protocol/chat.zig");
+const requests = @import("protocol/requests.zig");
+const messages = @import("protocol/messages.zig");
 
 const usage =
     \\ZiggyStarClaw CLI (debug)
@@ -17,6 +20,8 @@ const usage =
     \\  --config <path>          Config file path (default: ziggystarclaw_config.json)
     \\  --insecure-tls           Disable TLS verification
     \\  --read-timeout-ms <ms>   Socket read timeout in milliseconds (default: 15000)
+    \\  --send <message>         Send a chat message and exit
+    \\  --session <key>          Target session for send (uses first available if not set)
     \\  -h, --help               Show help
     \\
 ;
@@ -37,6 +42,8 @@ pub fn main() !void {
     var override_token: ?[]const u8 = null;
     var override_insecure: ?bool = null;
     var read_timeout_ms: u32 = 15_000;
+    var send_message: ?[]const u8 = null;
+    var session_key: ?[]const u8 = null;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -63,6 +70,14 @@ pub fn main() !void {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             read_timeout_ms = try std.fmt.parseInt(u32, args[i], 10);
+        } else if (std.mem.eql(u8, arg, "--send")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            send_message = args[i];
+        } else if (std.mem.eql(u8, arg, "--session")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            session_key = args[i];
         } else {
             logger.warn("Unknown argument: {s}", .{arg});
         }
@@ -140,6 +155,66 @@ pub fn main() !void {
     var ctx = try client_state.ClientContext.init(allocator);
     defer ctx.deinit();
 
+    // If we're sending a message, wait for connection then send
+    if (send_message) |message| {
+        // Wait for connection to be established
+        var attempts: u32 = 0;
+        while (ctx.state != .connected and attempts < 100) : (attempts += 1) {
+            if (!ws_client.is_connected) {
+                logger.err("Disconnected before send.", .{});
+                return error.NotConnected;
+            }
+            const payload = ws_client.receive() catch |err| {
+                logger.err("WebSocket receive failed: {s}", .{@errorName(err)});
+                ws_client.disconnect();
+                return err;
+            };
+            if (payload) |text| {
+                defer allocator.free(text);
+                const update = event_handler.handleRawMessage(&ctx, text) catch |err| blk: {
+                    logger.warn("Error handling message: {s}", .{@errorName(err)});
+                    break :blk null;
+                };
+                if (update) |auth_update| {
+                    defer auth_update.deinit(allocator);
+                    ws_client.storeDeviceToken(
+                        auth_update.device_token,
+                        auth_update.role,
+                        auth_update.scopes,
+                        auth_update.issued_at_ms,
+                    ) catch |err| {
+                        logger.warn("Failed to store device token: {s}", .{@errorName(err)});
+                    };
+                }
+            } else {
+                std.Thread.sleep(50 * std.time.ns_per_ms);
+            }
+        }
+
+        if (ctx.state != .connected) {
+            logger.err("Failed to connect within timeout.", .{});
+            return error.ConnectionTimeout;
+        }
+
+        // Determine session key
+        const target_session = session_key orelse blk: {
+            if (ctx.sessions.items.len == 0) {
+                logger.err("No sessions available. Use --session to specify one.", .{});
+                return error.NoSessionAvailable;
+            }
+            break :blk ctx.sessions.items[0].key;
+        };
+
+        // Send the message
+        try sendChatMessage(allocator, &ws_client, target_session, message);
+        
+        // Wait briefly for response then exit
+        std.Thread.sleep(500 * std.time.ns_per_ms);
+        logger.info("Message sent successfully.", .{});
+        return;
+    }
+
+    // Normal receive loop
     while (true) {
         if (!ws_client.is_connected) {
             logger.warn("Disconnected.", .{});
@@ -173,6 +248,31 @@ pub fn main() !void {
             std.Thread.sleep(100 * std.time.ns_per_ms);
         }
     }
+}
+
+fn sendChatMessage(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    session_key: []const u8,
+    message: []const u8,
+) !void {
+    const idempotency_key = try requests.makeRequestId(allocator);
+    defer allocator.free(idempotency_key);
+
+    const params = chat.ChatSendParams{
+        .sessionKey = session_key,
+        .message = message,
+        .idempotencyKey = idempotency_key,
+    };
+
+    const request = try requests.buildRequestPayload(allocator, "chat.send", params);
+    defer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    logger.info("Sending message to session {s}: {s}", .{ session_key, message });
+    try ws_client.send(request.payload);
 }
 
 fn initLogging(allocator: std.mem.Allocator) !void {
