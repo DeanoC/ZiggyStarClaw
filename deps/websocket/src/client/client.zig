@@ -7,6 +7,7 @@ const net = std.net;
 const posix = std.posix;
 const tls = std.crypto.tls;
 const builtin = @import("builtin");
+const windows = std.os.windows;
 const log = std.log.scoped(.websocket);
 
 const Reader = proto.Reader;
@@ -258,7 +259,7 @@ pub const Client = struct {
             } orelse {
                 reader.fill(stream) catch |err| switch (err) {
                     error.WouldBlock => return null,
-                    error.Closed, error.ConnectionResetByPeer, error.BrokenPipe, error.NotOpenForReading => {
+                    error.Closed, error.ConnectionResetByPeer => {
                         @atomicStore(bool, &self._closed, true, .monotonic);
                         return error.Closed;
                     },
@@ -530,6 +531,9 @@ pub const Stream = struct {
                 }
             }
         }
+        if (builtin.target.os.tag == .windows) {
+            return readWindows(self.stream.handle, buf);
+        }
         return self.stream.read(buf);
     }
 
@@ -570,6 +574,60 @@ pub const Stream = struct {
         return posix.setsockopt(self.stream.handle, posix.SOL.SOCKET, opt_name, value);
     }
 };
+
+fn readWindows(socket: windows.ws2_32.SOCKET, buf: []u8) !usize {
+    if (buf.len == 0) return 0;
+
+    const wsabuf = windows.ws2_32.WSABUF{
+        .len = @intCast(buf.len),
+        .buf = buf.ptr,
+    };
+    const wsabufs = [_]windows.ws2_32.WSABUF{wsabuf};
+    var flags: u32 = 0;
+    var overlapped: windows.OVERLAPPED = std.mem.zeroes(windows.OVERLAPPED);
+    var n: u32 = 0;
+
+    if (windows.ws2_32.WSARecv(
+        socket,
+        @constCast(wsabufs[0..].ptr),
+        @intCast(wsabufs.len),
+        &n,
+        &flags,
+        &overlapped,
+        null,
+    ) == windows.ws2_32.SOCKET_ERROR) switch (windows.ws2_32.WSAGetLastError()) {
+        .WSA_IO_PENDING => {
+            var result_flags: u32 = undefined;
+            if (windows.ws2_32.WSAGetOverlappedResult(
+                socket,
+                &overlapped,
+                &n,
+                windows.TRUE,
+                &result_flags,
+            ) == windows.FALSE) try mapRecvError(windows.ws2_32.WSAGetLastError());
+        },
+        else => |err| try mapRecvError(err),
+    };
+
+    return @intCast(n);
+}
+
+fn mapRecvError(err: windows.ws2_32.WinsockError) !void {
+    switch (err) {
+        .WSAECONNRESET => return error.ConnectionResetByPeer,
+        .WSAEINVAL => return error.SocketNotBound,
+        .WSAEMSGSIZE => return error.MessageTooBig,
+        .WSAENETDOWN => return error.NetworkSubsystemFailed,
+        .WSAENOTCONN => return error.SocketNotConnected,
+        .WSAEWOULDBLOCK => return error.WouldBlock,
+        .WSAEFAULT => unreachable,
+        .WSAEINPROGRESS, .WSAEINTR => unreachable,
+        .WSANOTINITIALISED => unreachable,
+        .WSA_IO_PENDING => unreachable,
+        .WSA_OPERATION_ABORTED => unreachable,
+        else => |winsock_err| return windows.unexpectedWSAError(winsock_err),
+    }
+}
 
 const TLSClient = struct {
     client: tls.Client,
