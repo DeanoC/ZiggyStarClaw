@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const glfw = @import("zglfw");
 const ui = @import("ui/main_window.zig");
-const imgui = @import("ui/imgui_wrapper.zig");
+const imgui_gl = @import("ui/imgui_wrapper.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
@@ -14,6 +14,13 @@ const requests = @import("protocol/requests.zig");
 const sessions_proto = @import("protocol/sessions.zig");
 const chat_proto = @import("protocol/chat.zig");
 const types = @import("protocol/types.zig");
+
+const use_webgpu = build_options.use_webgpu;
+const webgpu_renderer = if (use_webgpu) @import("client/renderer.zig") else struct {
+    pub const Renderer = struct {};
+    pub const depth_format_undefined: u32 = 0;
+};
+const imgui_wgpu = if (use_webgpu) @import("ui/imgui_wrapper_wgpu.zig") else struct {};
 
 const icon = @cImport({
     @cInclude("icon_loader.h");
@@ -461,37 +468,64 @@ pub fn main() !void {
     try glfw.init();
     defer glfw.terminate();
 
-    glfw.windowHint(.client_api, .opengl_api);
-    glfw.windowHint(.context_version_major, 3);
-    glfw.windowHint(.context_version_minor, 3);
-    glfw.windowHint(.opengl_profile, .opengl_core_profile);
-    if (builtin.os.tag == .macos) {
-        glfw.windowHint(.opengl_forward_compat, true);
+    if (use_webgpu) {
+        glfw.windowHint(.client_api, .no_api);
+    } else {
+        glfw.windowHint(.client_api, .opengl_api);
+        glfw.windowHint(.context_version_major, 3);
+        glfw.windowHint(.context_version_minor, 3);
+        glfw.windowHint(.opengl_profile, .opengl_core_profile);
+        if (builtin.os.tag == .macos) {
+            glfw.windowHint(.opengl_forward_compat, true);
+        }
     }
 
     const window = try glfw.Window.create(1280, 720, "ZiggyStarClaw", null, null);
     defer window.destroy();
     setWindowIcon(window);
 
-    glfw.makeContextCurrent(window);
-    glfw.swapInterval(1);
-    if (glfw.getCurrentContext() == null) {
-        logger.err("OpenGL context creation failed. If running under WSL, ensure WSLg or an X server with OpenGL is available.", .{});
-        return error.OpenGLContextUnavailable;
-    }
-    const missing = zgui_opengl_load();
-    if (missing != 0) {
-        logger.err("Failed to load {d} OpenGL function pointers via GLFW.", .{missing});
-        return error.OpenGLLoaderFailed;
-    }
+    var renderer: webgpu_renderer.Renderer = undefined;
+    if (use_webgpu) {
+        renderer = try webgpu_renderer.Renderer.init(allocator, window);
+        defer renderer.deinit();
 
-    imgui.init(allocator, window);
-    const scale = window.getContentScale();
-    const dpi_scale: f32 = @max(scale[0], scale[1]);
-    if (dpi_scale > 0.0) {
-        imgui.applyDpiScale(dpi_scale);
+        imgui_wgpu.init(
+            allocator,
+            window,
+            @ptrCast(renderer.gctx.device),
+            @intFromEnum(renderer.gctx.swapchain_descriptor.format),
+            webgpu_renderer.depth_format_undefined,
+        );
+        const scale = window.getContentScale();
+        const dpi_scale: f32 = @max(scale[0], scale[1]);
+        if (dpi_scale > 0.0) {
+            imgui_wgpu.applyDpiScale(dpi_scale);
+        }
+        defer imgui_wgpu.deinit();
+    } else {
+        glfw.makeContextCurrent(window);
+        glfw.swapInterval(1);
+        if (glfw.getCurrentContext() == null) {
+            logger.err(
+                "OpenGL context creation failed. If running under WSL, ensure WSLg or an X server with OpenGL is available.",
+                .{},
+            );
+            return error.OpenGLContextUnavailable;
+        }
+        const missing = zgui_opengl_load();
+        if (missing != 0) {
+            logger.err("Failed to load {d} OpenGL function pointers via GLFW.", .{missing});
+            return error.OpenGLLoaderFailed;
+        }
+
+        imgui_gl.init(allocator, window);
+        const scale = window.getContentScale();
+        const dpi_scale: f32 = @max(scale[0], scale[1]);
+        if (dpi_scale > 0.0) {
+            imgui_gl.applyDpiScale(dpi_scale);
+        }
+        defer imgui_gl.deinit();
     }
-    defer imgui.deinit();
 
     var ctx = try client_state.ClientContext.init(allocator);
     defer ctx.deinit();
@@ -527,17 +561,20 @@ pub fn main() !void {
             }
         }
 
-        const win = window.getSize();
-        const win_width: u32 = if (win[0] > 0) @intCast(win[0]) else 1;
-        const win_height: u32 = if (win[1] > 0) @intCast(win[1]) else 1;
-
         const fb = window.getFramebufferSize();
         const fb_width: u32 = if (fb[0] > 0) @intCast(fb[0]) else 1;
         const fb_height: u32 = if (fb[1] > 0) @intCast(fb[1]) else 1;
 
-        zgui_glViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-        zgui_glClearColor(0.08, 0.08, 0.1, 1.0);
-        zgui_glClear(0x00004000);
+        var win_width: u32 = 0;
+        var win_height: u32 = 0;
+        if (!use_webgpu) {
+            const win = window.getSize();
+            win_width = if (win[0] > 0) @intCast(win[0]) else 1;
+            win_height = if (win[1] > 0) @intCast(win[1]) else 1;
+            zgui_glViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
+            zgui_glClearColor(0.08, 0.08, 0.1, 1.0);
+            zgui_glClear(0x00004000);
+        }
 
         var drained = message_queue.drain();
         defer {
@@ -591,7 +628,11 @@ pub fn main() !void {
             next_ping_at_ms = 0;
         }
 
-        imgui.beginFrame(win_width, win_height, fb_width, fb_height);
+        if (use_webgpu) {
+            renderer.beginFrame(fb_width, fb_height);
+        } else {
+            imgui_gl.beginFrame(win_width, win_height, fb_width, fb_height);
+        }
         const ui_action = ui.draw(allocator, &ctx, &cfg, ws_client.is_connected, build_options.app_version);
 
         if (ui_action.config_updated) {
@@ -756,9 +797,12 @@ pub fn main() !void {
             }
         }
 
-        imgui.endFrame();
-
-        window.swapBuffers();
+        if (use_webgpu) {
+            renderer.render();
+        } else {
+            imgui_gl.endFrame();
+            window.swapBuffers();
+        }
     }
 }
 
