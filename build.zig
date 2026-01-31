@@ -25,6 +25,7 @@ pub fn build(b: *std.Build) void {
     }).module("websocket");
     app_module.addImport("websocket", ws_native);
 
+
     const zgui_pkg = blk: {
         if (use_webgpu) {
             break :blk b.dependency("zgui", .{
@@ -57,7 +58,6 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "websocket", .module = ws_native },
                 .{ .name = "zgui", .module = zgui_native },
                 .{ .name = "zglfw", .module = zglfw_native },
-                .{ .name = "ziggystarclaw", .module = app_module },
             },
         });
         native_module.addEmbedPath(b.path("assets/icons"));
@@ -144,7 +144,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "websocket", .module = ws_native },
-                .{ .name = "ziggystarclaw", .module = app_module },
             },
         });
 
