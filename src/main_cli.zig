@@ -6,6 +6,7 @@ const websocket_client = @import("openclaw_transport.zig").websocket;
 const logger = @import("utils/logger.zig");
 const chat = @import("protocol/chat.zig");
 const nodes_proto = @import("protocol/nodes.zig");
+const approvals_proto = @import("protocol/approvals.zig");
 const requests = @import("protocol/requests.zig");
 const messages = @import("protocol/messages.zig");
 
@@ -29,6 +30,9 @@ const usage =
     \\  --node <id>              Target node for run command
     \\  --use-node <id>          Set default node and exit
     \\  --run <command>          Run a command on the target node
+    \\  --list-approvals         List pending approvals and exit
+    \\  --approve <id>           Approve an exec request by ID
+    \\  --deny <id>              Deny an exec request by ID
     \\  --save-config            Save --url, --token, --use-session, --use-node to config file
     \\  -h, --help               Show help
     \\
@@ -58,6 +62,9 @@ pub fn main() !void {
     var node_id: ?[]const u8 = null;
     var use_node: ?[]const u8 = null;
     var run_command: ?[]const u8 = null;
+    var list_approvals = false;
+    var approve_id: ?[]const u8 = null;
+    var deny_id: ?[]const u8 = null;
     var save_config = false;
 
     var i: usize = 1;
@@ -113,6 +120,16 @@ pub fn main() !void {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             run_command = args[i];
+        } else if (std.mem.eql(u8, arg, "--list-approvals")) {
+            list_approvals = true;
+        } else if (std.mem.eql(u8, arg, "--approve")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            approve_id = args[i];
+        } else if (std.mem.eql(u8, arg, "--deny")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            deny_id = args[i];
         } else if (std.mem.eql(u8, arg, "--save-config")) {
             save_config = true;
         } else {
@@ -195,7 +212,7 @@ pub fn main() !void {
     }
 
     // Handle --save-config without connecting
-    if (save_config and !list_sessions and !list_nodes and send_message == null and run_command == null) {
+    if (save_config and !list_sessions and !list_nodes and !list_approvals and send_message == null and run_command == null and approve_id == null and deny_id == null) {
         try config.save(allocator, config_path, cfg);
         logger.info("Config saved to {s}", .{config_path});
         return;
@@ -257,9 +274,12 @@ pub fn main() !void {
             if (connected) {
                 if (list_sessions and have_sessions) break;
                 if (list_nodes and have_nodes) break;
+                if (list_approvals) break;
                 if (send_message != null and have_sessions) break;
                 if (run_command != null and have_nodes) break;
-                if (!list_sessions and !list_nodes and send_message == null and run_command == null) break;
+                if (approve_id != null) break;
+                if (deny_id != null) break;
+                if (!list_sessions and !list_nodes and !list_approvals and send_message == null and run_command == null and approve_id == null and deny_id == null) break;
             }
         } else {
             std.Thread.sleep(50 * std.time.ns_per_ms);
@@ -304,6 +324,26 @@ pub fn main() !void {
                 const platform = node.platform orelse "-";
                 const status = if (node.connected orelse false) "connected" else "disconnected";
                 try stdout.print("  {s} | {s} | {s} | {s}\n", .{ node.id, display, platform, status });
+            }
+        }
+        if (save_config) {
+            try config.save(allocator, config_path, cfg);
+            logger.info("Config saved to {s}", .{config_path});
+        }
+        return;
+    }
+
+    // Handle --list-approvals
+    if (list_approvals) {
+        var stdout = std.fs.File.stdout().deprecatedWriter();
+        try stdout.writeAll("Pending approvals:\n");
+        if (ctx.approvals.items.len == 0) {
+            try stdout.writeAll("  (no pending approvals)\n");
+        } else {
+            for (ctx.approvals.items) |approval| {
+                const summary = approval.summary orelse "(no summary)";
+                const can_resolve = if (approval.can_resolve) "Y" else "N";
+                try stdout.print("  {s} | {s} | resolve={s}\n", .{ approval.id, summary, can_resolve });
             }
         }
         if (save_config) {
@@ -380,6 +420,32 @@ pub fn main() !void {
         } else {
             logger.info("Command sent. Waiting for result timed out.", .{});
         }
+
+        if (save_config) {
+            try config.save(allocator, config_path, cfg);
+            logger.info("Config saved to {s}", .{config_path});
+        }
+        return;
+    }
+
+    // Handle --approve
+    if (approve_id) |id| {
+        try resolveApproval(allocator, &ws_client, id, "approve");
+        std.Thread.sleep(500 * std.time.ns_per_ms);
+        logger.info("Approval {s} approved.", .{id});
+
+        if (save_config) {
+            try config.save(allocator, config_path, cfg);
+            logger.info("Config saved to {s}", .{config_path});
+        }
+        return;
+    }
+
+    // Handle --deny
+    if (deny_id) |id| {
+        try resolveApproval(allocator, &ws_client, id, "deny");
+        std.Thread.sleep(500 * std.time.ns_per_ms);
+        logger.info("Approval {s} denied.", .{id});
 
         if (save_config) {
             try config.save(allocator, config_path, cfg);
@@ -495,6 +561,27 @@ fn runNodeCommand(
     }
 
     logger.info("Running command on node {s}: {s}", .{ target_node, command });
+    try ws_client.send(request.payload);
+}
+
+fn resolveApproval(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    approval_id: []const u8,
+    decision: []const u8,
+) !void {
+    const params = approvals_proto.ExecApprovalResolveParams{
+        .id = approval_id,
+        .decision = decision,
+    };
+
+    const request = try requests.buildRequestPayload(allocator, "exec.approval.resolve", params);
+    defer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    logger.info("Resolving approval {s} with decision: {s}", .{ approval_id, decision });
     try ws_client.send(request.payload);
 }
 
