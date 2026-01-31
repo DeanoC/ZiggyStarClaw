@@ -4,6 +4,10 @@ const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
 const websocket_client = @import("openclaw_transport.zig").websocket;
 const logger = @import("utils/logger.zig");
+const chat = @import("protocol/chat.zig");
+const nodes_proto = @import("protocol/nodes.zig");
+const requests = @import("protocol/requests.zig");
+const messages = @import("protocol/messages.zig");
 
 const usage =
     \\ZiggyStarClaw CLI (debug)
@@ -17,6 +21,15 @@ const usage =
     \\  --config <path>          Config file path (default: ziggystarclaw_config.json)
     \\  --insecure-tls           Disable TLS verification
     \\  --read-timeout-ms <ms>   Socket read timeout in milliseconds (default: 15000)
+    \\  --send <message>         Send a chat message and exit
+    \\  --session <key>          Target session for send (uses default if not set)
+    \\  --list-sessions          List available sessions and exit
+    \\  --use-session <key>      Set default session and exit
+    \\  --list-nodes             List available nodes and exit
+    \\  --node <id>              Target node for run command
+    \\  --use-node <id>          Set default node and exit
+    \\  --run <command>          Run a command on the target node
+    \\  --save-config            Save --url, --token, --use-session, --use-node to config file
     \\  -h, --help               Show help
     \\
 ;
@@ -37,6 +50,15 @@ pub fn main() !void {
     var override_token: ?[]const u8 = null;
     var override_insecure: ?bool = null;
     var read_timeout_ms: u32 = 15_000;
+    var send_message: ?[]const u8 = null;
+    var session_key: ?[]const u8 = null;
+    var list_sessions = false;
+    var use_session: ?[]const u8 = null;
+    var list_nodes = false;
+    var node_id: ?[]const u8 = null;
+    var use_node: ?[]const u8 = null;
+    var run_command: ?[]const u8 = null;
+    var save_config = false;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -63,6 +85,36 @@ pub fn main() !void {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             read_timeout_ms = try std.fmt.parseInt(u32, args[i], 10);
+        } else if (std.mem.eql(u8, arg, "--send")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            send_message = args[i];
+        } else if (std.mem.eql(u8, arg, "--session")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            session_key = args[i];
+        } else if (std.mem.eql(u8, arg, "--list-sessions")) {
+            list_sessions = true;
+        } else if (std.mem.eql(u8, arg, "--use-session")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            use_session = args[i];
+        } else if (std.mem.eql(u8, arg, "--list-nodes")) {
+            list_nodes = true;
+        } else if (std.mem.eql(u8, arg, "--node")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            node_id = args[i];
+        } else if (std.mem.eql(u8, arg, "--use-node")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            use_node = args[i];
+        } else if (std.mem.eql(u8, arg, "--run")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            run_command = args[i];
+        } else if (std.mem.eql(u8, arg, "--save-config")) {
+            save_config = true;
         } else {
             logger.warn("Unknown argument: {s}", .{arg});
         }
@@ -109,6 +161,18 @@ pub fn main() !void {
             cfg.insecure_tls = parseBool(value);
         }
     }
+    if (use_session) |key| {
+        if (cfg.default_session) |old| {
+            allocator.free(old);
+        }
+        cfg.default_session = try allocator.dupe(u8, key);
+    }
+    if (use_node) |id| {
+        if (cfg.default_node) |old| {
+            allocator.free(old);
+        }
+        cfg.default_node = try allocator.dupe(u8, id);
+    }
 
     const env_timeout = std.process.getEnvVarOwned(allocator, "MOLT_READ_TIMEOUT_MS") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => null,
@@ -122,6 +186,19 @@ pub fn main() !void {
     if (cfg.server_url.len == 0) {
         logger.err("Server URL is empty. Use --url or set it in {s}.", .{config_path});
         return error.InvalidArguments;
+    }
+
+    // Validate: --run requires --node
+    if (run_command != null and node_id == null) {
+        logger.err("--run requires --node to specify which node to run on.", .{});
+        return error.InvalidArguments;
+    }
+
+    // Handle --save-config without connecting
+    if (save_config and !list_sessions and !list_nodes and send_message == null and run_command == null) {
+        try config.save(allocator, config_path, cfg);
+        logger.info("Config saved to {s}", .{config_path});
+        return;
     }
 
     var ws_client = websocket_client.WebSocketClient.init(
@@ -140,6 +217,184 @@ pub fn main() !void {
     var ctx = try client_state.ClientContext.init(allocator);
     defer ctx.deinit();
 
+    // Wait for connection and data
+    var connected = false;
+    var attempts: u32 = 0;
+    while (attempts < 200) : (attempts += 1) {
+        if (!ws_client.is_connected) {
+            logger.err("Disconnected.", .{});
+            return error.NotConnected;
+        }
+
+        const payload = ws_client.receive() catch |err| {
+            logger.err("WebSocket receive failed: {s}", .{@errorName(err)});
+            ws_client.disconnect();
+            return err;
+        };
+        if (payload) |text| {
+            defer allocator.free(text);
+            const update = event_handler.handleRawMessage(&ctx, text) catch |err| blk: {
+                logger.warn("Error handling message: {s}", .{@errorName(err)});
+                break :blk null;
+            };
+            if (update) |auth_update| {
+                defer auth_update.deinit(allocator);
+                ws_client.storeDeviceToken(
+                    auth_update.device_token,
+                    auth_update.role,
+                    auth_update.scopes,
+                    auth_update.issued_at_ms,
+                ) catch |err| {
+                    logger.warn("Failed to store device token: {s}", .{@errorName(err)});
+                };
+            }
+            if (ctx.state == .connected) {
+                connected = true;
+            }
+            // Once we have data we need, proceed
+            const have_sessions = ctx.sessions.items.len > 0;
+            const have_nodes = ctx.nodes.items.len > 0;
+            if (connected) {
+                if (list_sessions and have_sessions) break;
+                if (list_nodes and have_nodes) break;
+                if (send_message != null and have_sessions) break;
+                if (run_command != null and have_nodes) break;
+                if (!list_sessions and !list_nodes and send_message == null and run_command == null) break;
+            }
+        } else {
+            std.Thread.sleep(50 * std.time.ns_per_ms);
+        }
+    }
+
+    if (!connected) {
+        logger.err("Failed to connect within timeout.", .{});
+        return error.ConnectionTimeout;
+    }
+
+    // Handle --list-sessions
+    if (list_sessions) {
+        var stdout = std.fs.File.stdout().deprecatedWriter();
+        try stdout.writeAll("Available sessions:\n");
+        if (ctx.sessions.items.len == 0) {
+            try stdout.writeAll("  (no sessions available)\n");
+        } else {
+            for (ctx.sessions.items) |session| {
+                const display = session.display_name orelse session.key;
+                const label = session.label orelse "-";
+                const kind = session.kind orelse "-";
+                try stdout.print("  {s} | {s} | {s} | {s}\n", .{ session.key, display, label, kind });
+            }
+        }
+        if (save_config) {
+            try config.save(allocator, config_path, cfg);
+            logger.info("Config saved to {s}", .{config_path});
+        }
+        return;
+    }
+
+    // Handle --list-nodes
+    if (list_nodes) {
+        var stdout = std.fs.File.stdout().deprecatedWriter();
+        try stdout.writeAll("Available nodes:\n");
+        if (ctx.nodes.items.len == 0) {
+            try stdout.writeAll("  (no nodes available)\n");
+        } else {
+            for (ctx.nodes.items) |node| {
+                const display = node.display_name orelse node.id;
+                const platform = node.platform orelse "-";
+                const status = if (node.connected orelse false) "connected" else "disconnected";
+                try stdout.print("  {s} | {s} | {s} | {s}\n", .{ node.id, display, platform, status });
+            }
+        }
+        if (save_config) {
+            try config.save(allocator, config_path, cfg);
+            logger.info("Config saved to {s}", .{config_path});
+        }
+        return;
+    }
+
+    // Handle --send
+    if (send_message) |message| {
+        const target_session = session_key orelse cfg.default_session orelse blk: {
+            if (ctx.sessions.items.len == 0) {
+                logger.err("No sessions available. Use --session to specify one.", .{});
+                return error.NoSessionAvailable;
+            }
+            break :blk ctx.sessions.items[0].key;
+        };
+
+        try sendChatMessage(allocator, &ws_client, target_session, message);
+        std.Thread.sleep(500 * std.time.ns_per_ms);
+        logger.info("Message sent successfully.", .{});
+        
+        if (save_config) {
+            try config.save(allocator, config_path, cfg);
+            logger.info("Config saved to {s}", .{config_path});
+        }
+        return;
+    }
+
+    // Handle --run
+    if (run_command) |command| {
+        const target_node = node_id orelse cfg.default_node orelse {
+            logger.err("No node specified. Use --node or --use-node to set a default.", .{});
+            return error.NoNodeSpecified;
+        };
+        
+        // Verify node exists
+        var node_exists = false;
+        for (ctx.nodes.items) |node| {
+            if (std.mem.eql(u8, node.id, target_node)) {
+                node_exists = true;
+                break;
+            }
+        }
+        if (!node_exists) {
+            logger.err("Node '{s}' not found. Use --list-nodes to see available nodes.", .{target_node});
+            return error.NodeNotFound;
+        }
+
+        try runNodeCommand(allocator, &ws_client, target_node, command);
+        
+        // Wait for result
+        var wait_attempts: u32 = 0;
+        while (wait_attempts < 100 and ctx.node_result == null) : (wait_attempts += 1) {
+            const payload = ws_client.receive() catch |err| {
+                logger.err("WebSocket receive failed: {s}", .{@errorName(err)});
+                break;
+            };
+            if (payload) |text| {
+                defer allocator.free(text);
+                _ = event_handler.handleRawMessage(&ctx, text) catch |err| blk: {
+                    logger.warn("Error handling message: {s}", .{@errorName(err)});
+                    break :blk null;
+                };
+            } else {
+                std.Thread.sleep(100 * std.time.ns_per_ms);
+            }
+        }
+
+        if (ctx.node_result) |result| {
+            var stdout = std.fs.File.stdout().deprecatedWriter();
+            try stdout.print("Result: {s}\n", .{result});
+        } else {
+            logger.info("Command sent. Waiting for result timed out.", .{});
+        }
+        
+        if (save_config) {
+            try config.save(allocator, config_path, cfg);
+            logger.info("Config saved to {s}", .{config_path});
+        }
+        return;
+    }
+
+    // Save config if requested
+    if (save_config) {
+        try config.save(allocator, config_path, cfg);
+        logger.info("Config saved to {s}", .{config_path});
+    }
+
+    // Normal receive loop
     while (true) {
         if (!ws_client.is_connected) {
             logger.warn("Disconnected.", .{});
@@ -173,6 +428,74 @@ pub fn main() !void {
             std.Thread.sleep(100 * std.time.ns_per_ms);
         }
     }
+}
+
+fn sendChatMessage(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    target_session: []const u8,
+    message: []const u8,
+) !void {
+    const idempotency_key = try requests.makeRequestId(allocator);
+    defer allocator.free(idempotency_key);
+
+    const params = chat.ChatSendParams{
+        .sessionKey = target_session,
+        .message = message,
+        .idempotencyKey = idempotency_key,
+    };
+
+    const request = try requests.buildRequestPayload(allocator, "chat.send", params);
+    defer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    logger.info("Sending message to session {s}: {s}", .{ target_session, message });
+    try ws_client.send(request.payload);
+}
+
+fn runNodeCommand(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    target_node: []const u8,
+    command: []const u8,
+) !void {
+    const idempotency_key = try requests.makeRequestId(allocator);
+    defer allocator.free(idempotency_key);
+
+    // Build params JSON for system.run command
+    var params_json = std.json.ObjectMap.init(allocator);
+    defer params_json.deinit();
+    
+    var command_arr = std.json.Array.init(allocator);
+    defer command_arr.deinit();
+    
+    // Split command by spaces (simple approach)
+    var it = std.mem.splitScalar(u8, command, ' ');
+    while (it.next()) |part| {
+        if (part.len > 0) {
+            try command_arr.append(std.json.Value{ .string = try allocator.dupe(u8, part) });
+        }
+    }
+    
+    try params_json.put("command", std.json.Value{ .array = command_arr });
+    
+    const params = nodes_proto.NodeInvokeParams{
+        .nodeId = target_node,
+        .command = "system.run",
+        .params = std.json.Value{ .object = params_json },
+        .idempotencyKey = idempotency_key,
+    };
+
+    const request = try requests.buildRequestPayload(allocator, "node.invoke", params);
+    defer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    logger.info("Running command on node {s}: {s}", .{ target_node, command });
+    try ws_client.send(request.payload);
 }
 
 fn initLogging(allocator: std.mem.Allocator) !void {
