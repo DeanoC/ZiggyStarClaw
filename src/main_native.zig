@@ -484,16 +484,15 @@ pub fn main() !void {
     defer window.destroy();
     setWindowIcon(window);
 
-    var renderer: webgpu_renderer.Renderer = undefined;
+    var renderer: ?webgpu_renderer.Renderer = null;
     if (use_webgpu) {
         renderer = try webgpu_renderer.Renderer.init(allocator, window);
-        defer renderer.deinit();
 
         imgui_wgpu.init(
             allocator,
             window,
-            @ptrCast(renderer.gctx.device),
-            @intFromEnum(renderer.gctx.swapchain_descriptor.format),
+            @ptrCast(renderer.?.gctx.device),
+            @intFromEnum(renderer.?.gctx.swapchain_descriptor.format),
             webgpu_renderer.depth_format_undefined,
         );
         const scale = window.getContentScale();
@@ -501,7 +500,6 @@ pub fn main() !void {
         if (dpi_scale > 0.0) {
             imgui_wgpu.applyDpiScale(dpi_scale);
         }
-        defer imgui_wgpu.deinit();
     } else {
         glfw.makeContextCurrent(window);
         glfw.swapInterval(1);
@@ -524,7 +522,16 @@ pub fn main() !void {
         if (dpi_scale > 0.0) {
             imgui_gl.applyDpiScale(dpi_scale);
         }
-        defer imgui_gl.deinit();
+    }
+    defer {
+        if (use_webgpu) {
+            imgui_wgpu.deinit();
+        } else {
+            imgui_gl.deinit();
+        }
+    }
+    if (use_webgpu) {
+        defer if (renderer) |*active| active.deinit();
     }
 
     var ctx = try client_state.ClientContext.init(allocator);
@@ -629,7 +636,7 @@ pub fn main() !void {
         }
 
         if (use_webgpu) {
-            renderer.beginFrame(fb_width, fb_height);
+            renderer.?.beginFrame(fb_width, fb_height);
         } else {
             imgui_gl.beginFrame(win_width, win_height, fb_width, fb_height);
         }
@@ -798,7 +805,7 @@ pub fn main() !void {
         }
 
         if (use_webgpu) {
-            renderer.render();
+            renderer.?.render();
         } else {
             imgui_gl.endFrame();
             window.swapBuffers();
