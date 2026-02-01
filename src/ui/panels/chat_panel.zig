@@ -23,7 +23,9 @@ pub fn draw(
     const history_height = @max(80.0, center_avail[1] - input_height);
     chat_view.draw(allocator, ctx.messages.items, ctx.stream_text, inbox, history_height);
     zgui.separator();
-    if (input_panel.draw(allocator)) |message| {
+
+    const input_avail = zgui.getContentRegionAvail();
+    if (input_panel.draw(allocator, input_avail[0], input_avail[1] - zgui.getFrameHeightWithSpacing())) |message| {
         action.send_message = message;
     }
     return action;
