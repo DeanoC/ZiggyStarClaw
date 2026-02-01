@@ -29,8 +29,15 @@ const main_node = if (builtin.os.tag == .windows) struct {
     }
 } else @import("main_node.zig");
 
+pub const std_options = std.Options{
+    .logFn = cliLogFn,
+    .log_level = .debug,
+};
+
+var cli_log_level: std.log.Level = .warn;
+
 const usage =
-    \\ZiggyStarClaw CLI (debug)
+    \\ZiggyStarClaw CLI
     \\
     \\Usage:
     \\  ziggystarclaw-cli [options]
@@ -877,6 +884,23 @@ fn resolveApproval(
     try ws_client.send(request.payload);
 }
 
+fn cliLogFn(
+    comptime level: std.log.Level,
+    comptime scope: @Type(.enum_literal),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    if (@intFromEnum(level) < @intFromEnum(cli_log_level)) return;
+    var stderr = std.fs.File.stderr().deprecatedWriter();
+    if (scope == .default) {
+        stderr.print("{s}: ", .{@tagName(level)}) catch return;
+    } else {
+        stderr.print("{s}({s}): ", .{ @tagName(level), @tagName(scope) }) catch return;
+    }
+    stderr.print(format, args) catch return;
+    stderr.writeByte('\n') catch return;
+}
+
 fn initLogging(allocator: std.mem.Allocator) !void {
     const env_level = std.process.getEnvVarOwned(allocator, "MOLT_LOG_LEVEL") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => null,
@@ -886,6 +910,7 @@ fn initLogging(allocator: std.mem.Allocator) !void {
         defer allocator.free(value);
         if (parseLogLevel(value)) |level| {
             logger.setLevel(level);
+            cli_log_level = toStdLogLevel(level);
         }
     }
 
@@ -907,6 +932,15 @@ fn parseLogLevel(value: []const u8) ?logger.Level {
     if (std.ascii.eqlIgnoreCase(value, "warn") or std.ascii.eqlIgnoreCase(value, "warning")) return .warn;
     if (std.ascii.eqlIgnoreCase(value, "error") or std.ascii.eqlIgnoreCase(value, "err")) return .err;
     return null;
+}
+
+fn toStdLogLevel(level: logger.Level) std.log.Level {
+    return switch (level) {
+        .debug => .debug,
+        .info => .info,
+        .warn => .warn,
+        .err => .err,
+    };
 }
 
 fn parseBool(value: []const u8) bool {
