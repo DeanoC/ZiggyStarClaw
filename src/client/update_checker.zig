@@ -545,7 +545,7 @@ fn downloadFile(
     }
 }
 
-fn sanitizeUrl(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+pub fn sanitizeUrl(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     var trimmed = std.mem.trim(u8, raw, " \t\r\n");
     if (trimmed.len == 0) return error.InvalidFormat;
     if (trimmed.len >= 2) {
@@ -562,27 +562,60 @@ fn sanitizeUrl(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     return allocator.dupe(u8, trimmed);
 }
 
-fn normalizeUrlForParse(allocator: std.mem.Allocator, url: *[]u8) !bool {
+pub fn normalizeUrlForParse(allocator: std.mem.Allocator, url: *[]u8) !bool {
     const src = url.*;
-    if (std.mem.indexOfAny(u8, src, " +") == null) return false;
+    var needs_escape = false;
+    for (src, 0..) |ch, idx| {
+        if (ch == ' ' or ch == '+') {
+            needs_escape = true;
+            break;
+        }
+        if (ch == '%') {
+            if (idx + 2 >= src.len or !isHex(src[idx + 1]) or !isHex(src[idx + 2])) {
+                needs_escape = true;
+                break;
+            }
+        }
+    }
+    if (!needs_escape) return false;
 
     var new_len: usize = 0;
-    for (src) |ch| {
+    var i: usize = 0;
+    while (i < src.len) : (i += 1) {
+        const ch = src[i];
         if (ch == ' ' or ch == '+') {
             new_len += 3;
-        } else {
-            new_len += 1;
+            continue;
         }
+        if (ch == '%') {
+            if (i + 2 >= src.len or !isHex(src[i + 1]) or !isHex(src[i + 2])) {
+                new_len += 3;
+                continue;
+            }
+        }
+        new_len += 1;
     }
 
     var buf = try allocator.alloc(u8, new_len);
     var pos: usize = 0;
-    for (src) |ch| {
+    i = 0;
+    while (i < src.len) : (i += 1) {
+        const ch = src[i];
         if (ch == ' ' or ch == '+') {
             buf[pos] = '%';
             buf[pos + 1] = '2';
             buf[pos + 2] = '0';
             pos += 3;
+        } else if (ch == '%') {
+            if (i + 2 >= src.len or !isHex(src[i + 1]) or !isHex(src[i + 2])) {
+                buf[pos] = '%';
+                buf[pos + 1] = '2';
+                buf[pos + 2] = '5';
+                pos += 3;
+            } else {
+                buf[pos] = ch;
+                pos += 1;
+            }
         } else {
             buf[pos] = ch;
             pos += 1;
@@ -592,6 +625,12 @@ fn normalizeUrlForParse(allocator: std.mem.Allocator, url: *[]u8) !bool {
     allocator.free(src);
     url.* = buf;
     return true;
+}
+
+fn isHex(ch: u8) bool {
+    return (ch >= '0' and ch <= '9') or
+        (ch >= 'a' and ch <= 'f') or
+        (ch >= 'A' and ch <= 'F');
 }
 
 fn resolveRedirectUrl(allocator: std.mem.Allocator, base: std.Uri, location: []const u8) ![]u8 {
