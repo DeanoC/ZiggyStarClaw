@@ -97,20 +97,14 @@ class NodeProcess:
         # Create temp log file
         self.log_file = Path(tempfile.mktemp(suffix=".log", prefix="zsc-node-"))
         
-        # Build config file
+        # Build config file - pass all settings via config file
         config_path = self._write_config()
         
-        # Parse gateway URL
-        gateway = TestConfig.GATEWAY_URL.replace("ws://", "")
-        host, port = gateway.rsplit(":", 1) if ":" in gateway else (gateway, "18789")
-        
+        # Note: node-mode arguments are passed after --node-mode flag
+        # The main_cli passes args[1..] to parseNodeOptions
         cmd = [
             str(TestConfig.ZIGGY_CLI),
             "--node-mode",
-            "--host", host,
-            "--port", port,
-            "--node-id", self.node_id,
-            "--display-name", f"Test-{self.node_id}",
             "--config", str(config_path),
             "--log-level", "debug",
         ]
@@ -158,6 +152,7 @@ class NodeProcess:
             "system_enabled": True,
             "canvas_enabled": self.config.get("canvas_enabled", False),
             "canvas_backend": self.config.get("canvas_backend", "none"),
+            "exec_approvals_path": "~/.openclaw/exec-approvals.json",
         }
         
         config_path = Path(tempfile.mktemp(suffix=".json", prefix="zsc-config-"))
