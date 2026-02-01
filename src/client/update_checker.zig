@@ -321,13 +321,32 @@ fn checkThread(
     }
 }
 
-const UpdateInfo = struct {
+pub const UpdateInfo = struct {
     version: []const u8,
     release_url: ?[]const u8,
     download_url: ?[]const u8,
     download_file: ?[]const u8,
     download_sha256: ?[]const u8,
+
+    pub fn deinit(self: *UpdateInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.version);
+        if (self.release_url) |value| allocator.free(value);
+        if (self.download_url) |value| allocator.free(value);
+        if (self.download_file) |value| allocator.free(value);
+        if (self.download_sha256) |value| allocator.free(value);
+    }
 };
+
+pub fn checkOnce(
+    allocator: std.mem.Allocator,
+    manifest_url: []const u8,
+    current_version: []const u8,
+) !UpdateInfo {
+    var sanitized_manifest_url = try sanitizeUrl(allocator, manifest_url);
+    defer allocator.free(sanitized_manifest_url);
+    _ = try normalizeUrlForParse(allocator, &sanitized_manifest_url);
+    return checkForUpdates(allocator, sanitized_manifest_url, current_version);
+}
 
 fn checkForUpdates(
     allocator: std.mem.Allocator,
@@ -335,6 +354,12 @@ fn checkForUpdates(
     current_version: []const u8,
 ) !UpdateInfo {
     _ = current_version;
+    if (isFileManifest(manifest_url)) {
+        const body_slice = try readManifestFromFile(allocator, manifest_url);
+        defer allocator.free(body_slice);
+        return parseUpdateManifest(allocator, body_slice);
+    }
+
     var client = std.http.Client{ .allocator = allocator };
     defer client.deinit();
 
@@ -352,82 +377,7 @@ fn checkForUpdates(
     }
 
     const body_slice = body.written();
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body_slice, .{});
-    defer parsed.deinit();
-
-    if (parsed.value != .object) return error.UpdateManifestInvalid;
-    const version_value = parsed.value.object.get("version") orelse return error.UpdateManifestMissingVersion;
-    if (version_value != .string) return error.UpdateManifestInvalid;
-    const version = version_value.string;
-    if (version.len == 0) return error.UpdateManifestMissingVersion;
-
-    var release_url: ?[]const u8 = null;
-    var base_url_raw: ?[]const u8 = null;
-    var download_url: ?[]const u8 = null;
-    var download_file: ?[]const u8 = null;
-    var download_sha256: ?[]const u8 = null;
-    const platform_key = platformKey();
-    if (parsed.value.object.get("release_url")) |rel| {
-        if (rel == .string and rel.string.len > 0) {
-            release_url = try allocator.dupe(u8, rel.string);
-        }
-    }
-    if (parsed.value.object.get("base_url")) |base| {
-        if (base == .string and base.string.len > 0) {
-            base_url_raw = base.string;
-        }
-    }
-    if (platform_key) |key| {
-        if (parsed.value.object.get("platforms")) |platforms| {
-            if (platforms == .object) {
-                if (platforms.object.get(key)) |platform| {
-                    if (platform == .object) {
-                        if (platform.object.get("file")) |file| {
-                            if (file == .string and file.string.len > 0) {
-                                download_file = try allocator.dupe(u8, file.string);
-                            }
-                        }
-                        if (platform.object.get("sha256")) |sha| {
-                            if (sha == .string and sha.string.len > 0) {
-                                download_sha256 = try allocator.dupe(u8, sha.string);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if (download_file) |file| {
-        if (base_url_raw) |base_raw| {
-            var base_buf: ?[]u8 = null;
-            defer if (base_buf) |buf| allocator.free(buf);
-            const base_trim = if (std.mem.endsWith(u8, base_raw, "/"))
-                base_raw
-            else blk: {
-                const buf = try std.fmt.allocPrint(allocator, "{s}/", .{base_raw});
-                base_buf = buf;
-                break :blk buf;
-            };
-            download_url = try std.fmt.allocPrint(allocator, "{s}{s}", .{ base_trim, file });
-        } else if (release_url) |rel| {
-            const base = if (std.mem.endsWith(u8, rel, "/"))
-                try std.fmt.allocPrint(allocator, "{s}download/", .{rel})
-            else
-                try std.fmt.allocPrint(allocator, "{s}/download/", .{rel});
-            defer allocator.free(base);
-            download_url = try std.fmt.allocPrint(allocator, "{s}{s}", .{ base, file });
-        }
-    }
-
-    return .{
-        .version = try allocator.dupe(u8, version),
-        .release_url = release_url,
-        .download_url = download_url,
-        .download_file = download_file,
-        .download_sha256 = download_sha256,
-    };
+    return parseUpdateManifest(allocator, body_slice);
 }
 
 fn platformKey() ?[]const u8 {
@@ -548,6 +498,157 @@ fn downloadFile(
         state.download_verified = true;
         state.mutex.unlock();
     }
+}
+
+fn parseUpdateManifest(allocator: std.mem.Allocator, body_slice: []const u8) !UpdateInfo {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body_slice, .{});
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return error.UpdateManifestInvalid;
+    const version_value = parsed.value.object.get("version") orelse return error.UpdateManifestMissingVersion;
+    if (version_value != .string) return error.UpdateManifestInvalid;
+    const version = version_value.string;
+    if (version.len == 0) return error.UpdateManifestMissingVersion;
+
+    var release_url: ?[]const u8 = null;
+    var base_url_raw: ?[]const u8 = null;
+    var download_url: ?[]const u8 = null;
+    var download_file: ?[]const u8 = null;
+    var download_sha256: ?[]const u8 = null;
+    const platform_key = platformKey();
+    if (parsed.value.object.get("release_url")) |rel| {
+        if (rel == .string and rel.string.len > 0) {
+            release_url = try allocator.dupe(u8, rel.string);
+        }
+    }
+    if (parsed.value.object.get("base_url")) |base| {
+        if (base == .string and base.string.len > 0) {
+            base_url_raw = base.string;
+        }
+    }
+    if (platform_key) |key| {
+        if (parsed.value.object.get("platforms")) |platforms| {
+            if (platforms == .object) {
+                if (platforms.object.get(key)) |platform| {
+                    if (platform == .object) {
+                        if (platform.object.get("file")) |file| {
+                            if (file == .string and file.string.len > 0) {
+                                download_file = try allocator.dupe(u8, file.string);
+                            }
+                        }
+                        if (platform.object.get("sha256")) |sha| {
+                            if (sha == .string and sha.string.len > 0) {
+                                download_sha256 = try allocator.dupe(u8, sha.string);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (download_file) |file| {
+        if (base_url_raw) |base_raw| {
+            var base_buf: ?[]u8 = null;
+            defer if (base_buf) |buf| allocator.free(buf);
+            const base_trim = if (std.mem.endsWith(u8, base_raw, "/"))
+                base_raw
+            else blk: {
+                const buf = try std.fmt.allocPrint(allocator, "{s}/", .{base_raw});
+                base_buf = buf;
+                break :blk buf;
+            };
+            download_url = try std.fmt.allocPrint(allocator, "{s}{s}", .{ base_trim, file });
+        } else if (release_url) |rel| {
+            const base = if (std.mem.endsWith(u8, rel, "/"))
+                try std.fmt.allocPrint(allocator, "{s}download/", .{rel})
+            else
+                try std.fmt.allocPrint(allocator, "{s}/download/", .{rel});
+            defer allocator.free(base);
+            download_url = try std.fmt.allocPrint(allocator, "{s}{s}", .{ base, file });
+        }
+    }
+
+    return .{
+        .version = try allocator.dupe(u8, version),
+        .release_url = release_url,
+        .download_url = download_url,
+        .download_file = download_file,
+        .download_sha256 = download_sha256,
+    };
+}
+
+fn isFileManifest(manifest_url: []const u8) bool {
+    if (std.mem.startsWith(u8, manifest_url, "file://") or std.mem.startsWith(u8, manifest_url, "file:")) {
+        return true;
+    }
+    return std.mem.indexOf(u8, manifest_url, "://") == null;
+}
+
+fn readManifestFromFile(allocator: std.mem.Allocator, manifest_url: []const u8) ![]u8 {
+    const path = try manifestPathFromUrl(allocator, manifest_url);
+    defer allocator.free(path);
+    var file = if (std.fs.path.isAbsolute(path))
+        try std.fs.openFileAbsolute(path, .{})
+    else
+        try std.fs.cwd().openFile(path, .{});
+    defer file.close();
+    return file.readToEndAlloc(allocator, 1024 * 1024);
+}
+
+fn manifestPathFromUrl(allocator: std.mem.Allocator, manifest_url: []const u8) ![]u8 {
+    var path = manifest_url;
+    if (std.mem.startsWith(u8, path, "file://")) {
+        path = path[7..];
+    } else if (std.mem.startsWith(u8, path, "file:")) {
+        path = path[5..];
+    }
+    if (path.len == 0) return error.InvalidFormat;
+    if (builtin.target.os.tag == .windows) {
+        if (path.len >= 3 and path[0] == '/' and std.ascii.isAlphabetic(path[1]) and path[2] == ':') {
+            path = path[1..];
+        }
+    }
+    return percentDecode(allocator, path);
+}
+
+fn percentDecode(allocator: std.mem.Allocator, src: []const u8) ![]u8 {
+    var out_len: usize = 0;
+    var i: usize = 0;
+    while (i < src.len) : (i += 1) {
+        if (src[i] == '%' and i + 2 < src.len and isHex(src[i + 1]) and isHex(src[i + 2])) {
+            out_len += 1;
+            i += 2;
+        } else {
+            out_len += 1;
+        }
+    }
+
+    var buf = try allocator.alloc(u8, out_len);
+    var pos: usize = 0;
+    i = 0;
+    while (i < src.len) : (i += 1) {
+        if (src[i] == '%' and i + 2 < src.len and isHex(src[i + 1]) and isHex(src[i + 2])) {
+            const hi = fromHex(src[i + 1]);
+            const lo = fromHex(src[i + 2]);
+            buf[pos] = (hi << 4) | lo;
+            pos += 1;
+            i += 2;
+        } else {
+            buf[pos] = src[i];
+            pos += 1;
+        }
+    }
+    return buf;
+}
+
+fn fromHex(ch: u8) u8 {
+    return if (ch >= '0' and ch <= '9')
+        ch - '0'
+    else if (ch >= 'a' and ch <= 'f')
+        ch - 'a' + 10
+    else
+        ch - 'A' + 10;
 }
 
 pub fn sanitizeUrl(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
@@ -793,7 +894,7 @@ const DownloadWriter = struct {
     };
 };
 
-fn isNewerVersion(latest: []const u8, current: []const u8) bool {
+pub fn isNewerVersion(latest: []const u8, current: []const u8) bool {
     const latest_parts = parseVersion(latest);
     const current_parts = parseVersion(current);
     if (latest_parts[0] != current_parts[0]) return latest_parts[0] > current_parts[0];

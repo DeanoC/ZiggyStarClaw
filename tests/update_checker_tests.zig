@@ -33,3 +33,30 @@ test "normalizeUrlForParse encodes invalid characters" {
     try std.testing.expect(changed);
     try std.testing.expectEqualStrings("https://example.com/a%7Cb", url);
 }
+
+test "checkOnce reads manifest from file url" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const manifest =
+        \\{
+        \\  "version": "0.2.0",
+        \\  "release_url": "https://example.com/release/",
+        \\  "platforms": {
+        \\    "linux": { "file": "ziggystarclaw_linux.zip", "sha256": "abc123" }
+        \\  }
+        \\}
+    ;
+    const filename = "update manifest.json";
+    try tmp.dir.writeFile(.{ .sub_path = filename, .data = manifest });
+
+    const abs_path = try tmp.dir.realpathAlloc(allocator, filename);
+    defer allocator.free(abs_path);
+    const file_url = try std.fmt.allocPrint(allocator, "file://{s}", .{abs_path});
+    defer allocator.free(file_url);
+
+    var info = try update_checker.checkOnce(allocator, file_url, "0.1.0");
+    defer info.deinit(allocator);
+    try std.testing.expectEqualStrings("0.2.0", info.version);
+    try std.testing.expect(info.download_file != null);
+}
