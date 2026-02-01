@@ -87,6 +87,12 @@ pub fn initStandardRouter(allocator: std.mem.Allocator) !CommandRouter {
     try router.register(.system_exec_approvals_get, systemExecApprovalsGetHandler);
     try router.register(.system_exec_approvals_set, systemExecApprovalsSetHandler);
 
+    // Process commands
+    try router.register(.process_spawn, processSpawnHandler);
+    try router.register(.process_poll, processPollHandler);
+    try router.register(.process_stop, processStopHandler);
+    try router.register(.process_list, processListHandler);
+
     // Canvas commands (stubs for now)
     try router.register(.canvas_present, canvasPresentHandler);
     try router.register(.canvas_hide, canvasHideHandler);
@@ -403,4 +409,94 @@ fn canvasSnapshotHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.j
     var result = std.json.ObjectMap.init(allocator);
     try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "not_implemented") });
     return std.json.Value{ .object = result };
+}
+
+// ============================================================================
+// Process Management Command Handlers
+// ============================================================================
+
+fn processSpawnHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    const command_arr = params.object.get("command") orelse {
+        return CommandError.InvalidParams;
+    };
+    if (command_arr != .array or command_arr.array.items.len == 0) {
+        return CommandError.InvalidParams;
+    }
+
+    // Convert JSON array to string array
+    var cmd_parts = std.ArrayList([]const u8).empty;
+    defer {
+        for (cmd_parts.items) |s| allocator.free(s);
+        cmd_parts.deinit(allocator);
+    }
+
+    for (command_arr.array.items) |item| {
+        if (item != .string) continue;
+        try cmd_parts.append(allocator, try allocator.dupe(u8, item.string));
+    }
+
+    if (cmd_parts.items.len == 0) {
+        return CommandError.InvalidParams;
+    }
+
+    // Get optional cwd
+    const cwd = if (params.object.get("cwd")) |c| switch (c) {
+        .string => c.string,
+        else => null,
+    } else null;
+
+    // Spawn the process
+    const proc_id = ctx.process_manager.spawn(cmd_parts.items, cwd) catch |err| {
+        logger.err("Failed to spawn process: {s}", .{@errorName(err)});
+        return CommandError.ExecutionFailed;
+    };
+    defer allocator.free(proc_id);
+
+    var result = std.json.ObjectMap.init(allocator);
+    try result.put("processId", std.json.Value{ .string = try allocator.dupe(u8, proc_id) });
+    try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "running") });
+    return std.json.Value{ .object = result };
+}
+
+fn processPollHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    const proc_id = params.object.get("processId") orelse {
+        return CommandError.InvalidParams;
+    };
+    if (proc_id != .string) {
+        return CommandError.InvalidParams;
+    }
+
+    const status = ctx.process_manager.getProcessStatus(allocator, proc_id.string) catch |err| {
+        logger.err("Failed to get process status: {s}", .{@errorName(err)});
+        return CommandError.ExecutionFailed;
+    } orelse {
+        return CommandError.InvalidParams;
+    };
+
+    return status;
+}
+
+fn processStopHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    const proc_id = params.object.get("processId") orelse {
+        return CommandError.InvalidParams;
+    };
+    if (proc_id != .string) {
+        return CommandError.InvalidParams;
+    }
+
+    const killed = ctx.process_manager.killProcess(proc_id.string) catch |err| {
+        logger.err("Failed to kill process: {s}", .{@errorName(err)});
+        return CommandError.ExecutionFailed;
+    };
+
+    var result = std.json.ObjectMap.init(allocator);
+    try result.put("killed", std.json.Value{ .bool = killed });
+    return std.json.Value{ .object = result };
+}
+
+fn processListHandler(allocator: std.mem.Allocator, ctx: *NodeContext, _: std.json.Value) CommandError!std.json.Value {
+    return ctx.process_manager.listProcesses(allocator) catch |err| {
+        logger.err("Failed to list processes: {s}", .{@errorName(err)});
+        return CommandError.ExecutionFailed;
+    };
 }

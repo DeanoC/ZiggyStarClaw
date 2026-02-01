@@ -146,6 +146,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     // Register capabilities based on config
     if (config.system_enabled) {
         try node_ctx.registerSystemCapabilities();
+        try node_ctx.registerProcessCapabilities();
     }
     if (config.canvas_enabled) {
         try node_ctx.registerCanvasCapabilities();

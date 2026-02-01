@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("../protocol/types.zig");
+const ProcessManager = @import("process_manager.zig").ProcessManager;
 
 /// Node capability categories
 pub const Capability = enum {
@@ -51,6 +52,12 @@ pub const Command = enum {
     // Location commands
     location_get,
 
+    // Process commands
+    process_spawn,
+    process_poll,
+    process_stop,
+    process_list,
+
     pub fn toString(self: Command) []const u8 {
         return switch (self) {
             .system_run => "system.run",
@@ -70,6 +77,10 @@ pub const Command = enum {
             .camera_snap => "camera.snap",
             .camera_clip => "camera.clip",
             .location_get => "location.get",
+            .process_spawn => "process.spawn",
+            .process_poll => "process.poll",
+            .process_stop => "process.stop",
+            .process_list => "process.list",
         };
     }
 
@@ -120,6 +131,7 @@ pub const NodeContext = struct {
     // Execution
     pending_executions: std.ArrayList(PendingExecution),
     exec_approvals_path: []const u8,
+    process_manager: ProcessManager,
 
     // Stats
     commands_executed: u64 = 0,
@@ -136,6 +148,7 @@ pub const NodeContext = struct {
             .permissions = std.StringHashMap(bool).init(allocator),
             .pending_executions = std.ArrayList(PendingExecution).empty,
             .exec_approvals_path = try allocator.dupe(u8, "~/.openclaw/exec-approvals.json"),
+            .process_manager = ProcessManager.init(allocator),
         };
     }
 
@@ -168,6 +181,8 @@ pub const NodeContext = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.permissions.deinit();
+
+        self.process_manager.deinit();
 
         for (self.pending_executions.items) |*exec| {
             if (exec.child_process) |*child| {
@@ -253,6 +268,15 @@ pub const NodeContext = struct {
         try self.addCommand(.canvas_navigate);
         try self.addCommand(.canvas_eval);
         try self.addCommand(.canvas_snapshot);
+    }
+
+    /// Register process management capabilities
+    pub fn registerProcessCapabilities(self: *NodeContext) !void {
+        // Process commands are part of system capability
+        try self.addCommand(.process_spawn);
+        try self.addCommand(.process_poll);
+        try self.addCommand(.process_stop);
+        try self.addCommand(.process_list);
     }
 };
 
