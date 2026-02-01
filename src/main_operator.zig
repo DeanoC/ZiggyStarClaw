@@ -188,6 +188,8 @@ fn waitForHelloOk(allocator: std.mem.Allocator, ws: *websocket_client.WebSocketC
 pub fn runOperatorMode(allocator: std.mem.Allocator, opts: OperatorCliOptions) !void {
     logger.setLevel(opts.log_level);
 
+    const Empty = struct {};
+
     const token = opts.token orelse std.process.getEnvVarOwned(allocator, "GATEWAY_TOKEN") catch null orelse "";
     defer if (opts.token == null and token.len > 0) allocator.free(token);
 
@@ -226,7 +228,7 @@ pub fn runOperatorMode(allocator: std.mem.Allocator, opts: OperatorCliOptions) !
 
     // Actions
     if (opts.pair_list) {
-        const payload = try sendRequestAwait(allocator, &ws_client, "device.pair.list", .{}, 5000);
+        const payload = try sendRequestAwait(allocator, &ws_client, "device.pair.list", Empty{}, 5000);
         defer allocator.free(payload);
         printJsonText(payload);
         return;
@@ -246,7 +248,7 @@ pub fn runOperatorMode(allocator: std.mem.Allocator, opts: OperatorCliOptions) !
     }
 
     if (opts.list_nodes) {
-        const payload = try sendRequestAwait(allocator, &ws_client, "node.list", .{}, 5000);
+        const payload = try sendRequestAwait(allocator, &ws_client, "node.list", Empty{}, 5000);
         defer allocator.free(payload);
         printJsonText(payload);
         return;
