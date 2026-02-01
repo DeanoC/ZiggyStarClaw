@@ -890,7 +890,7 @@ fn cliLogFn(
     comptime format: []const u8,
     args: anytype,
 ) void {
-    if (@intFromEnum(level) < @intFromEnum(cli_log_level)) return;
+    if (stdLogRank(level) < stdLogRank(cli_log_level)) return;
     var stderr = std.fs.File.stderr().deprecatedWriter();
     if (scope == .default) {
         stderr.print("{s}: ", .{@tagName(level)}) catch return;
@@ -940,6 +940,15 @@ fn toStdLogLevel(level: logger.Level) std.log.Level {
         .info => .info,
         .warn => .warn,
         .err => .err,
+    };
+}
+
+fn stdLogRank(level: std.log.Level) u8 {
+    return switch (level) {
+        .debug => 0,
+        .info => 1,
+        .warn => 2,
+        .err => 3,
     };
 }
 
