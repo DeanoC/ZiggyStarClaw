@@ -60,6 +60,7 @@ const usage =
     \\  --save-config            Save --url, --token, --use-session, --use-node to config file
     \\  -h, --help               Show help
     \\  --node-mode-help         Show node mode help
+    \\  --operator-mode-help     Show operator mode help
     \\
 ;
 
@@ -108,8 +109,13 @@ pub fn main() !void {
     var approve_id: ?[]const u8 = null;
     var deny_id: ?[]const u8 = null;
     var interactive = false;
+    // Pre-scan for mode flags so we can delegate argument parsing cleanly.
     var node_mode = false;
     var operator_mode = false;
+    for (args[1..]) |a| {
+        if (std.mem.eql(u8, a, "--node-mode")) node_mode = true;
+        if (std.mem.eql(u8, a, "--operator-mode")) operator_mode = true;
+    }
     var save_config = false;
 
     var i: usize = 1;
@@ -178,17 +184,24 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "--interactive")) {
             interactive = true;
         } else if (std.mem.eql(u8, arg, "--node-mode")) {
-            node_mode = true;
+            // handled by pre-scan
         } else if (std.mem.eql(u8, arg, "--operator-mode")) {
-            operator_mode = true;
+            // handled by pre-scan
         } else if (std.mem.eql(u8, arg, "--save-config")) {
             save_config = true;
         } else if (std.mem.eql(u8, arg, "--node-mode-help")) {
             var stdout = std.fs.File.stdout().deprecatedWriter();
             try stdout.writeAll(main_node.usage);
             return;
+        } else if (std.mem.eql(u8, arg, "--operator-mode-help")) {
+            var stdout = std.fs.File.stdout().deprecatedWriter();
+            try stdout.writeAll(main_operator.usage);
+            return;
         } else {
-            logger.warn("Unknown argument: {s}", .{arg});
+            // When running a specialized mode, allow that mode to parse its own flags.
+            if (!(node_mode or operator_mode)) {
+                logger.warn("Unknown argument: {s}", .{arg});
+            }
         }
     }
 
