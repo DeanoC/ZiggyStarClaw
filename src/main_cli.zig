@@ -689,15 +689,23 @@ fn runRepl(
             .save => {
                 if (current_session) |s| {
                     if (cfg.default_session) |old| {
-                        allocator.free(old);
+                        if (!(old.ptr == s.ptr and old.len == s.len)) {
+                            allocator.free(old);
+                            cfg.default_session = try allocator.dupe(u8, s);
+                        }
+                    } else {
+                        cfg.default_session = try allocator.dupe(u8, s);
                     }
-                    cfg.default_session = try allocator.dupe(u8, s);
                 }
                 if (current_node) |n| {
                     if (cfg.default_node) |old| {
-                        allocator.free(old);
+                        if (!(old.ptr == n.ptr and old.len == n.len)) {
+                            allocator.free(old);
+                            cfg.default_node = try allocator.dupe(u8, n);
+                        }
+                    } else {
+                        cfg.default_node = try allocator.dupe(u8, n);
                     }
-                    cfg.default_node = try allocator.dupe(u8, n);
                 }
                 try config.save(allocator, config_path, cfg.*);
                 try stdout.writeAll("Config saved.\n");
