@@ -399,7 +399,7 @@ fn downloadThread(
     defer allocator.free(file_name);
 
     const result = downloadFile(allocator, state, url, file_name) catch |err| {
-        logger.warn("Download failed: {}", .{err});
+        logger.warn("Download failed for URL '{s}': {}", .{ url, err });
         const message = switch (err) {
             error.UpdateHashMismatch => "SHA256 mismatch",
             error.UnexpectedCharacter, error.InvalidFormat => "Invalid download URL",
@@ -441,10 +441,18 @@ fn downloadFile(
     var response_opt: ?std.http.Client.Response = null;
     var redirect_buf: [8 * 1024]u8 = undefined;
     while (true) {
-        if (try normalizeUrlForParse(allocator, &current_url)) {
-            // current_url updated in place
+        const before = current_url;
+        const normalized = normalizeUrlForParse(allocator, &current_url) catch |err| {
+            logger.warn("Download URL normalization failed: '{s}' ({})", .{ before, err });
+            return err;
+        };
+        if (normalized) {
+            logger.warn("Download URL normalized: '{s}' -> '{s}'", .{ before, current_url });
         }
-        const uri = try std.Uri.parse(current_url);
+        const uri = std.Uri.parse(current_url) catch |err| {
+            logger.warn("Download URL parse failed: '{s}' ({})", .{ current_url, err });
+            return err;
+        };
         var req = try client.request(.GET, uri, .{});
         defer req.deinit();
 
@@ -453,10 +461,14 @@ fn downloadFile(
         if (response.head.status.class() == .redirect) {
             if (redirects_left == 0) return error.UpdateDownloadFailed;
             const location = response.head.location orelse return error.UpdateDownloadFailed;
-            const location_clean = sanitizeUrl(allocator, location) catch return error.UpdateDownloadFailed;
+            const location_clean = sanitizeUrl(allocator, location) catch |err| {
+                logger.warn("Redirect URL sanitize failed: '{s}' ({})", .{ location, err });
+                return error.UpdateDownloadFailed;
+            };
             defer allocator.free(location_clean);
             allocator.free(current_url);
             current_url = try resolveRedirectUrl(allocator, uri, location_clean);
+            logger.info("Redirected download URL -> '{s}'", .{current_url});
             redirects_left -= 1;
             continue;
         }
