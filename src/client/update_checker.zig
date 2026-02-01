@@ -269,10 +269,18 @@ fn checkThread(
     manifest_url: []const u8,
     current_version: []const u8,
 ) void {
-    defer allocator.free(manifest_url);
     defer allocator.free(current_version);
 
-    const latest_version = checkForUpdates(allocator, manifest_url, current_version) catch |err| {
+    const sanitized_manifest_url = sanitizeUrl(allocator, manifest_url) catch |err| {
+        logger.warn("Update manifest URL invalid: {}", .{err});
+        allocator.free(manifest_url);
+        state.setError(allocator, @errorName(err));
+        return;
+    };
+    allocator.free(manifest_url);
+    defer allocator.free(sanitized_manifest_url);
+
+    const latest_version = checkForUpdates(allocator, sanitized_manifest_url, current_version) catch |err| {
         logger.warn("Update check failed: {}", .{err});
         state.setError(allocator, @errorName(err));
         return;
@@ -461,8 +469,8 @@ fn downloadFile(
     var client = std.http.Client{ .allocator = allocator };
     defer client.deinit();
 
-    const trimmed_url = std.mem.trim(u8, url, " \t\r\n");
-    if (trimmed_url.len == 0) return error.UpdateDownloadFailed;
+    const sanitized_url = try sanitizeUrl(allocator, url);
+    defer allocator.free(sanitized_url);
 
     const path = std.fmt.allocPrint(allocator, "updates/{s}", .{file_name}) catch return error.OutOfMemory;
     defer allocator.free(path);
@@ -471,7 +479,7 @@ fn downloadFile(
     var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
     defer file.close();
 
-    var current_url = try allocator.dupe(u8, trimmed_url);
+    var current_url = try allocator.dupe(u8, sanitized_url);
     defer allocator.free(current_url);
 
     var redirects_left: u8 = 3;
@@ -490,10 +498,10 @@ fn downloadFile(
         if (response.head.status.class() == .redirect) {
             if (redirects_left == 0) return error.UpdateDownloadFailed;
             const location = response.head.location orelse return error.UpdateDownloadFailed;
-            const location_trim = std.mem.trim(u8, location, " \t\r\n");
-            if (location_trim.len == 0) return error.UpdateDownloadFailed;
+            const location_clean = sanitizeUrl(allocator, location) catch return error.UpdateDownloadFailed;
+            defer allocator.free(location_clean);
             allocator.free(current_url);
-            current_url = try resolveRedirectUrl(allocator, uri, location_trim);
+            current_url = try resolveRedirectUrl(allocator, uri, location_clean);
             redirects_left -= 1;
             continue;
         }
@@ -535,6 +543,23 @@ fn downloadFile(
         state.download_verified = true;
         state.mutex.unlock();
     }
+}
+
+fn sanitizeUrl(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    var trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return error.InvalidFormat;
+    if (trimmed.len >= 2) {
+        const first = trimmed[0];
+        const last = trimmed[trimmed.len - 1];
+        const wrapped = (first == '<' and last == '>') or
+            (first == '"' and last == '"') or
+            (first == '\'' and last == '\'');
+        if (wrapped) {
+            trimmed = std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t\r\n");
+            if (trimmed.len == 0) return error.InvalidFormat;
+        }
+    }
+    return allocator.dupe(u8, trimmed);
 }
 
 fn normalizeUrlForParse(allocator: std.mem.Allocator, url: *[]u8) !bool {
