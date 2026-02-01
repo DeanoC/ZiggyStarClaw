@@ -183,7 +183,7 @@ fn initApp() !void {
     ctx = try client_state.ClientContext.init(allocator);
     cfg = try loadConfigFromStorage();
     app_state_state = loadAppStateFromStorage();
-    auto_connect_pending = app_state_state.last_connected and cfg.server_url.len > 0;
+    auto_connect_pending = app_state_state.last_connected and cfg.auto_connect_on_launch and cfg.server_url.len > 0;
     const ws = try loadWorkspaceFromStorage();
     manager = panel_manager.PanelManager.init(allocator, ws);
     command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);
@@ -304,6 +304,11 @@ fn loadConfigFromStorage() !config.Config {
         if (obj.get("insecure_tls")) |value| {
             if (value == .bool) {
                 cfg_local.insecure_tls = value.bool;
+            }
+        }
+        if (obj.get("auto_connect_on_launch")) |value| {
+            if (value == .bool) {
+                cfg_local.auto_connect_on_launch = value.bool;
             }
         }
         if (obj.get("connect_host_override")) |value| {

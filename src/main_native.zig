@@ -634,7 +634,7 @@ pub fn main() !void {
     defer cfg.deinit(allocator);
     var app_state_state = app_state.loadOrDefault(allocator, "ziggystarclaw_state.json") catch app_state.initDefault();
     var auto_connect_enabled = app_state_state.last_connected;
-    var auto_connect_pending = auto_connect_enabled and cfg.server_url.len > 0;
+    var auto_connect_pending = auto_connect_enabled and cfg.auto_connect_on_launch and cfg.server_url.len > 0;
 
     var ws_client = websocket_client.WebSocketClient.init(
         allocator,
