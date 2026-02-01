@@ -5,6 +5,8 @@ const node_config = @import("node/config.zig");
 const NodeConfig = node_config.NodeConfig;
 const command_router = @import("node/command_router.zig");
 const CommandRouter = command_router.CommandRouter;
+const health_reporter = @import("node/health_reporter.zig");
+const HealthReporter = health_reporter.HealthReporter;
 const websocket_client = @import("client/websocket_client.zig");
 const event_handler = @import("client/event_handler.zig");
 const requests = @import("protocol/requests.zig");
@@ -156,48 +158,85 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     var router = try command_router.initStandardRouter(allocator);
     defer router.deinit();
 
-    // Connect to gateway
-    const ws_url = try config.getWebSocketUrl(allocator);
-    defer allocator.free(ws_url);
+    // Connection retry loop
+    var reconnect_attempt: u32 = 0;
+    const max_reconnect_attempts: u32 = 10;
+    const base_delay_ms: u64 = 1000;
 
-    logger.info("Connecting to gateway at {s}...", .{ws_url});
+    while (reconnect_attempt < max_reconnect_attempts) {
+        // Connect to gateway
+        const ws_url = try config.getWebSocketUrl(allocator);
+        defer allocator.free(ws_url);
 
-    var ws_client = websocket_client.WebSocketClient.init(
-        allocator,
-        ws_url,
-        config.device_token orelse "",
-        opts.insecure_tls,
-        null,
-    );
-    ws_client.setReadTimeout(15000);
-    defer ws_client.deinit();
+        logger.info("Connecting to gateway at {s} (attempt {d}/{d})...", .{ ws_url, reconnect_attempt + 1, max_reconnect_attempts });
 
-    try ws_client.connect();
-    node_ctx.state = .connecting;
+        var ws_client = websocket_client.WebSocketClient.init(
+            allocator,
+            ws_url,
+            config.device_token orelse "",
+            opts.insecure_tls,
+            null,
+        );
+        ws_client.setReadTimeout(15000);
 
-    logger.info("Connected, waiting for handshake...", .{});
-
-    // Send connect request with node role
-    try sendNodeConnectRequest(allocator, &ws_client, &node_ctx);
-
-    // Main event loop
-    const running = true;
-    while (running) {
-        if (!ws_client.is_connected) {
-            logger.err("Disconnected from gateway.", .{});
-            break;
-        }
-
-        const payload = ws_client.receive() catch |err| {
-            logger.err("WebSocket receive failed: {s}", .{@errorName(err)});
-            break;
+        ws_client.connect() catch |err| {
+            logger.err("Connection failed: {s}", .{@errorName(err)});
+            ws_client.deinit();
+            reconnect_attempt += 1;
+            if (reconnect_attempt >= max_reconnect_attempts) {
+                logger.err("Max reconnection attempts reached", .{});
+                return error.ConnectionFailed;
+            }
+            const delay_ms = base_delay_ms * std.math.pow(u64, 2, reconnect_attempt);
+            logger.info("Retrying in {d}ms...", .{@min(delay_ms, 30000)});
+            std.Thread.sleep(@as(u64, @min(delay_ms, 30000)) * std.time.ns_per_ms);
+            continue;
         };
 
-        if (payload) |text| {
-            defer allocator.free(text);
-            try handleNodeMessage(allocator, &ws_client, &node_ctx, &router, text);
-        } else {
-            std.Thread.sleep(50 * std.time.ns_per_ms);
+        node_ctx.state = .connecting;
+        reconnect_attempt = 0; // Reset on successful connection
+
+        logger.info("Connected, waiting for handshake...", .{});
+
+        // Send connect request with node role
+        try sendNodeConnectRequest(allocator, &ws_client, &node_ctx);
+
+        // Initialize health reporter
+        var health = HealthReporter.init(allocator, &node_ctx, &ws_client);
+        health.start() catch |err| {
+            logger.warn("Failed to start health reporter: {s}", .{@errorName(err)});
+        };
+        defer health.stop();
+
+        // Main event loop
+        const running = true;
+        while (running) {
+            if (!ws_client.is_connected) {
+                logger.err("Disconnected from gateway.", .{});
+                break;
+            }
+
+            const payload = ws_client.receive() catch |err| {
+                logger.err("WebSocket receive failed: {s}", .{@errorName(err)});
+                break;
+            };
+
+            if (payload) |text| {
+                defer allocator.free(text);
+                try handleNodeMessage(allocator, &ws_client, &node_ctx, &router, text);
+            } else {
+                std.Thread.sleep(50 * std.time.ns_per_ms);
+            }
+        }
+
+        ws_client.deinit();
+
+        // If we got here due to disconnect, retry
+        if (reconnect_attempt < max_reconnect_attempts) {
+            reconnect_attempt += 1;
+            const delay_ms = base_delay_ms * std.math.pow(u64, 2, reconnect_attempt);
+            logger.info("Reconnecting in {d}ms...", .{@min(delay_ms, 30000)});
+            std.Thread.sleep(@as(u64, @min(delay_ms, 30000)) * std.time.ns_per_ms);
         }
     }
 

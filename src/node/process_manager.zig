@@ -287,16 +287,18 @@ pub const ProcessManager = struct {
             if (proc.state != .running) {
                 if (proc.end_time_ms) |end| {
                     if (now - end > max_age_ms) {
-                        try to_remove.append(entry.key_ptr.*);
+                        to_remove.append(self.allocator, entry.key_ptr.*) catch break;
                     }
                 }
             }
         }
         
         for (to_remove.items) |id| {
-            if (self.processes.fetchRemove(id)) |kv| {
-                kv.value.deinit(self.allocator);
-                self.allocator.free(kv.key);
+            if (self.processes.getPtr(id)) |proc| {
+                proc.deinit(self.allocator);
+                if (self.processes.fetchRemove(id)) |kv| {
+                    self.allocator.free(kv.key);
+                }
             }
         }
     }

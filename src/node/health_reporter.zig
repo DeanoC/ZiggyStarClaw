@@ -87,12 +87,12 @@ pub const HealthReporter = struct {
         // Active processes count
         const process_list = try self.node_ctx.process_manager.listProcesses(self.allocator);
         defer {
-            for (process_list.array.items) |item| {
-                if (item == .object) {
+            for (process_list.array.items) |*item| {
+                if (item.* == .object) {
                     item.object.deinit();
                 }
             }
-            process_list.array.deinit(self.allocator);
+            process_list.array.deinit();
         }
         try health_data.put("activeProcesses", std.json.Value{ .integer = @intCast(process_list.array.items.len) });
         
@@ -116,7 +116,6 @@ pub const HealthReporter = struct {
 };
 
 fn makeRequestId(allocator: std.mem.Allocator) ![]const u8 {
-    var buf: [64]u8 = undefined;
     const timestamp = std.time.milliTimestamp();
     const random = std.crypto.random.int(u32);
     return try std.fmt.allocPrint(allocator, "req_{d}_{x}", .{ timestamp, random });
