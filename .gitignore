@@ -7,3 +7,5 @@ dist/
 imgui.ini
 moltbot_config.json
 moltbot_device.json
+.pyc
+__pycache__/
