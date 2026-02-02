@@ -7,6 +7,7 @@ const session_list = @import("../session_list.zig");
 const theme = @import("../theme.zig");
 const image_cache = @import("../image_cache.zig");
 const data_uri = @import("../data_uri.zig");
+const attachment_cache = @import("../attachment_cache.zig");
 
 pub const AttachmentOpen = struct {
     name: []const u8,
@@ -25,6 +26,10 @@ pub const SessionPanelAction = struct {
 
 var split_state = components.layout.split_pane.SplitState{ .size = 260.0 };
 var selected_file_index: ?usize = null;
+const attachment_preview_limit: usize = 256 * 1024;
+const text_preview_limit: usize = 12 * 1024;
+const json_preview_limit: usize = 32 * 1024;
+const log_preview_lines: usize = 80;
 
 pub fn draw(
     allocator: std.mem.Allocator,
@@ -175,7 +180,7 @@ fn drawSessionDetails(
             zgui.textWrapped("Role: {s}", .{preview.role});
             zgui.textWrapped("Timestamp: {d}", .{preview.timestamp});
             zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
-            drawAttachmentPreview(allocator, preview);
+            drawAttachmentPreview(allocator, preview, t);
             zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
             if (components.core.button.draw("Open in Editor", .{ .variant = .secondary, .size = .small })) {
                 action.open_attachment = preview;
@@ -279,7 +284,11 @@ fn collectAttachmentPreviews(
     return buf[0..len];
 }
 
-fn drawAttachmentPreview(allocator: std.mem.Allocator, preview: AttachmentOpen) void {
+fn drawAttachmentPreview(
+    allocator: std.mem.Allocator,
+    preview: AttachmentOpen,
+    t: *const theme.Theme,
+) void {
     if (isImageAttachment(preview)) {
         if (preview.url.len == 0) {
             zgui.textDisabled("Image preview unavailable.", .{});
@@ -324,29 +333,60 @@ fn drawAttachmentPreview(allocator: std.mem.Allocator, preview: AttachmentOpen) 
         return;
     }
 
+    var content: ?[]const u8 = null;
+    var status: ?[]const u8 = null;
+    var size_bytes: ?usize = null;
+    var truncated = false;
+
     if (std.mem.startsWith(u8, preview.url, "data:")) {
-        const max_uri_len: usize = 256 * 1024;
-        if (preview.url.len > max_uri_len) {
-            zgui.textDisabled("Data attachment too large to preview.", .{});
-            return;
-        }
-        if (data_uri.decodeDataUriBytes(allocator, preview.url)) |bytes| {
+        if (preview.url.len > attachment_preview_limit) {
+            status = "Data attachment too large to preview.";
+        } else if (data_uri.decodeDataUriBytes(allocator, preview.url)) |bytes| {
             defer allocator.free(bytes);
+            size_bytes = bytes.len;
             if (!std.unicode.utf8ValidateSlice(bytes)) {
-                zgui.textDisabled("Binary data attachment.", .{});
-                return;
+                status = "Binary data attachment.";
+            } else {
+                const trimmed = trimPreview(bytes, text_preview_limit);
+                content = trimmed.body;
+                truncated = trimmed.truncated;
             }
-            const max_preview: usize = 320;
-            const preview_len = @min(bytes.len, max_preview);
-            zgui.textWrapped("{s}", .{bytes[0..preview_len]});
-            if (bytes.len > preview_len) {
-                zgui.textDisabled("Preview truncated.", .{});
+        } else |_| {
+            status = "Failed to decode attachment.";
+        }
+    } else if (isHttpUrl(preview.url)) {
+        attachment_cache.request(preview.url, attachment_preview_limit);
+        if (attachment_cache.get(preview.url)) |entry| {
+            switch (entry.state) {
+                .loading => status = "Fetching remote attachment...",
+                .failed => {
+                    status = if (entry.error_message) |err| err else "Attachment fetch failed.";
+                },
+                .ready => if (entry.data) |data| {
+                    size_bytes = data.len;
+                    const trimmed = trimPreview(data, text_preview_limit);
+                    content = trimmed.body;
+                    truncated = trimmed.truncated;
+                } else {
+                    status = "Attachment content unavailable.";
+                },
             }
-            return;
-        } else |_| {}
+        } else {
+            status = "Fetching remote attachment...";
+        }
     }
 
-    zgui.textDisabled("Preview unavailable.", .{});
+    drawPreviewMeta(t, status, size_bytes, truncated);
+
+    if (content) |body| {
+        const format = detectPreviewFormat(preview, body);
+        drawTextPreview(allocator, preview, body, format, t);
+        return;
+    }
+
+    if (status == null) {
+        zgui.textDisabled("Preview unavailable.", .{});
+    }
 }
 
 fn endsWithIgnoreCase(value: []const u8, suffix: []const u8) bool {
@@ -367,4 +407,166 @@ fn isImageAttachment(att: AttachmentOpen) bool {
         endsWithIgnoreCase(att.url, ".jpeg") or
         endsWithIgnoreCase(att.url, ".gif") or
         endsWithIgnoreCase(att.url, ".webp");
+}
+
+fn isHttpUrl(url: []const u8) bool {
+    return std.mem.startsWith(u8, url, "http://") or std.mem.startsWith(u8, url, "https://");
+}
+
+fn hasTokenIgnoreCase(value: []const u8, token: []const u8) bool {
+    if (token.len == 0 or value.len < token.len) return false;
+    var i: usize = 0;
+    while (i + token.len <= value.len) : (i += 1) {
+        var matches = true;
+        var j: usize = 0;
+        while (j < token.len) : (j += 1) {
+            if (std.ascii.toLower(value[i + j]) != token[j]) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches) return true;
+    }
+    return false;
+}
+
+fn isJsonAttachment(att: AttachmentOpen, body: ?[]const u8) bool {
+    if (hasTokenIgnoreCase(att.kind, "json")) return true;
+    if (endsWithIgnoreCase(att.url, ".json") or endsWithIgnoreCase(att.url, ".jsonl")) return true;
+    if (body) |data| {
+        const trimmed = std.mem.trimLeft(u8, data, " \t\r\n");
+        if (trimmed.len > 0 and (trimmed[0] == '{' or trimmed[0] == '[')) return true;
+    }
+    return false;
+}
+
+fn isMarkdownAttachment(att: AttachmentOpen, body: ?[]const u8) bool {
+    if (hasTokenIgnoreCase(att.kind, "markdown")) return true;
+    if (endsWithIgnoreCase(att.url, ".md") or endsWithIgnoreCase(att.url, ".markdown")) return true;
+    if (body) |data| {
+        return std.mem.indexOf(u8, data, "\n#") != null or std.mem.startsWith(u8, data, "#");
+    }
+    return false;
+}
+
+fn isLogAttachment(att: AttachmentOpen) bool {
+    if (hasTokenIgnoreCase(att.kind, "log")) return true;
+    if (endsWithIgnoreCase(att.url, ".log")) return true;
+    return false;
+}
+
+const PreviewFormat = enum {
+    json,
+    markdown,
+    log,
+    text,
+};
+
+fn detectPreviewFormat(att: AttachmentOpen, body: []const u8) PreviewFormat {
+    if (isJsonAttachment(att, body)) return .json;
+    if (isMarkdownAttachment(att, body)) return .markdown;
+    if (isLogAttachment(att)) return .log;
+    return .text;
+}
+
+fn trimPreview(data: []const u8, max_len: usize) struct { body: []const u8, truncated: bool } {
+    if (data.len <= max_len) return .{ .body = data, .truncated = false };
+    return .{ .body = data[0..max_len], .truncated = true };
+}
+
+fn drawPreviewMeta(
+    t: *const theme.Theme,
+    status: ?[]const u8,
+    size_bytes: ?usize,
+    truncated: bool,
+) void {
+    if (status) |note| {
+        zgui.textDisabled("{s}", .{note});
+    }
+    if (size_bytes) |size| {
+        zgui.textDisabled("Size: {d} bytes", .{size});
+    }
+    if (truncated) {
+        zgui.textDisabled("Preview truncated.", .{});
+    }
+    if (status != null or size_bytes != null or truncated) {
+        zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
+    }
+}
+
+fn drawTextPreview(
+    allocator: std.mem.Allocator,
+    preview: AttachmentOpen,
+    body: []const u8,
+    format: PreviewFormat,
+    t: *const theme.Theme,
+) void {
+    var display = body;
+    if (format == .json and body.len <= json_preview_limit) {
+        if (std.json.parseFromSlice(std.json.Value, allocator, body, .{})) |parsed| {
+            defer parsed.deinit();
+            if (std.json.Stringify.valueAlloc(allocator, parsed.value, .{ .whitespace = .indent_2 })) |pretty| {
+                defer allocator.free(pretty);
+                display = pretty;
+            } else |_| {}
+        } else |_| {}
+    }
+
+    const preview_id = zgui.formatZ("##attachment_preview_{s}", .{preview.name});
+    const preview_height: f32 = 180.0;
+    if (zgui.beginChild(preview_id, .{ .h = preview_height, .child_flags = .{ .border = true } })) {
+        switch (format) {
+            .markdown => {
+                drawMarkdownPreview(display, t);
+            },
+            .log => {
+                drawLogPreview(display);
+            },
+            else => {
+                zgui.textWrapped("{s}", .{display});
+            },
+        }
+    }
+    zgui.endChild();
+}
+
+fn drawMarkdownPreview(text: []const u8, t: *const theme.Theme) void {
+    var it = std.mem.splitScalar(u8, text, '\n');
+    var line_count: usize = 0;
+    while (it.next()) |line| {
+        if (line_count >= log_preview_lines) break;
+        if (std.mem.startsWith(u8, line, "#")) {
+            theme.push(.heading);
+            zgui.text("{s}", .{std.mem.trim(u8, line, "# ")});
+            theme.pop();
+        } else {
+            zgui.textWrapped("{s}", .{line});
+        }
+        line_count += 1;
+    }
+    if (line_count >= log_preview_lines) {
+        zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
+        zgui.textDisabled("Preview truncated.", .{});
+    }
+}
+
+fn drawLogPreview(text: []const u8) void {
+    var it = std.mem.splitScalar(u8, text, '\n');
+    var line_count: usize = 0;
+    while (it.next()) |line| {
+        if (line_count >= log_preview_lines) break;
+        if (hasTokenIgnoreCase(line, "error")) {
+            zgui.textColored(.{ 0.9, 0.3, 0.3, 1.0 }, "{s}", .{line});
+        } else if (hasTokenIgnoreCase(line, "warn")) {
+            zgui.textColored(.{ 0.9, 0.6, 0.2, 1.0 }, "{s}", .{line});
+        } else if (hasTokenIgnoreCase(line, "info")) {
+            zgui.textColored(.{ 0.4, 0.7, 0.9, 1.0 }, "{s}", .{line});
+        } else {
+            zgui.text("{s}", .{line});
+        }
+        line_count += 1;
+    }
+    if (line_count >= log_preview_lines) {
+        zgui.textDisabled("Preview truncated.", .{});
+    }
 }
