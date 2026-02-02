@@ -31,6 +31,7 @@ pub const ControlPanelAction = struct {
     clear_node_describe: ?[]u8 = null,
     clear_node_result: bool = false,
     clear_operator_notice: bool = false,
+    open_attachment: ?sessions_panel.AttachmentOpen = null,
 };
 
 pub fn draw(
@@ -50,6 +51,7 @@ pub fn draw(
             action.refresh_sessions = sessions_action.refresh;
             action.new_session = sessions_action.new_session;
             action.select_session = sessions_action.selected_key;
+            action.open_attachment = sessions_action.open_attachment;
             components.core.tab_bar.endItem();
         }
         if (components.core.tab_bar.beginItem("Settings")) {

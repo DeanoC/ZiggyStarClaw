@@ -5,6 +5,8 @@ const state = @import("../client/state.zig");
 const config = @import("../client/config.zig");
 const theme = @import("theme.zig");
 const panel_manager = @import("panel_manager.zig");
+const text_buffer = @import("text_buffer.zig");
+const workspace = @import("workspace.zig");
 const dock_layout = @import("dock_layout.zig");
 const ui_command_inbox = @import("ui_command_inbox.zig");
 const imgui_bridge = @import("imgui_bridge.zig");
@@ -13,6 +15,7 @@ const chat_panel = @import("panels/chat_panel.zig");
 const code_editor_panel = @import("panels/code_editor_panel.zig");
 const tool_output_panel = @import("panels/tool_output_panel.zig");
 const control_panel = @import("panels/control_panel.zig");
+const sessions_panel = @import("panels/sessions_panel.zig");
 const status_bar = @import("status_bar.zig");
 
 pub const UiAction = struct {
@@ -58,6 +61,7 @@ pub fn draw(
     dock_state: *dock_layout.DockState,
 ) UiAction {
     var action = UiAction{};
+    var pending_attachment: ?sessions_panel.AttachmentOpen = null;
     image_cache.beginFrame();
 
     inbox.collectFromMessages(allocator, ctx.messages.items, manager);
@@ -193,6 +197,9 @@ pub fn draw(
                         action.clear_node_describe = control_action.clear_node_describe;
                         action.clear_node_result = control_action.clear_node_result;
                         action.clear_operator_notice = control_action.clear_operator_notice;
+                        if (control_action.open_attachment) |attachment| {
+                            pending_attachment = attachment;
+                        }
                     },
                 }
             }
@@ -222,6 +229,10 @@ pub fn draw(
             index += 1;
         }
 
+        if (pending_attachment) |attachment| {
+            openAttachmentInEditor(allocator, manager, attachment);
+        }
+
         zgui.pushStyleVar1f(.{ .idx = .window_border_size, .v = 0.0 });
         zgui.pushStyleVar2f(.{ .idx = .window_padding, .v = .{ t.spacing.sm, status_padding_y } });
         zgui.pushStyleVar2f(.{ .idx = .item_spacing, .v = .{ t.spacing.sm, 0.0 } });
@@ -247,4 +258,63 @@ pub fn draw(
 
 pub fn syncSettings(cfg: config.Config) void {
     @import("settings_view.zig").syncFromConfig(cfg);
+}
+
+fn openAttachmentInEditor(
+    allocator: std.mem.Allocator,
+    manager: *panel_manager.PanelManager,
+    attachment: sessions_panel.AttachmentOpen,
+) void {
+    const language = if (attachment.kind.len > 0) attachment.kind else "text";
+    const content = std.fmt.allocPrint(
+        allocator,
+        "Attachment: {s}\nType: {s}\nURL: {s}\nRole: {s}\nTimestamp: {d}\n",
+        .{
+            attachment.name,
+            attachment.kind,
+            attachment.url,
+            attachment.role,
+            attachment.timestamp,
+        },
+    ) catch return;
+    defer allocator.free(content);
+
+    if (manager.findReusablePanel(.CodeEditor, attachment.name)) |panel| {
+        if (!std.mem.eql(u8, panel.data.CodeEditor.language, language)) {
+            allocator.free(panel.data.CodeEditor.language);
+            panel.data.CodeEditor.language = allocator.dupe(u8, language) catch panel.data.CodeEditor.language;
+        }
+        panel.data.CodeEditor.content.set(allocator, content) catch {};
+        panel.data.CodeEditor.last_modified_by = .ai;
+        panel.data.CodeEditor.version += 1;
+        panel.state.is_dirty = false;
+        manager.focusPanel(panel.id);
+        return;
+    }
+
+    const file_copy = allocator.dupe(u8, attachment.name) catch return;
+    errdefer allocator.free(file_copy);
+    const lang_copy = allocator.dupe(u8, language) catch {
+        allocator.free(file_copy);
+        return;
+    };
+    errdefer allocator.free(lang_copy);
+    var buffer = text_buffer.TextBuffer.init(allocator, content) catch {
+        allocator.free(file_copy);
+        allocator.free(lang_copy);
+        return;
+    };
+    errdefer buffer.deinit(allocator);
+    const panel_data = workspace.PanelData{ .CodeEditor = .{
+        .file_id = file_copy,
+        .language = lang_copy,
+        .content = buffer,
+        .last_modified_by = .ai,
+        .version = 1,
+    } };
+    _ = manager.openPanel(.CodeEditor, attachment.name, panel_data) catch {
+        var cleanup = panel_data;
+        cleanup.deinit(allocator);
+        return;
+    };
 }

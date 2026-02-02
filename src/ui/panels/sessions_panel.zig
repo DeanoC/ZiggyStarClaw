@@ -6,7 +6,20 @@ const components = @import("../components/components.zig");
 const session_list = @import("../session_list.zig");
 const theme = @import("../theme.zig");
 
-pub const SessionPanelAction = session_list.SessionAction;
+pub const AttachmentOpen = struct {
+    name: []const u8,
+    kind: []const u8,
+    url: []const u8,
+    role: []const u8,
+    timestamp: i64,
+};
+
+pub const SessionPanelAction = struct {
+    refresh: bool = false,
+    new_session: bool = false,
+    selected_key: ?[]u8 = null,
+    open_attachment: ?AttachmentOpen = null,
+};
 
 var split_state = components.layout.split_pane.SplitState{ .size = 260.0 };
 var selected_file_index: ?usize = null;
@@ -34,12 +47,15 @@ pub fn draw(
 
     components.layout.split_pane.begin(split_args, &split_state);
     if (components.layout.split_pane.beginPrimary(split_args, &split_state)) {
-        action = session_list.draw(
+        const list_action = session_list.draw(
             allocator,
             ctx.sessions.items,
             ctx.current_session,
             ctx.sessions_loading,
         );
+        action.refresh = list_action.refresh;
+        action.new_session = list_action.new_session;
+        action.selected_key = list_action.selected_key;
         if (action.selected_key != null) {
             selected_file_index = null;
         }
@@ -121,6 +137,8 @@ fn drawSessionDetails(
 
     var files_buf: [12]components.composite.source_browser.FileEntry = undefined;
     const files = collectFiles(ctx.messages.items, &files_buf);
+    var previews_buf: [12]AttachmentOpen = undefined;
+    const previews = collectAttachmentPreviews(ctx.messages.items, &previews_buf);
 
     const source_action = components.composite.source_browser.draw(.{
         .id = "session_source_browser",
@@ -142,6 +160,25 @@ fn drawSessionDetails(
             selected_file_index = file_index;
         }
     }
+
+    zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
+    if (components.layout.card.begin(.{ .title = "Attachment Preview", .id = "attachment_preview" })) {
+        if (selected_file_index == null or selected_file_index.? >= previews.len) {
+            zgui.textDisabled("Select a file to preview its details.", .{});
+        } else {
+            const preview = previews[selected_file_index.?];
+            zgui.textWrapped("Name: {s}", .{preview.name});
+            zgui.textWrapped("Type: {s}", .{preview.kind});
+            zgui.textWrapped("Source: {s}", .{preview.url});
+            zgui.textWrapped("Role: {s}", .{preview.role});
+            zgui.textWrapped("Timestamp: {d}", .{preview.timestamp});
+            zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
+            if (components.core.button.draw("Open in Editor", .{ .variant = .secondary, .size = .small })) {
+                action.open_attachment = preview;
+            }
+        }
+    }
+    components.layout.card.end();
 }
 
 fn resolveSelectedSessionIndex(ctx: *state.ClientContext) ?usize {
@@ -204,6 +241,32 @@ fn collectFiles(
                     .language = attachment.kind,
                     .status = message.role,
                     .dirty = false,
+                };
+                len += 1;
+            }
+        }
+    }
+    return buf[0..len];
+}
+
+fn collectAttachmentPreviews(
+    messages: []const types.ChatMessage,
+    buf: []AttachmentOpen,
+) []AttachmentOpen {
+    var len: usize = 0;
+    var index: usize = messages.len;
+    while (index > 0 and len < buf.len) : (index -= 1) {
+        const message = messages[index - 1];
+        if (message.attachments) |attachments| {
+            for (attachments) |attachment| {
+                if (len >= buf.len) break;
+                const name = attachment.name orelse attachment.url;
+                buf[len] = .{
+                    .name = name,
+                    .kind = attachment.kind,
+                    .url = attachment.url,
+                    .role = message.role,
+                    .timestamp = message.timestamp,
                 };
                 len += 1;
             }
