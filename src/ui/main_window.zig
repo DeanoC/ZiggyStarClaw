@@ -63,6 +63,10 @@ pub fn draw(
     inbox.collectFromMessages(allocator, ctx.messages.items, manager);
 
     var menu_height: f32 = 0.0;
+    const t = theme.activeTheme();
+    zgui.pushStyleVar2f(.{ .idx = .frame_padding, .v = .{ t.spacing.sm, t.spacing.xs } });
+    zgui.pushStyleVar2f(.{ .idx = .item_spacing, .v = .{ t.spacing.sm, t.spacing.xs } });
+    zgui.pushStyleVar2f(.{ .idx = .window_padding, .v = .{ t.spacing.sm, t.spacing.xs } });
     if (zgui.beginMainMenuBar()) {
         if (zgui.beginMenu("Window", true)) {
             const has_control = manager.hasPanel(.Control);
@@ -91,6 +95,7 @@ pub fn draw(
         menu_height = zgui.getWindowSize()[1];
         zgui.endMainMenuBar();
     }
+    zgui.popStyleVar(.{ .count = 3 });
 
     const display = zgui.io.getDisplaySize();
     if (display[0] > 0.0 and display[1] > 0.0) {
@@ -217,13 +222,13 @@ pub fn draw(
     zgui.popStyleVar(.{ .count = 3 });
 
     const viewport = zgui.getMainViewport();
-    const style = zgui.getStyle();
     const extra_bottom: f32 = if (builtin.abi == .android) 24.0 else 0.0;
     const status_left = safe_insets[0];
     const status_right = safe_insets[2];
     const status_bottom = safe_insets[3] + extra_bottom;
     const status_width = @max(1.0, viewport.size[0] - status_left - status_right);
-    const status_height = zgui.getFrameHeightWithSpacing() + style.window_padding[1] * 2.0 + style.item_spacing[1];
+    const status_padding_y = t.spacing.xs;
+    const status_height = zgui.getFrameHeightWithSpacing() + status_padding_y * 2.0;
     const status_x = viewport.pos[0] + status_left;
     const status_y = viewport.pos[1] + viewport.size[1] - status_bottom - status_height;
     zgui.setNextWindowPos(.{ .x = status_x, .y = status_y, .cond = .always });
@@ -236,13 +241,15 @@ pub fn draw(
         .no_docking = true,
     };
     zgui.pushStyleVar1f(.{ .idx = .window_border_size, .v = 0.0 });
+    zgui.pushStyleVar2f(.{ .idx = .window_padding, .v = .{ t.spacing.sm, status_padding_y } });
+    zgui.pushStyleVar2f(.{ .idx = .item_spacing, .v = .{ t.spacing.sm, 0.0 } });
     if (zgui.begin("StatusBar##overlay", .{ .flags = status_flags })) {
         theme.push(.body);
         status_bar.draw(ctx.state, is_connected, ctx.current_session, ctx.messages.items.len, ctx.last_error);
         theme.pop();
     }
     zgui.end();
-    zgui.popStyleVar(.{ .count = 1 });
+    zgui.popStyleVar(.{ .count = 3 });
 
     if (imgui_bridge.wantSaveIniSettings()) {
         action.save_workspace = true;

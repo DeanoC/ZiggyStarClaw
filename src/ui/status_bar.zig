@@ -1,5 +1,6 @@
 const zgui = @import("zgui");
 const state = @import("../client/state.zig");
+const theme = @import("theme.zig");
 
 pub fn draw(
     client_state: state.ClientState,
@@ -8,28 +9,38 @@ pub fn draw(
     message_count: usize,
     last_error: ?[]const u8,
 ) void {
-    zgui.separator();
-
+    const t = theme.activeTheme();
+    const spacing = t.spacing.sm;
+    const label = t.colors.text_secondary;
+    const value = t.colors.text_primary;
     const status_color: [4]f32 = switch (client_state) {
-        .connected => .{ 0.24, 0.8, 0.45, 1.0 },
-        .connecting, .authenticating => .{ 0.95, 0.7, 0.2, 1.0 },
-        .error_state => .{ 0.9, 0.3, 0.3, 1.0 },
-        .disconnected => if (is_connected) .{ 0.24, 0.8, 0.45, 1.0 } else .{ 0.7, 0.7, 0.7, 1.0 },
+        .connected => t.colors.success,
+        .connecting, .authenticating => t.colors.warning,
+        .error_state => t.colors.danger,
+        .disconnected => if (is_connected) t.colors.success else t.colors.text_secondary,
     };
 
-    zgui.textColored(status_color, "Status: {s}", .{@tagName(client_state)});
-    zgui.sameLine(.{});
-    zgui.text("Connection: {s}", .{if (is_connected) "online" else "offline"});
-    zgui.sameLine(.{});
+    zgui.textColored(label, "Status:", .{});
+    zgui.sameLine(.{ .spacing = spacing });
+    zgui.textColored(status_color, "{s}", .{@tagName(client_state)});
+    zgui.sameLine(.{ .spacing = spacing });
+    zgui.textColored(label, "Connection:", .{});
+    zgui.sameLine(.{ .spacing = spacing });
+    zgui.textColored(value, "{s}", .{if (is_connected) "online" else "offline"});
+    zgui.sameLine(.{ .spacing = spacing });
+    zgui.textColored(label, "Session:", .{});
+    zgui.sameLine(.{ .spacing = spacing });
     if (session_name) |name| {
-        zgui.text("Session: {s}", .{name});
+        zgui.textColored(value, "{s}", .{name});
     } else {
-        zgui.text("Session: (none)", .{});
+        zgui.textColored(label, "(none)", .{});
     }
-    zgui.sameLine(.{});
-    zgui.text("Messages: {d}", .{message_count});
+    zgui.sameLine(.{ .spacing = spacing });
+    zgui.textColored(label, "Messages:", .{});
+    zgui.sameLine(.{ .spacing = spacing });
+    zgui.textColored(value, "{d}", .{message_count});
     if (last_error) |err| {
-        zgui.sameLine(.{});
-        zgui.textColored(.{ 0.9, 0.4, 0.4, 1.0 }, "Error: {s}", .{err});
+        zgui.sameLine(.{ .spacing = spacing });
+        zgui.textColored(t.colors.danger, "Error: {s}", .{err});
     }
 }
