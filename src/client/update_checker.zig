@@ -470,6 +470,8 @@ fn downloadFile(
 
     var redirects_left: u8 = 3;
     var response_opt: ?std.http.Client.Response = null;
+    var req: std.http.Client.Request = undefined;
+    var has_req = false;
     var redirect_buf: [8 * 1024]u8 = undefined;
     while (true) {
         const before = current_url;
@@ -484,11 +486,12 @@ fn downloadFile(
             logger.warn("Download URL parse failed: '{s}' ({})", .{ current_url, err });
             return err;
         };
-        var req = try client.request(.GET, uri, .{});
-        defer req.deinit();
+        var next_req = try client.request(.GET, uri, .{});
+        var next_req_active = true;
+        defer if (next_req_active) next_req.deinit();
 
-        try req.sendBodiless();
-        var response = try req.receiveHead(&redirect_buf);
+        try next_req.sendBodiless();
+        var response = try next_req.receiveHead(&redirect_buf);
         if (response.head.status.class() == .redirect) {
             if (redirects_left == 0) return error.UpdateDownloadFailed;
             const location = response.head.location orelse return error.UpdateDownloadFailed;
@@ -503,9 +506,14 @@ fn downloadFile(
             redirects_left -= 1;
             continue;
         }
+        next_req_active = false;
+        req = next_req;
+        has_req = true;
         response_opt = response;
         break;
     }
+    if (!has_req) return error.UpdateDownloadFailed;
+    defer req.deinit();
     var response = response_opt orelse return error.UpdateDownloadFailed;
     if (response.head.status != .ok) return error.UpdateDownloadFailed;
 
