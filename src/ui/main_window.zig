@@ -86,6 +86,9 @@ pub fn draw(
         .no_background = true,
     };
 
+    zgui.pushStyleVar2f(.{ .idx = .window_padding, .v = .{ 0.0, 0.0 } });
+    zgui.pushStyleVar1f(.{ .idx = .window_border_size, .v = 0.0 });
+    zgui.pushStyleVar1f(.{ .idx = .window_rounding, .v = 0.0 });
     if (zgui.begin("WorkspaceHost", .{ .flags = host_flags })) {
         const dockspace_id = zgui.dockSpace("MainDockSpace", .{ 0.0, 0.0 }, .{ .passthru_central_node = true });
         dock_layout.ensureDockLayout(dock_state, &manager.workspace, dockspace_id);
@@ -180,11 +183,20 @@ pub fn draw(
         }
     }
     zgui.end();
+    zgui.popStyleVar(.{ .count = 3 });
 
     const viewport = zgui.getMainViewport();
-    const status_height = zgui.getFrameHeightWithSpacing();
-    zgui.setNextWindowPos(.{ .x = viewport.work_pos[0], .y = viewport.work_pos[1] + viewport.work_size[1] - status_height, .cond = .always });
-    zgui.setNextWindowSize(.{ .w = viewport.work_size[0], .h = status_height, .cond = .always });
+    const style = zgui.getStyle();
+    const extra_bottom: f32 = if (builtin.abi == .android) 24.0 else 0.0;
+    const status_left = safe_insets[0];
+    const status_right = safe_insets[2];
+    const status_bottom = safe_insets[3] + extra_bottom;
+    const status_width = @max(1.0, viewport.size[0] - status_left - status_right);
+    const status_height = zgui.getFrameHeightWithSpacing() + style.window_padding[1] * 2.0 + style.item_spacing[1];
+    const status_x = viewport.pos[0] + status_left;
+    const status_y = viewport.pos[1] + viewport.size[1] - status_bottom - status_height;
+    zgui.setNextWindowPos(.{ .x = status_x, .y = status_y, .cond = .always });
+    zgui.setNextWindowSize(.{ .w = status_width, .h = status_height, .cond = .always });
     const status_flags = zgui.WindowFlags{
         .no_title_bar = true,
         .no_resize = true,
@@ -192,12 +204,14 @@ pub fn draw(
         .no_saved_settings = true,
         .no_docking = true,
     };
+    zgui.pushStyleVar1f(.{ .idx = .window_border_size, .v = 0.0 });
     if (zgui.begin("StatusBar##overlay", .{ .flags = status_flags })) {
         theme.push(.body);
         status_bar.draw(ctx.state, is_connected, ctx.current_session, ctx.messages.items.len, ctx.last_error);
         theme.pop();
     }
     zgui.end();
+    zgui.popStyleVar(.{ .count = 1 });
 
     if (imgui_bridge.wantSaveIniSettings()) {
         action.save_workspace = true;
