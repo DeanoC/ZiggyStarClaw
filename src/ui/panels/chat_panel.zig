@@ -9,6 +9,8 @@ pub const ChatPanelAction = struct {
     send_message: ?[]u8 = null,
 };
 
+var show_tool_output: bool = false;
+
 pub fn draw(
     allocator: std.mem.Allocator,
     ctx: *state.ClientContext,
@@ -21,7 +23,11 @@ pub fn draw(
     const separator_height: f32 = 1.0 + spacing;
     const input_height: f32 = 80.0 + zgui.getFrameHeight() + spacing * 3.0 + separator_height;
     const history_height = @max(80.0, center_avail[1] - input_height);
-    chat_view.draw(allocator, ctx.messages.items, ctx.stream_text, inbox, history_height);
+    // Tool output toggle lives here (always visible), but is a simple local UI state.
+    _ = zgui.checkbox("Show tool output", .{ .v = &show_tool_output });
+    zgui.sameLine(.{ .spacing = 8.0 });
+    zgui.textDisabled("(toolResult/tool*)", .{});
+    chat_view.draw(allocator, ctx.messages.items, ctx.stream_text, inbox, history_height, show_tool_output);
     zgui.separator();
 
     const input_avail = zgui.getContentRegionAvail();
