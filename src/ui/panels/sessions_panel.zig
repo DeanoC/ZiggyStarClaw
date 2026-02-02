@@ -392,20 +392,38 @@ fn drawAttachmentPreview(
 
     if (content) |body| {
         const format = detectPreviewFormat(preview, body);
+        var display = body;
+        var owns_display = false;
+        if (format == .json and body.len <= json_preview_limit) {
+            if (std.json.parseFromSlice(std.json.Value, allocator, body, .{})) |parsed| {
+                defer parsed.deinit();
+                if (std.json.Stringify.valueAlloc(allocator, parsed.value, .{ .whitespace = .indent_2 })) |pretty| {
+                    display = pretty;
+                    owns_display = true;
+                } else |_| {}
+            } else |_| {}
+        }
+        defer if (owns_display) allocator.free(display);
+
+        var format_buf: [32]u8 = undefined;
         const format_label = switch (format) {
             .json => "json",
             .markdown => "markdown",
             .log => "log",
             .text => "text",
         };
-        zgui.textDisabled("Format: {s}", .{format_label});
+        const format_text = if (owns_display and format == .json)
+            std.fmt.bufPrint(&format_buf, "Format: {s} (formatted)", .{format_label}) catch "Format: json"
+        else
+            std.fmt.bufPrint(&format_buf, "Format: {s}", .{format_label}) catch "Format: text";
+        zgui.textDisabled("{s}", .{format_text});
         zgui.sameLine(.{ .spacing = t.spacing.sm });
         if (components.core.button.draw("Copy Preview", .{ .variant = .ghost, .size = .small })) {
-            const copy_z = zgui.formatZ("{s}", .{body});
+            const copy_z = zgui.formatZ("{s}", .{display});
             zgui.setClipboardText(copy_z);
         }
         zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
-        drawTextPreview(allocator, preview, body, format, t);
+        drawTextPreview(preview, display, format, t);
         return;
     }
 
@@ -520,35 +538,23 @@ fn drawPreviewMeta(
 }
 
 fn drawTextPreview(
-    allocator: std.mem.Allocator,
     preview: AttachmentOpen,
     body: []const u8,
     format: PreviewFormat,
     t: *const theme.Theme,
 ) void {
-    var display = body;
-    if (format == .json and body.len <= json_preview_limit) {
-        if (std.json.parseFromSlice(std.json.Value, allocator, body, .{})) |parsed| {
-            defer parsed.deinit();
-            if (std.json.Stringify.valueAlloc(allocator, parsed.value, .{ .whitespace = .indent_2 })) |pretty| {
-                defer allocator.free(pretty);
-                display = pretty;
-            } else |_| {}
-        } else |_| {}
-    }
-
     const preview_id = zgui.formatZ("##attachment_preview_{s}", .{preview.name});
     const preview_height: f32 = 180.0;
     if (zgui.beginChild(preview_id, .{ .h = preview_height, .child_flags = .{ .border = true } })) {
         switch (format) {
             .markdown => {
-                drawMarkdownPreview(display, t);
+                drawMarkdownPreview(body, t);
             },
             .log => {
-                drawLogPreview(display);
+                drawLogPreview(body);
             },
             else => {
-                zgui.textWrapped("{s}", .{display});
+                zgui.textWrapped("{s}", .{body});
             },
         }
     }
