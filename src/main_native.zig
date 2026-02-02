@@ -38,6 +38,8 @@ const icon = @cImport({
     @cInclude("icon_loader.h");
 });
 
+const startup_log_path = "ziggystarclaw_startup.log";
+
 extern fn zgui_opengl_load() c_int;
 extern fn zgui_glViewport(x: c_int, y: c_int, w: c_int, h: c_int) void;
 extern fn zgui_glClearColor(r: f32, g: f32, b: f32, a: f32) void;
@@ -653,7 +655,13 @@ fn buildUserMessage(
     };
 }
 
-pub fn main() !void {
+pub fn main() void {
+    mainImpl() catch |err| {
+        fatalExit("Startup failed: {}", .{err});
+    };
+}
+
+fn mainImpl() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
 
@@ -661,6 +669,12 @@ pub fn main() !void {
 
     try initLogging(allocator);
     defer logger.deinit();
+
+    var instance_lock = acquireSingleInstance(allocator) catch |err| switch (err) {
+        error.AlreadyRunning => fatalExit("ZiggyStarClaw is already running.", .{}),
+        else => fatalExit("Failed to acquire single-instance lock: {}", .{err}),
+    };
+    defer instance_lock.close();
 
     var cfg = try config.loadOrDefault(allocator, "ziggystarclaw_config.json");
     defer cfg.deinit(allocator);
@@ -1249,8 +1263,36 @@ fn initLogging(allocator: std.mem.Allocator) !void {
             logger.warn("Failed to open log file: {}", .{err});
         };
     } else {
-        logger.initFile("ziggystarclaw_startup.log") catch {};
+        logger.initFile(startup_log_path) catch {};
     }
+}
+
+fn acquireSingleInstance(allocator: std.mem.Allocator) !std.fs.File {
+    const app_dir = try std.fs.getAppDataDir(allocator, "ZiggyStarClaw");
+    defer allocator.free(app_dir);
+    try std.fs.cwd().makePath(app_dir);
+    const lock_path = try std.fs.path.join(allocator, &.{ app_dir, "client.lock" });
+    defer allocator.free(lock_path);
+
+    return std.fs.cwd().createFile(lock_path, .{
+        .read = true,
+        .truncate = false,
+        .lock = .exclusive,
+        .lock_nonblocking = true,
+    }) catch |err| switch (err) {
+        error.WouldBlock, error.AccessDenied => error.AlreadyRunning,
+        else => err,
+    };
+}
+
+fn fatalExit(comptime fmt: []const u8, args: anytype) noreturn {
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, fmt, args) catch "Startup failed.";
+    logger.err("{s}", .{msg});
+    var stderr_buf: [520]u8 = undefined;
+    const line = std.fmt.bufPrint(&stderr_buf, "{s}\n", .{msg}) catch msg;
+    _ = std.fs.File.stderr().writeAll(line) catch {};
+    std.process.exit(1);
 }
 
 fn parseLogLevel(value: []const u8) ?logger.Level {
