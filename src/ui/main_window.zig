@@ -588,15 +588,27 @@ fn syncAttachmentFetches(allocator: std.mem.Allocator, manager: *panel_manager.P
                 .ready => {
                     if (cached.data) |data| {
                         const slice = trimBody(data, attachment_editor_limit);
-                        if (composeAttachmentContent(allocator, .{
+                        const attach = sessions_panel.AttachmentOpen{
                             .name = entry.name,
                             .kind = entry.kind,
                             .url = entry.url,
                             .role = entry.role,
                             .timestamp = entry.timestamp,
-                        }, slice.body, null, slice.truncated)) |content| {
-                            defer allocator.free(content);
-                            updatePanelContent(manager, entry.panel_id, allocator, content);
+                        };
+                        var content: ?[]u8 = null;
+                        if (!slice.truncated and isJsonAttachment(attach, slice.body)) {
+                            if (prettyJsonAlloc(allocator, slice.body)) |pretty| {
+                                defer allocator.free(pretty);
+                                content = composeAttachmentContent(allocator, attach, pretty, null, false);
+                            }
+                        }
+                        if (content == null) {
+                            content = composeAttachmentContent(allocator, attach, slice.body, null, slice.truncated);
+                        }
+                        if (content) |value| {
+                            defer allocator.free(value);
+                            const lang = guessAttachmentLanguageFromBody(attach, slice.body);
+                            updatePanelContent(manager, entry.panel_id, allocator, value, lang);
                         }
                     }
                 },
@@ -606,15 +618,16 @@ fn syncAttachmentFetches(allocator: std.mem.Allocator, manager: *panel_manager.P
                         std.fmt.bufPrint(&status_buf, "Fetch failed: {s}", .{err}) catch "Fetch failed."
                     else
                         "Fetch failed.";
-                    if (composeAttachmentContent(allocator, .{
+                    const attach = sessions_panel.AttachmentOpen{
                         .name = entry.name,
                         .kind = entry.kind,
                         .url = entry.url,
                         .role = entry.role,
                         .timestamp = entry.timestamp,
-                    }, null, status, false)) |content| {
+                    };
+                    if (composeAttachmentContent(allocator, attach, null, status, false)) |content| {
                         defer allocator.free(content);
-                        updatePanelContent(manager, entry.panel_id, allocator, content);
+                        updatePanelContent(manager, entry.panel_id, allocator, content, null);
                     }
                 },
             }
@@ -632,9 +645,18 @@ fn updatePanelContent(
     panel_id: workspace.PanelId,
     allocator: std.mem.Allocator,
     content: []const u8,
+    language: ?[]const u8,
 ) void {
     for (manager.workspace.panels.items) |*panel| {
         if (panel.id != panel_id or panel.kind != .CodeEditor) continue;
+        if (language) |lang| {
+            if (std.mem.eql(u8, panel.data.CodeEditor.language, "text") and
+                !std.mem.eql(u8, panel.data.CodeEditor.language, lang))
+            {
+                allocator.free(panel.data.CodeEditor.language);
+                panel.data.CodeEditor.language = allocator.dupe(u8, lang) catch panel.data.CodeEditor.language;
+            }
+        }
         panel.data.CodeEditor.content.set(allocator, content) catch {};
         panel.data.CodeEditor.last_modified_by = .ai;
         panel.data.CodeEditor.version += 1;
@@ -652,4 +674,12 @@ fn findPanelById(
         if (panel.id == panel_id) return panel;
     }
     return null;
+}
+
+fn guessAttachmentLanguageFromBody(
+    att: sessions_panel.AttachmentOpen,
+    body: []const u8,
+) []const u8 {
+    if (isJsonAttachment(att, body)) return "json";
+    return guessAttachmentLanguage(att);
 }
