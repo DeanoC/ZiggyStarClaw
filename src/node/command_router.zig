@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const node_context = @import("node_context.zig");
 const NodeContext = node_context.NodeContext;
 const Command = node_context.Command;
@@ -237,29 +238,40 @@ fn systemRunHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std
     var timed_out = false;
     var reaped_status: ?u32 = null;
 
-    while (true) {
-        const elapsed = std.time.milliTimestamp() - start_time;
-        if (elapsed > timeout_ms) {
-            timed_out = true;
-            _ = child.kill() catch {};
-            break;
-        }
+    if (comptime builtin.os.tag == .windows) {
+        // TODO: implement a non-blocking wait / poll for Windows.
+        // For now, fall back to a blocking wait (no timeout).
+        reaped_status = null;
+    } else {
+        while (true) {
+            const elapsed = std.time.milliTimestamp() - start_time;
+            if (elapsed > timeout_ms) {
+                timed_out = true;
+                _ = child.kill() catch {};
+                break;
+            }
 
-        // Check if child exited (poll). NOTE: waitpid reaps the child; don't call child.wait() after.
-        const result = std.posix.waitpid(child.id, std.posix.W.NOHANG);
-        if (result.pid != 0) {
-            reaped_status = result.status;
-            break;
-        }
+            // Check if child exited (poll). NOTE: waitpid reaps the child; don't call child.wait() after.
+            const result = std.posix.waitpid(child.id, std.posix.W.NOHANG);
+            if (result.pid != 0) {
+                reaped_status = result.status;
+                break;
+            }
 
-        std.Thread.sleep(50 * std.time.ns_per_ms);
+            std.Thread.sleep(50 * std.time.ns_per_ms);
+        }
     }
 
     stdout_thread.join();
     stderr_thread.join();
 
     // Get exit status
-    const term: std.process.Child.Term = if (timed_out) blk: {
+    const term: std.process.Child.Term = if (comptime builtin.os.tag == .windows) blk: {
+        break :blk child.wait() catch |err| {
+            logger.err("Failed to wait for process: {s}", .{@errorName(err)});
+            return CommandError.ExecutionFailed;
+        };
+    } else if (timed_out) blk: {
         break :blk std.process.Child.Term{ .Signal = 9 };
     } else if (reaped_status) |status| blk: {
         if (std.posix.W.IFEXITED(status)) {

@@ -13,24 +13,8 @@ const requests = @import("protocol/requests.zig");
 const messages = @import("protocol/messages.zig");
 const main_operator = @import("main_operator.zig");
 const build_options = @import("build_options");
-const main_node = if (builtin.os.tag == .windows) struct {
-    pub const usage =
-        \\ZiggyStarClaw Node Mode
-        \\
-        \\Node mode is not supported on Windows.
-        \\
-    ;
-
-    pub const NodeCliOptions = struct {};
-
-    pub fn parseNodeOptions(_: std.mem.Allocator, _: []const []const u8) !NodeCliOptions {
-        return error.NodeModeUnsupported;
-    }
-
-    pub fn runNodeMode(_: std.mem.Allocator, _: NodeCliOptions) !void {
-        return error.NodeModeUnsupported;
-    }
-} else @import("main_node.zig");
+// Node mode support is cross-platform (Windows included).
+const main_node = @import("main_node.zig");
 
 pub const std_options = std.Options{
     .logFn = cliLogFn,
@@ -48,6 +32,8 @@ const usage =
     \\Options:
     \\  --url <ws/wss url>       Override server URL
     \\  --token <token>          Override auth token (alias: --auth-token)
+    \\  --gateway-token <token>  Alias for --token
+    \\  --log-level <level>      Log level (debug|info|warn|error)
     \\  --config <path>          Config file path (default: ziggystarclaw_config.json)
     \\  --update-url <url>       Override update manifest URL
     \\  --print-update-url       Print normalized update manifest URL and exit
@@ -182,10 +168,19 @@ pub fn main() !void {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             override_url = args[i];
-        } else if (std.mem.eql(u8, arg, "--token") or std.mem.eql(u8, arg, "--auth-token") or std.mem.eql(u8, arg, "--auth_token")) {
+        } else if (std.mem.eql(u8, arg, "--token") or std.mem.eql(u8, arg, "--auth-token") or std.mem.eql(u8, arg, "--auth_token") or std.mem.eql(u8, arg, "--gateway-token")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             override_token = args[i];
+        } else if (std.mem.eql(u8, arg, "--log-level")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            if (parseLogLevel(args[i])) |level| {
+                logger.setLevel(level);
+                cli_log_level = toStdLogLevel(level);
+            } else {
+                return error.InvalidArguments;
+            }
         } else if (std.mem.eql(u8, arg, "--update-url")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
@@ -324,10 +319,6 @@ pub fn main() !void {
 
     // Handle node mode
     if (node_mode) {
-        if (builtin.os.tag == .windows) {
-            logger.err("Node mode is not supported on Windows.", .{});
-            return error.NodeModeUnsupported;
-        }
         const node_opts = try main_node.parseNodeOptions(allocator, args[1..]);
         try main_node.runNodeMode(allocator, node_opts);
         return;
@@ -1755,7 +1746,14 @@ fn cliLogFn(
     comptime format: []const u8,
     args: anytype,
 ) void {
-    if (stdLogRank(level) < stdLogRank(cli_log_level)) return;
+    // Effective log level is the stricter of:
+    // - cli_log_level (set via env MOLT_LOG_LEVEL today)
+    // - logger.getLevel() (set by node-mode/operator-mode flags)
+    const logger_level = toStdLogLevel(logger.getLevel());
+    // Choose the more verbose (lower rank) of the two thresholds.
+    const effective = if (stdLogRank(cli_log_level) < stdLogRank(logger_level)) cli_log_level else logger_level;
+    if (stdLogRank(level) < stdLogRank(effective)) return;
+
     var stderr = std.fs.File.stderr().deprecatedWriter();
     if (scope == .default) {
         stderr.print("{s}: ", .{@tagName(level)}) catch return;

@@ -10,7 +10,14 @@ const builtin = @import("builtin");
 pub const WebSocketClient = struct {
     allocator: std.mem.Allocator,
     url: []const u8,
+    // Token used for the initial WebSocket handshake (Authorization header)
     token: []const u8,
+    // Token used for the connect request auth payload (params.auth.token).
+    // Defaults to `token`.
+    connect_auth_token: ?[]const u8 = null,
+    // Token used inside the device-auth signed payload (distinct from gateway auth).
+    // For node-mode this should be the node device token.
+    device_auth_token: ?[]const u8 = null,
     insecure_tls: bool = false,
     connect_host_override: ?[]const u8 = null,
     connect_timeout_ms: u32 = 10_000,
@@ -76,6 +83,14 @@ pub const WebSocketClient = struct {
     }) void {
         self.connect_caps = params.caps;
         self.connect_commands = params.commands;
+    }
+
+    pub fn setConnectAuthToken(self: *WebSocketClient, token: []const u8) void {
+        self.connect_auth_token = token;
+    }
+
+    pub fn setDeviceAuthToken(self: *WebSocketClient, token: []const u8) void {
+        self.device_auth_token = token;
     }
 
     pub fn storeDeviceToken(
@@ -259,11 +274,16 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
     const client_mode = self.connect_client_mode;
     // Prefer the configured gateway token (self.token). Only fall back to a stored device token
     // if we weren't given a gateway token.
-    const auth_token = if (self.token.len > 0) self.token else if (self.device_identity) |ident|
-        (ident.device_token orelse "")
-    else
-        "";
-    const auth = if (auth_token.len > 0) gateway.ConnectAuth{ .token = auth_token } else null;
+    const gateway_token = blk: {
+        if (self.connect_auth_token) |t| {
+            if (t.len > 0) break :blk t;
+        }
+        if (self.token.len > 0) break :blk self.token;
+        // Last resort fallback if the caller didn't pass a handshake token.
+        if (self.device_identity) |ident| break :blk (ident.device_token orelse "");
+        break :blk "";
+    };
+    const auth = if (gateway_token.len > 0) gateway.ConnectAuth{ .token = gateway_token } else null;
     var signature_buf: ?[]u8 = null;
     defer if (signature_buf) |sig| self.allocator.free(sig);
 
@@ -272,6 +292,14 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
         const ident = self.device_identity orelse return error.MissingDeviceIdentity;
         if (nonce == null) return error.MissingConnectNonce;
         const signed_at = std.time.milliTimestamp();
+        const device_token = devtok: {
+            if (self.device_auth_token) |t| {
+                if (t.len > 0) break :devtok t;
+            }
+            // Default to gateway token for legacy behavior.
+            break :devtok gateway_token;
+        };
+
         const payload = try buildDeviceAuthPayload(self.allocator, .{
             .device_id = ident.device_id,
             .client_id = client_id,
@@ -279,7 +307,7 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
             .role = self.connect_role,
             .scopes = scopes,
             .signed_at_ms = signed_at,
-            .token = if (auth_token.len > 0) auth_token else "",
+            .token = device_token,
             .nonce = nonce.?,
         });
         defer self.allocator.free(payload);
@@ -304,10 +332,10 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
             .nonce = nonce,
         };
     };
-    const token_source = if (auth_token.len == 0)
+    const token_source = if (gateway_token.len == 0)
         "none"
     else if (self.device_identity) |ident|
-        if (ident.device_token != null and std.mem.eql(u8, auth_token, ident.device_token.?)) "device" else "shared"
+        if (ident.device_token != null and std.mem.eql(u8, gateway_token, ident.device_token.?)) "device" else "shared"
     else
         "shared";
     logger.info(
@@ -368,8 +396,8 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
     const payload = try messages.serializeMessage(self.allocator, request);
     defer self.allocator.free(payload);
 
-    if (auth_token.len > 0) {
-        const redacted = try std.mem.replaceOwned(u8, self.allocator, payload, auth_token, "<redacted>");
+    if (gateway_token.len > 0) {
+        const redacted = try std.mem.replaceOwned(u8, self.allocator, payload, gateway_token, "<redacted>");
         defer self.allocator.free(redacted);
         logger.debug("Connect request payload: {s}", .{redacted});
     } else {
