@@ -66,8 +66,6 @@ pub fn draw(
     const t = theme.activeTheme();
     const status_padding_y = t.spacing.xs;
     const status_height = zgui.getFrameHeightWithSpacing() + status_padding_y * 2.0;
-    var host_pos: [2]f32 = .{ 0.0, 0.0 };
-    var host_size: [2]f32 = .{ 0.0, 0.0 };
     zgui.pushStyleVar2f(.{ .idx = .frame_padding, .v = .{ t.spacing.sm, t.spacing.xs } });
     zgui.pushStyleVar2f(.{ .idx = .item_spacing, .v = .{ t.spacing.sm, t.spacing.xs } });
     zgui.pushStyleVar2f(.{ .idx = .window_padding, .v = .{ t.spacing.sm, t.spacing.xs } });
@@ -109,15 +107,9 @@ pub fn draw(
         const bottom = safe_insets[3];
         const width = @max(1.0, display[0] - left - right);
         const extra_bottom: f32 = if (builtin.abi == .android) 24.0 else 0.0;
-        const height = @max(1.0, display[1] - top - bottom - extra_bottom - status_height);
-        host_pos = .{ left, top };
-        host_size = .{ width, height };
+        const height = @max(1.0, display[1] - top - bottom - extra_bottom);
         zgui.setNextWindowPos(.{ .x = left, .y = top, .cond = .always });
         zgui.setNextWindowSize(.{ .w = width, .h = height, .cond = .always });
-    } else {
-        const viewport = zgui.getMainViewport();
-        host_pos = viewport.work_pos;
-        host_size = viewport.work_size;
     }
 
     const host_flags = zgui.WindowFlags{
@@ -134,10 +126,12 @@ pub fn draw(
     zgui.pushStyleVar1f(.{ .idx = .window_border_size, .v = 0.0 });
     zgui.pushStyleVar1f(.{ .idx = .window_rounding, .v = 0.0 });
     if (zgui.begin("WorkspaceHost", .{ .flags = host_flags })) {
-        const dockspace_id = zgui.dockSpace("MainDockSpace", .{ 0.0, 0.0 }, .{});
-        const dock_host_pos = zgui.getWindowPos();
-        const dock_host_size = zgui.getWindowSize();
-        dock_layout.ensureDockLayout(dock_state, &manager.workspace, dockspace_id, dock_host_pos, dock_host_size);
+        const avail = zgui.getContentRegionAvail();
+        const dock_height = @max(1.0, avail[1] - status_height);
+        const dock_size = .{ avail[0], dock_height };
+        const dock_pos = zgui.getCursorScreenPos();
+        const dockspace_id = zgui.dockSpace("MainDockSpace", dock_size, .{});
+        dock_layout.ensureDockLayout(dock_state, &manager.workspace, dockspace_id, dock_pos, dock_size);
 
         var index: usize = 0;
         while (index < manager.workspace.panels.items.len) {
@@ -227,28 +221,18 @@ pub fn draw(
 
             index += 1;
         }
-    }
-    zgui.end();
-    zgui.popStyleVar(.{ .count = 3 });
-
-    const status_x = host_pos[0];
-    const status_y = host_pos[1] + host_size[1];
-    zgui.setNextWindowPos(.{ .x = status_x, .y = status_y, .cond = .always });
-    zgui.setNextWindowSize(.{ .w = host_size[0], .h = status_height, .cond = .always });
-    const status_flags = zgui.WindowFlags{
-        .no_title_bar = true,
-        .no_resize = true,
-        .no_move = true,
-        .no_saved_settings = true,
-        .no_docking = true,
-    };
-    zgui.pushStyleVar1f(.{ .idx = .window_border_size, .v = 0.0 });
-    zgui.pushStyleVar2f(.{ .idx = .window_padding, .v = .{ t.spacing.sm, status_padding_y } });
-    zgui.pushStyleVar2f(.{ .idx = .item_spacing, .v = .{ t.spacing.sm, 0.0 } });
-    if (zgui.begin("StatusBar##overlay", .{ .flags = status_flags })) {
-        theme.push(.body);
-        status_bar.draw(ctx.state, is_connected, ctx.current_session, ctx.messages.items.len, ctx.last_error);
-        theme.pop();
+        const status_pos = .{ dock_pos[0], dock_pos[1] + dock_height };
+        zgui.setCursorScreenPos(status_pos);
+        zgui.pushStyleVar1f(.{ .idx = .window_border_size, .v = 0.0 });
+        zgui.pushStyleVar2f(.{ .idx = .window_padding, .v = .{ t.spacing.sm, status_padding_y } });
+        zgui.pushStyleVar2f(.{ .idx = .item_spacing, .v = .{ t.spacing.sm, 0.0 } });
+        if (zgui.beginChild("StatusBar", .{ .h = status_height, .child_flags = .{ .border = false } })) {
+            theme.push(.body);
+            status_bar.draw(ctx.state, is_connected, ctx.current_session, ctx.messages.items.len, ctx.last_error);
+            theme.pop();
+        }
+        zgui.endChild();
+        zgui.popStyleVar(.{ .count = 3 });
     }
     zgui.end();
     zgui.popStyleVar(.{ .count = 3 });
