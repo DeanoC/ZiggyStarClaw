@@ -9,4 +9,5 @@ pub const layout = struct {
     pub const card = @import("layout/card.zig");
     pub const scroll_area = @import("layout/scroll_area.zig");
     pub const sidebar = @import("layout/sidebar.zig");
+    pub const header_bar = @import("layout/header_bar.zig");
 };
