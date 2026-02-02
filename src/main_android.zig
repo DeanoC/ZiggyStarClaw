@@ -11,6 +11,7 @@ const workspace = @import("ui/workspace.zig");
 const ui_command_inbox = @import("ui/ui_command_inbox.zig");
 const dock_layout = @import("ui/dock_layout.zig");
 const image_cache = @import("ui/image_cache.zig");
+const attachment_cache = @import("ui/attachment_cache.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const app_state = @import("client/app_state.zig");
@@ -789,6 +790,7 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
     zgui.io.setIniFilename(null);
     theme.apply();
     image_cache.init(allocator);
+    attachment_cache.init(allocator);
     _ = ImGui_ImplSDL2_InitForOpenGL(@ptrCast(window), @ptrCast(gl_ctx));
     ImGui_ImplOpenGL3_Init("#version 100");
     ui_scale = guessDpiScale(window);
@@ -1226,6 +1228,7 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();
+    attachment_cache.deinit();
     image_cache.deinit();
     zgui.deinit();
     return 0;

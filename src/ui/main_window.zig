@@ -8,6 +8,7 @@ const panel_manager = @import("panel_manager.zig");
 const text_buffer = @import("text_buffer.zig");
 const workspace = @import("workspace.zig");
 const data_uri = @import("data_uri.zig");
+const attachment_cache = @import("attachment_cache.zig");
 const dock_layout = @import("dock_layout.zig");
 const ui_command_inbox = @import("ui_command_inbox.zig");
 const imgui_bridge = @import("imgui_bridge.zig");
@@ -46,6 +47,19 @@ pub const UiAction = struct {
 };
 
 var safe_insets: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };
+const attachment_fetch_limit: usize = 256 * 1024;
+const attachment_editor_limit: usize = 128 * 1024;
+
+const PendingAttachment = struct {
+    panel_id: workspace.PanelId,
+    name: []u8,
+    kind: []u8,
+    url: []u8,
+    role: []u8,
+    timestamp: i64,
+};
+
+var pending_attachment_fetches: std.ArrayList(PendingAttachment) = .empty;
 
 pub fn setSafeInsets(left: f32, top: f32, right: f32, bottom: f32) void {
     safe_insets = .{ left, top, right, bottom };
@@ -234,6 +248,8 @@ pub fn draw(
             openAttachmentInEditor(allocator, manager, attachment);
         }
 
+        syncAttachmentFetches(allocator, manager);
+
         zgui.pushStyleVar1f(.{ .idx = .window_border_size, .v = 0.0 });
         zgui.pushStyleVar2f(.{ .idx = .window_padding, .v = .{ t.spacing.sm, status_padding_y } });
         zgui.pushStyleVar2f(.{ .idx = .item_spacing, .v = .{ t.spacing.sm, 0.0 } });
@@ -267,7 +283,8 @@ fn openAttachmentInEditor(
     attachment: sessions_panel.AttachmentOpen,
 ) void {
     const language = if (attachment.kind.len > 0) attachment.kind else "text";
-    const content = buildAttachmentContent(allocator, attachment) orelse return;
+    var pending_fetch = false;
+    const content = buildAttachmentContent(allocator, attachment, &pending_fetch) orelse return;
     defer allocator.free(content);
 
     if (manager.findReusablePanel(.CodeEditor, attachment.name)) |panel| {
@@ -280,6 +297,9 @@ fn openAttachmentInEditor(
         panel.data.CodeEditor.version += 1;
         panel.state.is_dirty = false;
         manager.focusPanel(panel.id);
+        if (pending_fetch) {
+            trackPendingAttachment(allocator, panel.id, attachment);
+        }
         return;
     }
 
@@ -303,16 +323,70 @@ fn openAttachmentInEditor(
         .last_modified_by = .ai,
         .version = 1,
     } };
-    _ = manager.openPanel(.CodeEditor, attachment.name, panel_data) catch {
+    const panel_id = manager.openPanel(.CodeEditor, attachment.name, panel_data) catch {
         var cleanup = panel_data;
         cleanup.deinit(allocator);
         return;
     };
+    if (pending_fetch) {
+        trackPendingAttachment(allocator, panel_id, attachment);
+    }
 }
 
 fn buildAttachmentContent(
     allocator: std.mem.Allocator,
     attachment: sessions_panel.AttachmentOpen,
+    pending_fetch: *bool,
+) ?[]u8 {
+    pending_fetch.* = false;
+    if (std.mem.startsWith(u8, attachment.url, "data:")) {
+        if (data_uri.decodeDataUriBytes(allocator, attachment.url)) |bytes| {
+            defer allocator.free(bytes);
+            if (std.unicode.utf8ValidateSlice(bytes)) {
+                const slice = trimBody(bytes, attachment_editor_limit);
+                return composeAttachmentContent(allocator, attachment, slice.body, null, slice.truncated);
+            }
+        } else |_| {}
+    }
+
+    if (isHttpUrl(attachment.url)) {
+        attachment_cache.request(attachment.url, attachment_fetch_limit);
+        if (attachment_cache.get(attachment.url)) |entry| {
+            switch (entry.state) {
+                .ready => {
+                    if (entry.data) |data| {
+                        const slice = trimBody(data, attachment_editor_limit);
+                        return composeAttachmentContent(allocator, attachment, slice.body, null, slice.truncated);
+                    }
+                    return composeAttachmentContent(allocator, attachment, null, "Attachment content missing.", false);
+                },
+                .failed => {
+                    var status_buf: [128]u8 = undefined;
+                    const status = if (entry.error_message) |err|
+                        std.fmt.bufPrint(&status_buf, "Fetch failed: {s}", .{err}) catch "Fetch failed."
+                    else
+                        "Fetch failed.";
+                    return composeAttachmentContent(allocator, attachment, null, status, false);
+                },
+                .loading => {
+                    pending_fetch.* = true;
+                    return composeAttachmentContent(allocator, attachment, null, "Fetching attachment...", false);
+                },
+            }
+        }
+        pending_fetch.* = true;
+        return composeAttachmentContent(allocator, attachment, null, "Fetching attachment...", false);
+    }
+
+    return composeAttachmentContent(allocator, attachment, null, null, false);
+}
+
+fn composeAttachmentContent(
+    allocator: std.mem.Allocator,
+    attachment: sessions_panel.AttachmentOpen,
+    body: ?[]const u8,
+    status: ?[]const u8,
+    truncated: bool,
 ) ?[]u8 {
     const header = std.fmt.allocPrint(
         allocator,
@@ -325,31 +399,176 @@ fn buildAttachmentContent(
             attachment.timestamp,
         },
     ) catch return null;
+    errdefer allocator.free(header);
 
-    if (std.mem.startsWith(u8, attachment.url, "data:")) {
-        if (data_uri.decodeDataUriBytes(allocator, attachment.url)) |bytes| {
-            defer allocator.free(bytes);
-            if (std.unicode.utf8ValidateSlice(bytes)) {
-                const max_body: usize = 64 * 1024;
-                const body_len = @min(bytes.len, max_body);
-                const body = allocator.dupe(u8, bytes[0..body_len]) catch null;
-                if (body) |text| {
-                    defer allocator.free(text);
-                    const suffix: []const u8 = if (bytes.len > body_len) "\n\n[truncated]" else "";
-                    const combined = std.fmt.allocPrint(
-                        allocator,
-                        "{s}\n---\n{s}{s}",
-                        .{ header, text, suffix },
-                    ) catch {
-                        allocator.free(header);
-                        return header;
-                    };
-                    allocator.free(header);
-                    return combined;
-                }
-            }
-        } else |_| {}
+    if (status) |note| {
+        const combined = std.fmt.allocPrint(allocator, "{s}\n\n{s}", .{ header, note }) catch return header;
+        allocator.free(header);
+        return combined;
+    }
+
+    if (body) |text| {
+        const suffix: []const u8 = if (truncated) "\n\n[truncated]" else "";
+        const combined = std.fmt.allocPrint(
+            allocator,
+            "{s}\n---\n{s}{s}",
+            .{ header, text, suffix },
+        ) catch return header;
+        allocator.free(header);
+        return combined;
     }
 
     return header;
+}
+
+fn trimBody(data: []const u8, max_len: usize) struct { body: []const u8, truncated: bool } {
+    if (data.len <= max_len) return .{ .body = data, .truncated = false };
+    return .{ .body = data[0..max_len], .truncated = true };
+}
+
+fn isHttpUrl(url: []const u8) bool {
+    return std.mem.startsWith(u8, url, "http://") or std.mem.startsWith(u8, url, "https://");
+}
+
+fn trackPendingAttachment(
+    allocator: std.mem.Allocator,
+    panel_id: workspace.PanelId,
+    attachment: sessions_panel.AttachmentOpen,
+) void {
+    var index: usize = 0;
+    while (index < pending_attachment_fetches.items.len) {
+        if (pending_attachment_fetches.items[index].panel_id == panel_id) {
+            freePendingAttachment(allocator, &pending_attachment_fetches.items[index]);
+            _ = pending_attachment_fetches.orderedRemove(index);
+            break;
+        }
+        index += 1;
+    }
+
+    const name_copy = allocator.dupe(u8, attachment.name) catch return;
+    errdefer allocator.free(name_copy);
+    const kind_copy = allocator.dupe(u8, attachment.kind) catch {
+        allocator.free(name_copy);
+        return;
+    };
+    errdefer allocator.free(kind_copy);
+    const url_copy = allocator.dupe(u8, attachment.url) catch {
+        allocator.free(name_copy);
+        allocator.free(kind_copy);
+        return;
+    };
+    errdefer allocator.free(url_copy);
+    const role_copy = allocator.dupe(u8, attachment.role) catch {
+        allocator.free(name_copy);
+        allocator.free(kind_copy);
+        allocator.free(url_copy);
+        return;
+    };
+
+    pending_attachment_fetches.append(allocator, .{
+        .panel_id = panel_id,
+        .name = name_copy,
+        .kind = kind_copy,
+        .url = url_copy,
+        .role = role_copy,
+        .timestamp = attachment.timestamp,
+    }) catch {
+        allocator.free(name_copy);
+        allocator.free(kind_copy);
+        allocator.free(url_copy);
+        allocator.free(role_copy);
+    };
+}
+
+fn freePendingAttachment(allocator: std.mem.Allocator, entry: *PendingAttachment) void {
+    allocator.free(entry.name);
+    allocator.free(entry.kind);
+    allocator.free(entry.url);
+    allocator.free(entry.role);
+}
+
+fn syncAttachmentFetches(allocator: std.mem.Allocator, manager: *panel_manager.PanelManager) void {
+    var index: usize = 0;
+    while (index < pending_attachment_fetches.items.len) {
+        const entry = &pending_attachment_fetches.items[index];
+        const panel = findPanelById(manager, entry.panel_id);
+        if (panel == null or panel.?.kind != .CodeEditor) {
+            freePendingAttachment(allocator, entry);
+            _ = pending_attachment_fetches.orderedRemove(index);
+            continue;
+        }
+
+        if (attachment_cache.get(entry.url)) |cached| {
+            switch (cached.state) {
+                .loading => {
+                    index += 1;
+                    continue;
+                },
+                .ready => {
+                    if (cached.data) |data| {
+                        const slice = trimBody(data, attachment_editor_limit);
+                        if (composeAttachmentContent(allocator, .{
+                            .name = entry.name,
+                            .kind = entry.kind,
+                            .url = entry.url,
+                            .role = entry.role,
+                            .timestamp = entry.timestamp,
+                        }, slice.body, null, slice.truncated)) |content| {
+                            defer allocator.free(content);
+                            updatePanelContent(manager, entry.panel_id, allocator, content);
+                        }
+                    }
+                },
+                .failed => {
+                    var status_buf: [128]u8 = undefined;
+                    const status = if (cached.error_message) |err|
+                        std.fmt.bufPrint(&status_buf, "Fetch failed: {s}", .{err}) catch "Fetch failed."
+                    else
+                        "Fetch failed.";
+                    if (composeAttachmentContent(allocator, .{
+                        .name = entry.name,
+                        .kind = entry.kind,
+                        .url = entry.url,
+                        .role = entry.role,
+                        .timestamp = entry.timestamp,
+                    }, null, status, false)) |content| {
+                        defer allocator.free(content);
+                        updatePanelContent(manager, entry.panel_id, allocator, content);
+                    }
+                },
+            }
+            freePendingAttachment(allocator, entry);
+            _ = pending_attachment_fetches.orderedRemove(index);
+            continue;
+        }
+
+        index += 1;
+    }
+}
+
+fn updatePanelContent(
+    manager: *panel_manager.PanelManager,
+    panel_id: workspace.PanelId,
+    allocator: std.mem.Allocator,
+    content: []const u8,
+) void {
+    for (manager.workspace.panels.items) |*panel| {
+        if (panel.id != panel_id or panel.kind != .CodeEditor) continue;
+        panel.data.CodeEditor.content.set(allocator, content) catch {};
+        panel.data.CodeEditor.last_modified_by = .ai;
+        panel.data.CodeEditor.version += 1;
+        panel.state.is_dirty = false;
+        manager.workspace.markDirty();
+        break;
+    }
+}
+
+fn findPanelById(
+    manager: *panel_manager.PanelManager,
+    panel_id: workspace.PanelId,
+) ?*workspace.Panel {
+    for (manager.workspace.panels.items) |*panel| {
+        if (panel.id == panel_id) return panel;
+    }
+    return null;
 }

@@ -12,6 +12,7 @@ const workspace = @import("ui/workspace.zig");
 const ui_command_inbox = @import("ui/ui_command_inbox.zig");
 const dock_layout = @import("ui/dock_layout.zig");
 const image_cache = @import("ui/image_cache.zig");
+const attachment_cache = @import("ui/attachment_cache.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const app_state = @import("client/app_state.zig");
@@ -770,10 +771,12 @@ fn mainImpl() !void {
         }
     }
     image_cache.init(allocator);
+    attachment_cache.init(allocator);
     if (use_webgpu) {
         image_cache.setEnabled(false);
     }
     defer image_cache.deinit();
+    defer attachment_cache.deinit();
     defer {
         if (use_webgpu) {
             imgui_wgpu.deinit();

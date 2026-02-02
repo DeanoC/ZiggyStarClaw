@@ -11,6 +11,7 @@ const workspace = @import("ui/workspace.zig");
 const ui_command_inbox = @import("ui/ui_command_inbox.zig");
 const dock_layout = @import("ui/dock_layout.zig");
 const image_cache = @import("ui/image_cache.zig");
+const attachment_cache = @import("ui/attachment_cache.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const app_state = @import("client/app_state.zig");
@@ -174,6 +175,7 @@ fn initApp() !void {
     theme.setMode(theme.modeFromLabel(cfg.ui_theme));
     theme.apply();
     image_cache.init(allocator);
+    attachment_cache.init(allocator);
     if (!ImGui_ImplGlfw_InitForOpenGL(win, true)) {
         logger.err("Failed to init ImGui GLFW backend.", .{});
     }
@@ -200,6 +202,7 @@ fn deinitApp() void {
     if (!initialized) return;
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
+    attachment_cache.deinit();
     image_cache.deinit();
     zgui.deinit();
     manager.deinit();
