@@ -1248,6 +1248,8 @@ fn initLogging(allocator: std.mem.Allocator) !void {
         logger.initFile(path) catch |err| {
             logger.warn("Failed to open log file: {}", .{err});
         };
+    } else {
+        logger.initFile("ziggystarclaw_startup.log") catch {};
     }
 }
 
