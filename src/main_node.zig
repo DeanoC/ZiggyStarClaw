@@ -356,8 +356,10 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
                 opts.insecure_tls,
                 null,
             );
+            // When gateway auth is enabled, the websocket handshake token and connect auth token
+            // must match. Node authorization should come from the device-auth token.
             if (config.device_token) |tok| {
-                ws.setConnectAuthToken(tok);
+                ws.setDeviceAuthToken(tok);
             }
             ws.setConnectProfile(.{
                 .role = "node",
