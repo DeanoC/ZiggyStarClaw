@@ -4,13 +4,31 @@ const types = @import("../protocol/types.zig");
 const ui_command_inbox = @import("ui_command_inbox.zig");
 const image_cache = @import("image_cache.zig");
 
+pub const ChatViewOptions = struct {
+    select_copy_mode: bool = false,
+    show_tool_output: bool = false,
+};
+
+pub fn copyAllToClipboard(
+    allocator: std.mem.Allocator,
+    messages: []const types.ChatMessage,
+    stream_text: ?[]const u8,
+    inbox: ?*const ui_command_inbox.UiCommandInbox,
+    show_tool_output: bool,
+) void {
+    if (ensureChatBuffer(allocator, messages, stream_text, inbox, show_tool_output)) {
+        const zbuf = bufferZ();
+        zgui.setClipboardText(zbuf);
+    }
+}
+
 pub fn draw(
     allocator: std.mem.Allocator,
     messages: []const types.ChatMessage,
     stream_text: ?[]const u8,
     inbox: ?*const ui_command_inbox.UiCommandInbox,
     height: f32,
-    show_tools: bool,
+    opts: ChatViewOptions,
 ) void {
     const clamped = if (height > 60.0) height else 60.0;
     if (zgui.beginChild("ChatHistory", .{ .h = clamped, .child_flags = .{ .border = true } })) {
@@ -40,27 +58,20 @@ pub fn draw(
         last_last_id_hash = last_id_hash;
         last_last_len = last_len;
         last_stream_len = if (stream_text) |stream| stream.len else 0;
-
-        if (zgui.checkbox("Select/Copy Mode", .{ .v = &select_mode })) {
+        if (opts.show_tool_output != last_show_tool_output) {
             content_changed = true;
         }
-        zgui.sameLine(.{});
-        if (zgui.button("Copy All", .{})) {
-            if (ensureChatBuffer(allocator, messages, stream_text, inbox)) {
-                const zbuf = bufferZ();
-                zgui.setClipboardText(zbuf);
-            }
-        }
-        zgui.separator();
+        last_show_tool_output = opts.show_tool_output;
 
-        if (select_mode) {
+        // Header controls are in the Chat panel (outside the scroll view).
+        if (opts.select_copy_mode) {
             if (content_changed or chat_buffer.items.len == 0) {
-                _ = ensureChatBuffer(allocator, messages, stream_text, inbox);
+                _ = ensureChatBuffer(allocator, messages, stream_text, inbox, opts.show_tool_output);
             }
             const zbuf = bufferZ();
             _ = zgui.inputTextMultiline("##chat_select", .{
                 .buf = zbuf,
-                .h = clamped - 60.0,
+                .h = clamped - 20.0,
                 .flags = .{ .read_only = true },
             });
         } else {
@@ -71,7 +82,8 @@ pub fn draw(
                 if (inbox) |store| {
                     if (store.isCommandMessage(msg.id)) continue;
                 }
-                if (!show_tools and isToolRole(msg.role)) {
+                if (!opts.show_tool_output and isToolRole(msg.role)) {
+                if (!opts.show_tool_output and isToolRole(msg.role)) {
                     continue;
                 }
                 zgui.pushIntId(@intCast(index));
@@ -85,7 +97,10 @@ pub fn draw(
                     last_role = msg.role;
                 }
                 const cursor = zgui.getCursorPos();
+                // Enforce wrapping to available width (some platforms end up with wrap disabled).
+                zgui.pushTextWrapPos(0.0);
                 zgui.textWrapped("{s}", .{msg.content});
+                zgui.popTextWrapPos();
                 const after_text = zgui.getCursorPos();
                 const avail = zgui.getContentRegionAvail();
                 const item_height = after_text[1] - cursor[1];
@@ -226,14 +241,15 @@ var last_message_count: usize = 0;
 var last_last_id_hash: u64 = 0;
 var last_last_len: usize = 0;
 var last_stream_len: usize = 0;
-var select_mode: bool = false;
 var chat_buffer: std.ArrayList(u8) = .empty;
+var last_show_tool_output: bool = false;
 
 fn ensureChatBuffer(
     allocator: std.mem.Allocator,
     messages: []const types.ChatMessage,
     stream_text: ?[]const u8,
     inbox: ?*const ui_command_inbox.UiCommandInbox,
+    show_tool_output: bool,
 ) bool {
     chat_buffer.clearRetainingCapacity();
     var writer = chat_buffer.writer(allocator);
@@ -241,6 +257,7 @@ fn ensureChatBuffer(
         if (inbox) |store| {
             if (store.isCommandMessage(msg.id)) continue;
         }
+        if (!show_tool_output and isToolRole(msg.role)) continue;
         writer.print("[{s}] {s}\n\n", .{ msg.role, msg.content }) catch return false;
         if (msg.attachments) |attachments| {
             for (attachments) |attachment| {

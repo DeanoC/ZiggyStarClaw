@@ -9,6 +9,7 @@ pub const ChatPanelAction = struct {
     send_message: ?[]u8 = null,
 };
 
+var select_copy_mode: bool = false;
 var show_tool_output: bool = false;
 
 pub fn draw(
@@ -17,17 +18,32 @@ pub fn draw(
     inbox: ?*const ui_command_inbox.UiCommandInbox,
 ) ChatPanelAction {
     var action = ChatPanelAction{};
+
+    // Controls live outside the scrollable chat history so they don't disappear when we
+    // auto-scroll to bottom.
+    if (zgui.checkbox("Select/Copy Mode", .{ .v = &select_copy_mode })) {
+        // local UI state
+    }
+    zgui.sameLine(.{ .spacing = 8.0 });
+    _ = zgui.checkbox("Show tool output", .{ .v = &show_tool_output });
+    zgui.sameLine(.{ .spacing = 8.0 });
+    if (zgui.button("Copy All", .{})) {
+        chat_view.copyAllToClipboard(allocator, ctx.messages.items, ctx.stream_text, inbox, show_tool_output);
+    }
+
+    zgui.separator();
+
     const center_avail = zgui.getContentRegionAvail();
     const style = zgui.getStyle();
     const spacing = style.item_spacing[1];
     const separator_height: f32 = 1.0 + spacing;
     const input_height: f32 = 80.0 + zgui.getFrameHeight() + spacing * 3.0 + separator_height;
     const history_height = @max(80.0, center_avail[1] - input_height);
-    // Tool output toggle lives here (always visible), but is a simple local UI state.
-    _ = zgui.checkbox("Show tool output", .{ .v = &show_tool_output });
-    zgui.sameLine(.{ .spacing = 8.0 });
-    zgui.textDisabled("(toolResult/tool*)", .{});
-    chat_view.draw(allocator, ctx.messages.items, ctx.stream_text, inbox, history_height, show_tool_output);
+
+    chat_view.draw(allocator, ctx.messages.items, ctx.stream_text, inbox, history_height, .{
+        .select_copy_mode = select_copy_mode,
+        .show_tool_output = show_tool_output,
+    });
     zgui.separator();
 
     const input_avail = zgui.getContentRegionAvail();
