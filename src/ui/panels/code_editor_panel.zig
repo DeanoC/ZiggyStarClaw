@@ -1,16 +1,17 @@
 const std = @import("std");
 const zgui = @import("zgui");
 const workspace = @import("../workspace.zig");
+const components = @import("../components/components.zig");
 
 pub fn draw(panel: *workspace.Panel, allocator: std.mem.Allocator) bool {
     if (panel.kind != .CodeEditor) return false;
     var editor = &panel.data.CodeEditor;
 
-    zgui.text("File:", .{});
-    zgui.sameLine(.{});
-    zgui.text("{s}", .{editor.file_id});
-    zgui.sameLine(.{ .spacing = 12.0 });
-    zgui.textDisabled("({s})", .{editor.language});
+    components.core.file_row.draw(.{
+        .filename = editor.file_id,
+        .language = editor.language,
+        .dirty = panel.state.is_dirty,
+    });
     zgui.separator();
 
     const avail = zgui.getContentRegionAvail();
