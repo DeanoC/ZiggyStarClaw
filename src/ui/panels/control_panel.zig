@@ -6,6 +6,7 @@ const sessions_panel = @import("sessions_panel.zig");
 const settings_panel = @import("settings_panel.zig");
 const operator_view = @import("../operator_view.zig");
 const workspace = @import("../workspace.zig");
+const components = @import("../components/components.zig");
 
 pub const ControlPanelAction = struct {
     connect: bool = false,
@@ -41,16 +42,16 @@ pub fn draw(
 ) ControlPanelAction {
     var action = ControlPanelAction{};
 
-    if (zgui.beginTabBar("ControlTabs", .{})) {
-        if (zgui.beginTabItem("Sessions", .{})) {
+    if (components.core.tab_bar.begin("ControlTabs")) {
+        if (components.core.tab_bar.beginItem("Sessions")) {
             panel.active_tab = .Sessions;
             const sessions_action = sessions_panel.draw(allocator, ctx);
             action.refresh_sessions = sessions_action.refresh;
             action.new_session = sessions_action.new_session;
             action.select_session = sessions_action.selected_key;
-            zgui.endTabItem();
+            components.core.tab_bar.endItem();
         }
-        if (zgui.beginTabItem("Settings", .{})) {
+        if (components.core.tab_bar.beginItem("Settings")) {
             panel.active_tab = .Settings;
             const settings_action = settings_panel.draw(
                 allocator,
@@ -70,9 +71,9 @@ pub fn draw(
             action.download_update = settings_action.download_update;
             action.open_download = settings_action.open_download;
             action.install_update = settings_action.install_update;
-            zgui.endTabItem();
+            components.core.tab_bar.endItem();
         }
-        if (zgui.beginTabItem("Operator", .{})) {
+        if (components.core.tab_bar.beginItem("Operator")) {
             panel.active_tab = .Operator;
             const operator_action = operator_view.draw(allocator, ctx, is_connected);
             action.refresh_nodes = operator_action.refresh_nodes;
@@ -83,9 +84,9 @@ pub fn draw(
             action.clear_node_describe = operator_action.clear_node_describe;
             action.clear_node_result = operator_action.clear_node_result;
             action.clear_operator_notice = operator_action.clear_operator_notice;
-            zgui.endTabItem();
+            components.core.tab_bar.endItem();
         }
-        zgui.endTabBar();
+        components.core.tab_bar.end();
     }
 
     return action;
