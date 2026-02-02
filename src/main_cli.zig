@@ -15,6 +15,7 @@ const main_operator = @import("main_operator.zig");
 const build_options = @import("build_options");
 // Node mode support is cross-platform (Windows included).
 const main_node = @import("main_node.zig");
+const win_service = @import("windows/service.zig");
 
 pub const std_options = std.Options{
     .logFn = cliLogFn,
@@ -68,6 +69,16 @@ const usage =
     \\  --interactive            Start interactive REPL mode
     \\  --node-mode              Run as a capability node (see --node-mode-help)
     \\  --operator-mode          Run as an operator client (pair/approve, list nodes, invoke)
+    \\
+    \\Windows "always-on" (Task Scheduler)
+    \\  --node-service-install    Install a scheduled task to run node-mode automatically
+    \\  --node-service-uninstall  Uninstall the scheduled task
+    \\  --node-service-start      Start the scheduled task now
+    \\  --node-service-stop       Stop the running task
+    \\  --node-service-status     Show task status
+    \\  --node-service-mode <m>   onlogon|onstart (default: onlogon)
+    \\  --node-service-name <n>   Override task name (default: ZiggyStarClaw Node)
+    \\
     \\  --save-config            Save --url, --token, --update-url, --use-session, --use-node to config file
     \\  -h, --help               Show help
     \\  --node-mode-help         Show node mode help
@@ -144,6 +155,15 @@ pub fn main() !void {
     var check_update_only = false;
     var print_update_url = false;
     var interactive = false;
+
+    // Windows task-scheduler "service" helpers
+    var node_service_install = false;
+    var node_service_uninstall = false;
+    var node_service_start = false;
+    var node_service_stop = false;
+    var node_service_status = false;
+    var node_service_mode: win_service.InstallMode = .onlogon;
+    var node_service_name: ?[]const u8 = null;
     // Pre-scan for mode flags so we can delegate argument parsing cleanly.
     var node_mode = false;
     var operator_mode = false;
@@ -283,6 +303,31 @@ pub fn main() !void {
             check_update_only = true;
         } else if (std.mem.eql(u8, arg, "--interactive")) {
             interactive = true;
+        } else if (std.mem.eql(u8, arg, "--node-service-install")) {
+            node_service_install = true;
+        } else if (std.mem.eql(u8, arg, "--node-service-uninstall")) {
+            node_service_uninstall = true;
+        } else if (std.mem.eql(u8, arg, "--node-service-start")) {
+            node_service_start = true;
+        } else if (std.mem.eql(u8, arg, "--node-service-stop")) {
+            node_service_stop = true;
+        } else if (std.mem.eql(u8, arg, "--node-service-status")) {
+            node_service_status = true;
+        } else if (std.mem.eql(u8, arg, "--node-service-mode")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            const v = args[i];
+            if (std.mem.eql(u8, v, "onlogon")) {
+                node_service_mode = .onlogon;
+            } else if (std.mem.eql(u8, v, "onstart")) {
+                node_service_mode = .onstart;
+            } else {
+                return error.InvalidArguments;
+            }
+        } else if (std.mem.eql(u8, arg, "--node-service-name")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            node_service_name = args[i];
         } else if (std.mem.eql(u8, arg, "--node-mode")) {
             // handled by pre-scan
         } else if (std.mem.eql(u8, arg, "--operator-mode")) {
@@ -310,11 +355,48 @@ pub fn main() !void {
         poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
         canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or exec_approvals_get or
         exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or use_session != null or use_node != null or
-        check_update_only or print_update_url or interactive or node_mode or save_config;
+        check_update_only or print_update_url or interactive or node_mode or save_config or
+        node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status;
     if (!has_action) {
         var stdout = std.fs.File.stdout().deprecatedWriter();
         try stdout.writeAll(usage);
         return;
+    }
+
+    // Windows node service helpers (Task Scheduler)
+    if (node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status) {
+        if (builtin.os.tag != .windows) {
+            logger.err("node service helpers are only supported on Windows", .{});
+            return error.InvalidArguments;
+        }
+
+        const node_cfg_path = try @import("node/config.zig").NodeConfig.defaultPath(allocator);
+        defer allocator.free(node_cfg_path);
+
+        if (node_service_install) {
+            try win_service.installTask(allocator, node_cfg_path, node_service_mode, node_service_name);
+            logger.info("Installed scheduled task for node-mode.", .{});
+            return;
+        }
+        if (node_service_uninstall) {
+            try win_service.uninstallTask(allocator, node_service_name);
+            logger.info("Uninstalled scheduled task.", .{});
+            return;
+        }
+        if (node_service_start) {
+            try win_service.startTask(allocator, node_service_name);
+            logger.info("Started scheduled task.", .{});
+            return;
+        }
+        if (node_service_stop) {
+            try win_service.stopTask(allocator, node_service_name);
+            logger.info("Stopped scheduled task.", .{});
+            return;
+        }
+        if (node_service_status) {
+            try win_service.queryTask(allocator, node_service_name);
+            return;
+        }
     }
 
     // Handle node mode
