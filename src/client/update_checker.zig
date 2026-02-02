@@ -857,12 +857,13 @@ const DownloadWriter = struct {
     fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
         const self: *DownloadWriter = @fieldParentPtr("writer", w);
         var total: usize = 0;
-        for (data) |chunk| {
+        const slice = if (data.len > 0) data[0 .. data.len - 1] else data;
+        for (slice) |chunk| {
             if (chunk.len == 0) continue;
             self.file.writeAll(chunk) catch return error.WriteFailed;
             total += chunk.len;
         }
-        if (splat > 0 and data.len > 0) {
+        if (data.len > 0 and splat > 0) {
             const last = data[data.len - 1];
             var i: usize = 0;
             while (i < splat) : (i += 1) {
