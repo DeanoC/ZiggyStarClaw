@@ -170,6 +170,8 @@ fn initApp() !void {
     zsc_imgui_use_freetype();
     zgui.io.setConfigFlags(.{ .dock_enable = true });
     zgui.io.setIniFilename(null);
+    cfg = try loadConfigFromStorage();
+    theme.setMode(theme.modeFromLabel(cfg.ui_theme));
     theme.apply();
     image_cache.init(allocator);
     if (!ImGui_ImplGlfw_InitForOpenGL(win, true)) {
@@ -181,7 +183,6 @@ fn initApp() !void {
     applyDpiScale(scale[0]);
 
     ctx = try client_state.ClientContext.init(allocator);
-    cfg = try loadConfigFromStorage();
     app_state_state = loadAppStateFromStorage();
     auto_connect_pending = app_state_state.last_connected and cfg.auto_connect_on_launch and cfg.server_url.len > 0;
     const ws = try loadWorkspaceFromStorage();

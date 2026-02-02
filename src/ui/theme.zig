@@ -53,6 +53,21 @@ pub fn toggleMode() void {
     active_mode = if (active_mode == .light) .dark else .light;
 }
 
+pub fn modeFromLabel(label: ?[]const u8) Mode {
+    if (label) |value| {
+        if (std.ascii.eqlIgnoreCase(value, "dark")) return .dark;
+        if (std.ascii.eqlIgnoreCase(value, "light")) return .light;
+    }
+    return .light;
+}
+
+pub fn labelForMode(mode: Mode) []const u8 {
+    return switch (mode) {
+        .light => "light",
+        .dark => "dark",
+    };
+}
+
 pub fn activeTheme() *const Theme {
     return theme_tokens.get(active_mode);
 }

@@ -25,6 +25,7 @@ var connect_host_buf: [256:0]u8 = [_:0]u8{0} ** 256;
 var update_url_buf: [512:0]u8 = [_:0]u8{0} ** 512;
 var insecure_tls_value = false;
 var auto_connect_value = true;
+var theme_is_light = true;
 var initialized = false;
 var download_popup_opened = false;
 
@@ -48,9 +49,10 @@ pub fn draw(
         zgui.text("Appearance", .{});
         theme.pop();
 
-        var use_light_theme = theme.getMode() == .light;
+        var use_light_theme = theme_is_light;
         if (zgui.checkbox("Light theme", .{ .v = &use_light_theme })) {
-            theme.setMode(if (use_light_theme) .light else .dark);
+            theme_is_light = use_light_theme;
+            theme.setMode(if (theme_is_light) .light else .dark);
             theme.apply();
         }
 
@@ -76,10 +78,12 @@ pub fn draw(
         const connect_host_text = std.mem.sliceTo(&connect_host_buf, 0);
         const token_text = std.mem.sliceTo(&token_buf, 0);
         const update_url_text = std.mem.sliceTo(&update_url_buf, 0);
+        const theme_default_light = theme.modeFromLabel(cfg.ui_theme) == .light;
         const dirty = !std.mem.eql(u8, server_text, cfg.server_url) or
             !std.mem.eql(u8, token_text, cfg.token) or
             !std.mem.eql(u8, connect_host_text, cfg.connect_host_override orelse "") or
             !std.mem.eql(u8, update_url_text, cfg.update_manifest_url orelse "") or
+            theme_is_light != theme_default_light or
             (show_insecure_tls and insecure_tls_value != cfg.insecure_tls) or
             auto_connect_value != cfg.auto_connect_on_launch;
 
@@ -250,6 +254,7 @@ fn syncBuffers(cfg: config.Config) void {
     fillBuffer(update_url_buf[0..], cfg.update_manifest_url orelse "");
     insecure_tls_value = cfg.insecure_tls;
     auto_connect_value = cfg.auto_connect_on_launch;
+    theme_is_light = theme.modeFromLabel(cfg.ui_theme) == .light;
 }
 
 fn fillBuffer(buf: []u8, value: []const u8) void {
@@ -302,6 +307,15 @@ fn applyConfig(
     }
     if (cfg.auto_connect_on_launch != auto_connect_value) {
         cfg.auto_connect_on_launch = auto_connect_value;
+        changed = true;
+    }
+
+    const desired_mode: theme.Mode = if (theme_is_light) .light else .dark;
+    const desired_label = theme.labelForMode(desired_mode);
+    const current_label = cfg.ui_theme orelse "light";
+    if (!std.mem.eql(u8, current_label, desired_label)) {
+        if (cfg.ui_theme) |value| allocator.free(value);
+        cfg.ui_theme = allocator.dupe(u8, desired_label) catch return changed;
         changed = true;
     }
 

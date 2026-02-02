@@ -4,6 +4,7 @@ const glfw = @import("zglfw");
 const ui = @import("ui/main_window.zig");
 const imgui_gl = @import("ui/imgui_wrapper.zig");
 const operator_view = @import("ui/operator_view.zig");
+const theme = @import("ui/theme.zig");
 const imgui_bridge = @import("ui/imgui_bridge.zig");
 const panel_manager = @import("ui/panel_manager.zig");
 const workspace_store = @import("ui/workspace_store.zig");
@@ -663,6 +664,7 @@ pub fn main() !void {
 
     var cfg = try config.loadOrDefault(allocator, "ziggystarclaw_config.json");
     defer cfg.deinit(allocator);
+    theme.setMode(theme.modeFromLabel(cfg.ui_theme));
     var app_state_state = app_state.loadOrDefault(allocator, "ziggystarclaw_state.json") catch app_state.initDefault();
     var auto_connect_enabled = app_state_state.last_connected;
     var auto_connect_pending = auto_connect_enabled and cfg.auto_connect_on_launch and cfg.server_url.len > 0;
