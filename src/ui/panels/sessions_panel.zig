@@ -558,14 +558,33 @@ fn drawTextPreview(
 fn drawMarkdownPreview(text: []const u8, t: *const theme.Theme) void {
     var it = std.mem.splitScalar(u8, text, '\n');
     var line_count: usize = 0;
+    var in_code_block = false;
     while (it.next()) |line| {
         if (line_count >= log_preview_lines) break;
-        if (std.mem.startsWith(u8, line, "#")) {
+        const trimmed = std.mem.trimRight(u8, line, "\r");
+        if (std.mem.startsWith(u8, trimmed, "```")) {
+            in_code_block = !in_code_block;
+            line_count += 1;
+            continue;
+        }
+        if (in_code_block) {
+            zgui.textDisabled("{s}", .{trimmed});
+            line_count += 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, trimmed, "#")) {
             theme.push(.heading);
-            zgui.text("{s}", .{std.mem.trim(u8, line, "# ")});
+            zgui.text("{s}", .{std.mem.trim(u8, trimmed, "# ")});
             theme.pop();
+        } else if (std.mem.startsWith(u8, trimmed, "> ")) {
+            zgui.textDisabled("{s}", .{trimmed[2..]});
+        } else if (std.mem.startsWith(u8, trimmed, "- ") or
+            std.mem.startsWith(u8, trimmed, "* ") or
+            std.mem.startsWith(u8, trimmed, "+ "))
+        {
+            zgui.bulletText("{s}", .{trimmed[2..]});
         } else {
-            zgui.textWrapped("{s}", .{line});
+            zgui.textWrapped("{s}", .{trimmed});
         }
         line_count += 1;
     }
