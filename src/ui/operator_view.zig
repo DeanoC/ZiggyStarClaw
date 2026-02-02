@@ -104,11 +104,18 @@ pub fn draw(
                         const selected = ctx.current_node != null and std.mem.eql(u8, ctx.current_node.?, node.id);
                         const connected_label = statusLabel(node.connected);
                         const paired_label = statusLabel(node.paired);
-                        const title = if (node.display_name) |name|
-                            zgui.formatZ("{s} ({s}, {s})", .{ name, connected_label, paired_label })
-                        else
-                            zgui.formatZ("{s} ({s}, {s})", .{ node.id, connected_label, paired_label });
-                        if (zgui.selectable(title, .{ .selected = selected })) {
+                        const name = node.display_name orelse node.id;
+                        var label_buf: [256]u8 = undefined;
+                        const label = std.fmt.bufPrint(
+                            &label_buf,
+                            "{s} ({s}, {s})",
+                            .{ name, connected_label, paired_label },
+                        ) catch name;
+                        if (components.data.list_item.draw(.{
+                            .label = label,
+                            .selected = selected,
+                            .id = node.id,
+                        })) {
                             action.select_node = allocator.dupe(u8, node.id) catch null;
                         }
                     }
@@ -127,48 +134,28 @@ pub fn draw(
                     for (ctx.approvals.items, 0..) |approval, index| {
                         zgui.pushIntId(@intCast(index));
                         defer zgui.popId();
-                        zgui.textWrapped("Request: {s}", .{approval.id});
-                        if (approval.summary) |summary| {
-                            zgui.textWrapped("Summary: {s}", .{summary});
+                        const decision = components.data.approval_card.draw(.{
+                            .id = approval.id,
+                            .summary = approval.summary,
+                            .requested_at_ms = approval.requested_at_ms,
+                            .payload_json = approval.payload_json,
+                            .can_resolve = approval.can_resolve,
+                        });
+                        const id_copy = switch (decision) {
+                            .none => null,
+                            else => allocator.dupe(u8, approval.id) catch null,
+                        };
+                        if (id_copy) |value| {
+                            action.resolve_approval = ExecApprovalResolveAction{
+                                .request_id = value,
+                                .decision = switch (decision) {
+                                    .allow_once => .allow_once,
+                                    .allow_always => .allow_always,
+                                    .deny => .deny,
+                                    .none => unreachable,
+                                },
+                            };
                         }
-                        if (approval.requested_at_ms) |ts| {
-                            zgui.textWrapped("Requested At: {d}", .{ts});
-                        }
-                        if (approval.can_resolve) {
-                            if (components.core.button.draw("Allow Once", .{ .variant = .primary, .size = .small })) {
-                                const id_copy = allocator.dupe(u8, approval.id) catch null;
-                                if (id_copy) |value| {
-                                    action.resolve_approval = ExecApprovalResolveAction{
-                                        .request_id = value,
-                                        .decision = .allow_once,
-                                    };
-                                }
-                            }
-                            zgui.sameLine(.{ .spacing = spacing });
-                            if (components.core.button.draw("Allow Always", .{ .variant = .secondary, .size = .small })) {
-                                const id_copy = allocator.dupe(u8, approval.id) catch null;
-                                if (id_copy) |value| {
-                                    action.resolve_approval = ExecApprovalResolveAction{
-                                        .request_id = value,
-                                        .decision = .allow_always,
-                                    };
-                                }
-                            }
-                            zgui.sameLine(.{ .spacing = spacing });
-                            if (components.core.button.draw("Deny", .{ .variant = .danger, .size = .small })) {
-                                const id_copy = allocator.dupe(u8, approval.id) catch null;
-                                if (id_copy) |value| {
-                                    action.resolve_approval = ExecApprovalResolveAction{
-                                        .request_id = value,
-                                        .decision = .deny,
-                                    };
-                                }
-                            }
-                        } else {
-                            zgui.textWrapped("Missing approval id in payload.", .{});
-                        }
-                        zgui.textWrapped("{s}", .{approval.payload_json});
-                        zgui.separator();
                     }
                 }
                 components.layout.scroll_area.end();
@@ -281,13 +268,15 @@ fn drawSelectedNode(allocator: std.mem.Allocator, ctx: *state.ClientContext, act
         return;
     };
 
-    zgui.textWrapped("ID: {s}", .{node.id});
-    if (node.display_name) |name| {
-        zgui.textWrapped("Name: {s}", .{name});
-    }
-    if (node.platform) |platform| {
-        zgui.textWrapped("Platform: {s}", .{platform});
-    }
+    const label = node.display_name orelse node.id;
+    const subtitle: ?[]const u8 = if (node.display_name != null) node.id else null;
+    components.data.agent_status.draw(.{
+        .label = label,
+        .subtitle = subtitle,
+        .connected = node.connected,
+        .paired = node.paired,
+        .platform = node.platform,
+    });
     if (node.version) |version| {
         zgui.textWrapped("Version: {s}", .{version});
     }
@@ -296,12 +285,6 @@ fn drawSelectedNode(allocator: std.mem.Allocator, ctx: *state.ClientContext, act
     }
     if (node.ui_version) |ui| {
         zgui.textWrapped("UI Version: {s}", .{ui});
-    }
-    if (node.connected) |connected| {
-        zgui.textWrapped("Connected: {s}", .{if (connected) "yes" else "no"});
-    }
-    if (node.paired) |paired| {
-        zgui.textWrapped("Paired: {s}", .{if (paired) "yes" else "no"});
     }
     if (node.connected_at_ms) |ts| {
         zgui.textWrapped("Connected At (ms): {d}", .{ts});

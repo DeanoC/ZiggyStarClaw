@@ -44,8 +44,11 @@ pub fn draw(
             zgui.pushIntId(@intCast(index));
             const label = session.display_name orelse session.label orelse session.key;
             const selected = if (current_key) |key| std.mem.eql(u8, key, session.key) else false;
-            const label_z = zgui.formatZ("{s}", .{label});
-            if (zgui.selectable(label_z, .{ .selected = selected })) {
+            if (components.data.list_item.draw(.{
+                .label = label,
+                .selected = selected,
+                .id = session.key,
+            })) {
                 action.selected_key = allocator.dupe(u8, session.key) catch null;
             }
             zgui.popId();

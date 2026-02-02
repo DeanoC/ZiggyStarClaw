@@ -12,3 +12,10 @@ pub const layout = struct {
     pub const header_bar = @import("layout/header_bar.zig");
     pub const split_pane = @import("layout/split_pane.zig");
 };
+
+pub const data = struct {
+    pub const progress_step = @import("data/progress_step.zig");
+    pub const agent_status = @import("data/agent_status.zig");
+    pub const approval_card = @import("data/approval_card.zig");
+    pub const list_item = @import("data/list_item.zig");
+};

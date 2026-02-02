@@ -135,6 +135,22 @@ pub fn draw(
         if (components.layout.card.begin(.{ .title = "Updates", .id = "updates" })) {
             _ = zgui.inputText("Update Manifest URL", .{ .buf = update_url_buf[0.. :0] });
             zgui.textWrapped("Current version: {s}", .{app_version});
+            const step_spacing = theme.activeTheme().spacing.sm;
+            const check_state: components.data.progress_step.State = switch (snapshot.status) {
+                .checking => .active,
+                .up_to_date, .update_available => .complete,
+                .failed, .unsupported => .failed,
+                .idle => .pending,
+            };
+            const download_state: components.data.progress_step.State = switch (snapshot.download_status) {
+                .downloading => .active,
+                .complete => .complete,
+                .failed, .unsupported => .failed,
+                .idle => .pending,
+            };
+            components.data.progress_step.draw(.{ .label = "Check", .state = check_state });
+            zgui.sameLine(.{ .spacing = step_spacing });
+            components.data.progress_step.draw(.{ .label = "Download", .state = download_state });
 
             const update_url_text = std.mem.sliceTo(&update_url_buf, 0);
             if (components.core.button.draw("Check Updates", .{ .disabled = snapshot.in_flight or update_url_text.len == 0, .variant = .secondary })) {
