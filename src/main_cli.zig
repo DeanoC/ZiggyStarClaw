@@ -32,6 +32,8 @@ const usage =
     \\Options:
     \\  --url <ws/wss url>       Override server URL
     \\  --token <token>          Override auth token (alias: --auth-token)
+    \\  --gateway-token <token>  Alias for --token
+    \\  --log-level <level>      Log level (debug|info|warn|error)
     \\  --config <path>          Config file path (default: ziggystarclaw_config.json)
     \\  --update-url <url>       Override update manifest URL
     \\  --print-update-url       Print normalized update manifest URL and exit
@@ -166,10 +168,19 @@ pub fn main() !void {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             override_url = args[i];
-        } else if (std.mem.eql(u8, arg, "--token") or std.mem.eql(u8, arg, "--auth-token") or std.mem.eql(u8, arg, "--auth_token")) {
+        } else if (std.mem.eql(u8, arg, "--token") or std.mem.eql(u8, arg, "--auth-token") or std.mem.eql(u8, arg, "--auth_token") or std.mem.eql(u8, arg, "--gateway-token")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             override_token = args[i];
+        } else if (std.mem.eql(u8, arg, "--log-level")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            if (parseLogLevel(args[i])) |level| {
+                logger.setLevel(level);
+                cli_log_level = toStdLogLevel(level);
+            } else {
+                return error.InvalidArguments;
+            }
         } else if (std.mem.eql(u8, arg, "--update-url")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
