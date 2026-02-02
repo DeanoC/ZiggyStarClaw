@@ -50,6 +50,7 @@ pub const UiAction = struct {
 var safe_insets: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };
 const attachment_fetch_limit: usize = 256 * 1024;
 const attachment_editor_limit: usize = 128 * 1024;
+const attachment_json_pretty_limit: usize = 64 * 1024;
 
 const PendingAttachment = struct {
     panel_id: workspace.PanelId,
@@ -284,7 +285,7 @@ fn openAttachmentInEditor(
     manager: *panel_manager.PanelManager,
     attachment: sessions_panel.AttachmentOpen,
 ) void {
-    const language = if (attachment.kind.len > 0) attachment.kind else "text";
+    const language = guessAttachmentLanguage(attachment);
     var pending_fetch = false;
     const content = buildAttachmentContent(allocator, attachment, &pending_fetch) orelse return;
     defer allocator.free(content);
@@ -346,6 +347,12 @@ fn buildAttachmentContent(
             defer allocator.free(bytes);
             if (std.unicode.utf8ValidateSlice(bytes)) {
                 const slice = trimBody(bytes, attachment_editor_limit);
+                if (!slice.truncated and isJsonAttachment(attachment, slice.body)) {
+                    if (prettyJsonAlloc(allocator, slice.body)) |pretty| {
+                        defer allocator.free(pretty);
+                        return composeAttachmentContent(allocator, attachment, pretty, null, false);
+                    }
+                }
                 return composeAttachmentContent(allocator, attachment, slice.body, null, slice.truncated);
             }
         } else |_| {}
@@ -358,6 +365,12 @@ fn buildAttachmentContent(
                 .ready => {
                     if (entry.data) |data| {
                         const slice = trimBody(data, attachment_editor_limit);
+                        if (!slice.truncated and isJsonAttachment(attachment, slice.body)) {
+                            if (prettyJsonAlloc(allocator, slice.body)) |pretty| {
+                                defer allocator.free(pretty);
+                                return composeAttachmentContent(allocator, attachment, pretty, null, false);
+                            }
+                        }
                         return composeAttachmentContent(allocator, attachment, slice.body, null, slice.truncated);
                     }
                     return composeAttachmentContent(allocator, attachment, null, "Attachment content missing.", false);
@@ -430,6 +443,72 @@ fn trimBody(data: []const u8, max_len: usize) struct { body: []const u8, truncat
 
 fn isHttpUrl(url: []const u8) bool {
     return std.mem.startsWith(u8, url, "http://") or std.mem.startsWith(u8, url, "https://");
+}
+
+fn endsWithIgnoreCase(value: []const u8, suffix: []const u8) bool {
+    if (value.len < suffix.len) return false;
+    const start = value.len - suffix.len;
+    var index: usize = 0;
+    while (index < suffix.len) : (index += 1) {
+        if (std.ascii.toLower(value[start + index]) != suffix[index]) return false;
+    }
+    return true;
+}
+
+fn hasTokenIgnoreCase(value: []const u8, token: []const u8) bool {
+    if (token.len == 0 or value.len < token.len) return false;
+    var i: usize = 0;
+    while (i + token.len <= value.len) : (i += 1) {
+        var matches = true;
+        var j: usize = 0;
+        while (j < token.len) : (j += 1) {
+            if (std.ascii.toLower(value[i + j]) != token[j]) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches) return true;
+    }
+    return false;
+}
+
+fn isJsonAttachment(att: sessions_panel.AttachmentOpen, body: []const u8) bool {
+    if (hasTokenIgnoreCase(att.kind, "json")) return true;
+    if (endsWithIgnoreCase(att.url, ".json") or endsWithIgnoreCase(att.url, ".jsonl")) return true;
+    const trimmed = std.mem.trimLeft(u8, body, " \t\r\n");
+    if (trimmed.len > 0 and (trimmed[0] == '{' or trimmed[0] == '[')) return true;
+    return false;
+}
+
+fn isMarkdownAttachment(att: sessions_panel.AttachmentOpen) bool {
+    if (hasTokenIgnoreCase(att.kind, "markdown")) return true;
+    return endsWithIgnoreCase(att.url, ".md") or endsWithIgnoreCase(att.url, ".markdown");
+}
+
+fn isLogAttachment(att: sessions_panel.AttachmentOpen) bool {
+    if (hasTokenIgnoreCase(att.kind, "log")) return true;
+    return endsWithIgnoreCase(att.url, ".log");
+}
+
+fn guessAttachmentLanguage(att: sessions_panel.AttachmentOpen) []const u8 {
+    if (isJsonAttachment(att, "")) return "json";
+    if (isMarkdownAttachment(att)) return "markdown";
+    if (isLogAttachment(att)) return "log";
+    if (endsWithIgnoreCase(att.url, ".zig")) return "zig";
+    if (endsWithIgnoreCase(att.url, ".toml")) return "toml";
+    if (endsWithIgnoreCase(att.url, ".yaml") or endsWithIgnoreCase(att.url, ".yml")) return "yaml";
+    if (endsWithIgnoreCase(att.url, ".txt")) return "text";
+    if (att.kind.len > 0) return att.kind;
+    return "text";
+}
+
+fn prettyJsonAlloc(allocator: std.mem.Allocator, body: []const u8) ?[]u8 {
+    if (body.len > attachment_json_pretty_limit) return null;
+    if (std.json.parseFromSlice(std.json.Value, allocator, body, .{})) |parsed| {
+        defer parsed.deinit();
+        return std.json.Stringify.valueAlloc(allocator, parsed.value, .{ .whitespace = .indent_2 }) catch null;
+    } else |_| {}
+    return null;
 }
 
 fn trackPendingAttachment(
