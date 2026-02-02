@@ -305,8 +305,8 @@ fn ensureChatBuffer(
 }
 
 fn bufferZ() [:0]u8 {
-    if (chat_buffer.items.len == 0) return @constCast(empty_z[0.. :0]);
-    return chat_buffer.items[0.. :0];
+    if (chat_buffer.items.len <= 1) return @constCast(empty_z[0.. :0]);
+    return chat_buffer.items[0 .. chat_buffer.items.len - 1 :0];
 }
 
 fn selectionSlice() ?[]const u8 {
