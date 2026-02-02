@@ -132,39 +132,70 @@ pub const UpdateState = struct {
         }
 
         self.mutex.lock();
-        defer self.mutex.unlock();
-        if (self.download_status == .downloading) return;
+        if (self.download_status == .downloading) {
+            self.mutex.unlock();
+            return;
+        }
+
+        const url_state = allocator.dupe(u8, url) catch {
+            self.download_status = .failed;
+            self.mutex.unlock();
+            return;
+        };
+        const url_thread = allocator.dupe(u8, url) catch {
+            allocator.free(url_state);
+            self.download_status = .failed;
+            self.mutex.unlock();
+            return;
+        };
+        const file_thread = allocator.dupe(u8, file_name) catch {
+            allocator.free(url_state);
+            allocator.free(url_thread);
+            self.download_status = .failed;
+            self.mutex.unlock();
+            return;
+        };
+        const path = std.fmt.allocPrint(allocator, "updates/{s}", .{file_name}) catch {
+            allocator.free(url_state);
+            allocator.free(url_thread);
+            allocator.free(file_thread);
+            self.download_status = .failed;
+            self.mutex.unlock();
+            return;
+        };
 
         if (self.download_url) |value| allocator.free(value);
         if (self.download_path) |value| allocator.free(value);
         if (self.download_error_message) |value| allocator.free(value);
 
-        self.download_url = allocator.dupe(u8, url) catch null;
-        const path = std.fmt.allocPrint(allocator, "updates/{s}", .{file_name}) catch null;
+        self.download_url = url_state;
         self.download_path = path;
         self.download_error_message = null;
         self.download_status = .downloading;
         self.download_bytes = 0;
         self.download_total = null;
         self.download_verified = false;
+        self.mutex.unlock();
 
-        const url_copy = allocator.dupe(u8, url) catch {
+        const thread = std.Thread.spawn(.{}, downloadThread, .{ self, allocator, url_thread, file_thread }) catch {
+            allocator.free(url_thread);
+            allocator.free(file_thread);
+            self.mutex.lock();
+            if (self.download_url) |value| {
+                allocator.free(value);
+                self.download_url = null;
+            }
+            if (self.download_path) |value| {
+                allocator.free(value);
+                self.download_path = null;
+            }
             self.download_status = .failed;
+            self.mutex.unlock();
             return;
         };
-        const path_copy = allocator.dupe(u8, file_name) catch {
-            allocator.free(url_copy);
-            self.download_status = .failed;
-            return;
-        };
-
-        const thread = std.Thread.spawn(.{}, downloadThread, .{ self, allocator, url_copy, path_copy }) catch {
-            allocator.free(url_copy);
-            allocator.free(path_copy);
-            self.download_status = .failed;
-            return;
-        };
+        self.mutex.lock();
         self.download_worker = thread;
+        self.mutex.unlock();
     }
 
     fn clearLocked(self: *UpdateState, allocator: std.mem.Allocator) void {
