@@ -524,12 +524,29 @@ pub fn main() !void {
             // Once we have data we need, proceed
             const have_sessions = ctx.sessions.items.len > 0;
             const have_nodes = ctx.nodes.items.len > 0;
+
+            const needs_sessions = list_sessions or send_message != null or interactive;
+            const needs_nodes = list_nodes or run_command != null or which_name != null or notify_title != null or ps_list or spawn_command != null or
+                poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or canvas_navigate != null or canvas_eval != null or canvas_snapshot != null;
+
             if (connected) {
+                // Actively request state instead of waiting for the gateway to push it.
+                if (needs_sessions and !have_sessions and ctx.pending_sessions_request_id == null) {
+                    requestSessionsList(allocator, &ws_client, &ctx) catch |err| {
+                        logger.warn("sessions.list request failed: {s}", .{@errorName(err)});
+                    };
+                }
+                if (needs_nodes and !have_nodes and ctx.pending_nodes_request_id == null) {
+                    requestNodesList(allocator, &ws_client, &ctx) catch |err| {
+                        logger.warn("node.list request failed: {s}", .{@errorName(err)});
+                    };
+                }
+
                 if (list_sessions and have_sessions) break;
                 if (list_nodes and have_nodes) break;
                 if (list_approvals) break;
                 if (send_message != null and have_sessions) break;
-                if ((run_command != null or which_name != null or notify_title != null or ps_list or spawn_command != null or poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or canvas_navigate != null or canvas_eval != null or canvas_snapshot != null) and have_nodes) break;
+                if (needs_nodes and have_nodes) break;
                 if (approve_id != null) break;
                 if (deny_id != null) break;
                 if (interactive) break;
@@ -1210,6 +1227,34 @@ fn parseReplCommand(cmd: []const u8) ReplCommand {
     if (std.mem.eql(u8, cmd, "exit")) return .exit;
     if (std.mem.eql(u8, cmd, "save")) return .save;
     return .unknown;
+}
+
+fn requestSessionsList(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    ctx: *client_state.ClientContext,
+) !void {
+    const params = @import("protocol/sessions.zig").SessionsListParams{};
+    const request = try requests.buildRequestPayload(allocator, "sessions.list", params);
+    defer allocator.free(request.payload);
+
+    ctx.setPendingSessionsRequest(request.id);
+    logger.info("Requesting sessions.list", .{});
+    try ws_client.send(request.payload);
+}
+
+fn requestNodesList(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    ctx: *client_state.ClientContext,
+) !void {
+    const params = nodes_proto.NodeListParams{};
+    const request = try requests.buildRequestPayload(allocator, "node.list", params);
+    defer allocator.free(request.payload);
+
+    ctx.setPendingNodesRequest(request.id);
+    logger.info("Requesting node.list", .{});
+    try ws_client.send(request.payload);
 }
 
 fn sendChatMessage(
