@@ -113,14 +113,13 @@ pub fn draw(
         .no_bring_to_front_on_focus = true,
         .no_saved_settings = true,
         .no_nav_focus = true,
-        .no_background = true,
     };
 
     zgui.pushStyleVar2f(.{ .idx = .window_padding, .v = .{ 0.0, 0.0 } });
     zgui.pushStyleVar1f(.{ .idx = .window_border_size, .v = 0.0 });
     zgui.pushStyleVar1f(.{ .idx = .window_rounding, .v = 0.0 });
     if (zgui.begin("WorkspaceHost", .{ .flags = host_flags })) {
-        const dockspace_id = zgui.dockSpace("MainDockSpace", .{ 0.0, 0.0 }, .{ .passthru_central_node = true });
+        const dockspace_id = zgui.dockSpace("MainDockSpace", .{ 0.0, 0.0 }, .{});
         dock_layout.ensureDockLayout(dock_state, &manager.workspace, dockspace_id);
 
         var index: usize = 0;

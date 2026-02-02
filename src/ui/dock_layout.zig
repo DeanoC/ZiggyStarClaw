@@ -31,28 +31,23 @@ pub fn ensureDockLayout(
 
     var left: zgui.Ident = 0;
     var right: zgui.Ident = 0;
-    var bottom: zgui.Ident = 0;
-    var center: zgui.Ident = 0;
-    var middle: zgui.Ident = 0;
 
-    _ = zgui.dockBuilderSplitNode(dockspace_id, .left, 0.22, &left, &middle);
-    _ = zgui.dockBuilderSplitNode(middle, .right, 0.25, &right, &center);
-    _ = zgui.dockBuilderSplitNode(center, .down, 0.28, &bottom, &center);
+    _ = zgui.dockBuilderSplitNode(dockspace_id, .left, 0.35, &left, &right);
 
     state.left = left;
     state.right = right;
-    state.bottom = bottom;
-    state.center = center;
+    state.bottom = 0;
+    state.center = right;
 
     zgui.dockBuilderFinish(dockspace_id);
 }
 
 pub fn defaultDockForKind(state: *DockState, kind: workspace.PanelKind) workspace.DockNodeId {
     return switch (kind) {
-        .Chat => if (state.bottom != 0) state.bottom else state.dockspace_id,
-        .CodeEditor => if (state.center != 0) state.center else state.dockspace_id,
+        .Chat => if (state.left != 0) state.left else state.dockspace_id,
+        .CodeEditor => if (state.right != 0) state.right else state.dockspace_id,
         .ToolOutput => if (state.right != 0) state.right else state.dockspace_id,
-        .Control => if (state.left != 0) state.left else state.dockspace_id,
+        .Control => if (state.right != 0) state.right else state.dockspace_id,
     };
 }
 
