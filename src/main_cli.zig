@@ -13,24 +13,8 @@ const requests = @import("protocol/requests.zig");
 const messages = @import("protocol/messages.zig");
 const main_operator = @import("main_operator.zig");
 const build_options = @import("build_options");
-const main_node = if (builtin.os.tag == .windows) struct {
-    pub const usage =
-        \\ZiggyStarClaw Node Mode
-        \\
-        \\Node mode is not supported on Windows.
-        \\
-    ;
-
-    pub const NodeCliOptions = struct {};
-
-    pub fn parseNodeOptions(_: std.mem.Allocator, _: []const []const u8) !NodeCliOptions {
-        return error.NodeModeUnsupported;
-    }
-
-    pub fn runNodeMode(_: std.mem.Allocator, _: NodeCliOptions) !void {
-        return error.NodeModeUnsupported;
-    }
-} else @import("main_node.zig");
+// Node mode support is cross-platform (Windows included).
+const main_node = @import("main_node.zig");
 
 pub const std_options = std.Options{
     .logFn = cliLogFn,

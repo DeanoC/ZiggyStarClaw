@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const node_context = @import("node_context.zig");
 const NodeContext = node_context.NodeContext;
 const logger = @import("../utils/logger.zig");
@@ -217,7 +218,14 @@ pub const ProcessManager = struct {
         try result.put("id", std.json.Value{ .string = try allocator.dupe(u8, proc.id) });
         try result.put("command", std.json.Value{ .string = try allocator.dupe(u8, proc.command) });
         try result.put("state", std.json.Value{ .string = try allocator.dupe(u8, @tagName(proc.state)) });
-        try result.put("pid", if (proc.pid) |p| std.json.Value{ .integer = p } else std.json.Value{ .null = {} });
+        if (builtin.os.tag != .windows) {
+            try result.put(
+                "pid",
+                if (proc.pid) |p| std.json.Value{ .integer = p } else std.json.Value{ .null = {} },
+            );
+        } else {
+            try result.put("pid", std.json.Value{ .null = {} });
+        }
         try result.put("exitCode", if (proc.exit_code) |e| std.json.Value{ .integer = e } else std.json.Value{ .null = {} });
         try result.put("startTime", std.json.Value{ .integer = proc.start_time_ms });
         try result.put("endTime", if (proc.end_time_ms) |e| std.json.Value{ .integer = e } else std.json.Value{ .null = {} });
@@ -254,7 +262,14 @@ pub const ProcessManager = struct {
             try obj.put("id", std.json.Value{ .string = try allocator.dupe(u8, proc.id) });
             try obj.put("command", std.json.Value{ .string = try allocator.dupe(u8, proc.command) });
             try obj.put("state", std.json.Value{ .string = try allocator.dupe(u8, @tagName(proc.state)) });
-            try obj.put("pid", if (proc.pid) |p| std.json.Value{ .integer = p } else std.json.Value{ .null = {} });
+            if (builtin.os.tag != .windows) {
+                try obj.put(
+                    "pid",
+                    if (proc.pid) |p| std.json.Value{ .integer = p } else std.json.Value{ .null = {} },
+                );
+            } else {
+                try obj.put("pid", std.json.Value{ .null = {} });
+            }
             try list.append(std.json.Value{ .object = obj });
         }
         
