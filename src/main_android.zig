@@ -985,6 +985,10 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
                 "https://github.com/DeanoC/ZiggyStarClaw/releases/latest";
             openUrl(allocator, release_url);
         }
+        if (ui_action.open_url) |url| {
+            defer allocator.free(url);
+            openUrl(allocator, url);
+        }
         if (ui_action.clear_saved) {
             cfg.deinit(allocator);
             cfg = config.initDefault(allocator) catch |err| {

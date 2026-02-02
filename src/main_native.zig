@@ -1008,6 +1008,10 @@ fn mainImpl() !void {
                 "https://github.com/DeanoC/ZiggyStarClaw/releases/latest";
             openUrl(allocator, release_url);
         }
+        if (ui_action.open_url) |url| {
+            defer allocator.free(url);
+            openUrl(allocator, url);
+        }
         if (ui_action.open_download) {
             const snapshot = ctx.update_state.snapshot();
             if (snapshot.download_path) |path| {

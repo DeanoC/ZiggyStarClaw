@@ -44,6 +44,7 @@ pub const UiAction = struct {
     clear_node_result: bool = false,
     clear_operator_notice: bool = false,
     save_workspace: bool = false,
+    open_url: ?[]u8 = null,
 };
 
 var safe_insets: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };
@@ -215,6 +216,7 @@ pub fn draw(
                         if (control_action.open_attachment) |attachment| {
                             pending_attachment = attachment;
                         }
+                        action.open_url = control_action.open_url;
                     },
                 }
             }

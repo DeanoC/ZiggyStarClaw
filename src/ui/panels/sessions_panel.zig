@@ -22,6 +22,7 @@ pub const SessionPanelAction = struct {
     new_session: bool = false,
     selected_key: ?[]u8 = null,
     open_attachment: ?AttachmentOpen = null,
+    open_url: ?[]u8 = null,
 };
 
 var split_state = components.layout.split_pane.SplitState{ .size = 260.0 };
@@ -184,6 +185,17 @@ fn drawSessionDetails(
             zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
             if (components.core.button.draw("Open in Editor", .{ .variant = .secondary, .size = .small })) {
                 action.open_attachment = preview;
+            }
+            if (isHttpUrl(preview.url)) {
+                zgui.sameLine(.{ .spacing = t.spacing.sm });
+                if (components.core.button.draw("Open URL", .{ .variant = .secondary, .size = .small })) {
+                    action.open_url = allocator.dupe(u8, preview.url) catch null;
+                }
+                zgui.sameLine(.{ .spacing = t.spacing.xs });
+                if (components.core.button.draw("Copy URL", .{ .variant = .ghost, .size = .small })) {
+                    const url_z = zgui.formatZ("{s}", .{preview.url});
+                    zgui.setClipboardText(url_z);
+                }
             }
         }
     }

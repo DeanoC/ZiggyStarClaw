@@ -1112,6 +1112,10 @@ fn frame() callconv(.c) void {
             "https://github.com/DeanoC/ZiggyStarClaw/releases/latest";
         openUrl(release_url);
     }
+    if (ui_action.open_url) |url| {
+        defer allocator.free(url);
+        openUrl(url);
+    }
     if (ui_action.clear_saved) {
         wasm_storage.remove(config_storage_key);
         app_state_state.last_connected = false;
