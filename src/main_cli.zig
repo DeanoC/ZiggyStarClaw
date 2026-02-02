@@ -1308,13 +1308,18 @@ fn requestSessionsList(
     ws_client: *websocket_client.WebSocketClient,
     ctx: *client_state.ClientContext,
 ) !void {
-    const params = @import("protocol/sessions.zig").SessionsListParams{};
+    const sessions_proto = @import("protocol/sessions.zig");
+    const params = sessions_proto.SessionsListParams{
+        .includeGlobal = true,
+        .includeUnknown = true,
+    };
     const request = try requests.buildRequestPayload(allocator, "sessions.list", params);
     defer allocator.free(request.payload);
 
-    ctx.setPendingSessionsRequest(request.id);
+    // Only mark pending if send succeeds.
     logger.info("Requesting sessions.list", .{});
     try ws_client.send(request.payload);
+    ctx.setPendingSessionsRequest(request.id);
 }
 
 fn requestNodesList(
@@ -1326,9 +1331,10 @@ fn requestNodesList(
     const request = try requests.buildRequestPayload(allocator, "node.list", params);
     defer allocator.free(request.payload);
 
-    ctx.setPendingNodesRequest(request.id);
+    // Only mark pending if send succeeds.
     logger.info("Requesting node.list", .{});
     try ws_client.send(request.payload);
+    ctx.setPendingNodesRequest(request.id);
 }
 
 fn sendChatMessage(
