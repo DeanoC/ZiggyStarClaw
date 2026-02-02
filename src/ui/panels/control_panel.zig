@@ -5,6 +5,11 @@ const config = @import("../../client/config.zig");
 const sessions_panel = @import("sessions_panel.zig");
 const settings_panel = @import("settings_panel.zig");
 const showcase_panel = @import("showcase_panel.zig");
+const projects_view = @import("../projects_view.zig");
+const sources_view = @import("../sources_view.zig");
+const artifact_workspace_view = @import("../artifact_workspace_view.zig");
+const run_inspector_view = @import("../run_inspector_view.zig");
+const approvals_inbox_view = @import("../approvals_inbox_view.zig");
 const operator_view = @import("../operator_view.zig");
 const workspace = @import("../workspace.zig");
 const components = @import("../components/components.zig");
@@ -46,6 +51,36 @@ pub fn draw(
     var action = ControlPanelAction{};
 
     if (components.core.tab_bar.begin("ControlTabs")) {
+        if (components.core.tab_bar.beginItem("Projects")) {
+            panel.active_tab = .Projects;
+            const projects_action = projects_view.draw(allocator, ctx);
+            action.refresh_sessions = projects_action.refresh_sessions;
+            action.new_session = projects_action.new_session;
+            action.select_session = projects_action.select_session;
+            components.core.tab_bar.endItem();
+        }
+        if (components.core.tab_bar.beginItem("Sources")) {
+            panel.active_tab = .Sources;
+            const sources_action = sources_view.draw(allocator, ctx);
+            action.select_session = sources_action.select_session;
+            components.core.tab_bar.endItem();
+        }
+        if (components.core.tab_bar.beginItem("Artifact Workspace")) {
+            panel.active_tab = .ArtifactWorkspace;
+            artifact_workspace_view.draw();
+            components.core.tab_bar.endItem();
+        }
+        if (components.core.tab_bar.beginItem("Run Inspector")) {
+            panel.active_tab = .RunInspector;
+            run_inspector_view.draw(ctx);
+            components.core.tab_bar.endItem();
+        }
+        if (components.core.tab_bar.beginItem("Approvals Inbox")) {
+            panel.active_tab = .ApprovalsInbox;
+            const approvals_action = approvals_inbox_view.draw(allocator, ctx);
+            action.resolve_approval = approvals_action.resolve_approval;
+            components.core.tab_bar.endItem();
+        }
         if (components.core.tab_bar.beginItem("Sessions")) {
             panel.active_tab = .Sessions;
             const sessions_action = sessions_panel.draw(allocator, ctx);

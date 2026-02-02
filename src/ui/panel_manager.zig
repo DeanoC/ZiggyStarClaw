@@ -360,6 +360,11 @@ pub const PanelManager = struct {
 };
 
 fn parseControlTab(label: []const u8) workspace.ControlTab {
+    if (std.mem.eql(u8, label, "Projects")) return .Projects;
+    if (std.mem.eql(u8, label, "Sources")) return .Sources;
+    if (std.mem.eql(u8, label, "Artifact Workspace")) return .ArtifactWorkspace;
+    if (std.mem.eql(u8, label, "Run Inspector")) return .RunInspector;
+    if (std.mem.eql(u8, label, "Approvals Inbox")) return .ApprovalsInbox;
     if (std.mem.eql(u8, label, "Settings")) return .Settings;
     if (std.mem.eql(u8, label, "Operator")) return .Operator;
     if (std.mem.eql(u8, label, "Showcase")) return .Showcase;

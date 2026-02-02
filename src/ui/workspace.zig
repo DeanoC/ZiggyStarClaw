@@ -40,10 +40,15 @@ pub const ToolOutputPanel = struct {
 };
 
 pub const ControlPanel = struct {
-    active_tab: ControlTab = .Sessions,
+    active_tab: ControlTab = .Projects,
 };
 
 pub const ControlTab = enum {
+    Projects,
+    Sources,
+    ArtifactWorkspace,
+    RunInspector,
+    ApprovalsInbox,
     Sessions,
     Settings,
     Operator,
@@ -207,7 +212,7 @@ pub const ToolOutputPanelSnapshot = struct {
 };
 
 pub const ControlPanelSnapshot = struct {
-    active_tab: []const u8 = "Sessions",
+    active_tab: []const u8 = "Projects",
 };
 
 pub const PanelSnapshot = struct {
@@ -278,6 +283,11 @@ fn panelToSnapshot(allocator: std.mem.Allocator, panel: Panel) !PanelSnapshot {
         },
         .Control => |ctrl| {
             snap.control = .{ .active_tab = try allocator.dupe(u8, switch (ctrl.active_tab) {
+                .Projects => "Projects",
+                .Sources => "Sources",
+                .ArtifactWorkspace => "Artifact Workspace",
+                .RunInspector => "Run Inspector",
+                .ApprovalsInbox => "Approvals Inbox",
                 .Sessions => "Sessions",
                 .Settings => "Settings",
                 .Operator => "Operator",
@@ -368,6 +378,11 @@ fn panelFromSnapshot(allocator: std.mem.Allocator, snap: PanelSnapshot) !Panel {
 }
 
 fn parseControlTab(label: []const u8) ControlTab {
+    if (std.mem.eql(u8, label, "Projects")) return .Projects;
+    if (std.mem.eql(u8, label, "Sources")) return .Sources;
+    if (std.mem.eql(u8, label, "Artifact Workspace")) return .ArtifactWorkspace;
+    if (std.mem.eql(u8, label, "Run Inspector")) return .RunInspector;
+    if (std.mem.eql(u8, label, "Approvals Inbox")) return .ApprovalsInbox;
     if (std.mem.eql(u8, label, "Settings")) return .Settings;
     if (std.mem.eql(u8, label, "Operator")) return .Operator;
     if (std.mem.eql(u8, label, "Showcase")) return .Showcase;
