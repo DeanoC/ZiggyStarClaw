@@ -47,6 +47,7 @@ pub const ControlTab = enum {
     Sessions,
     Settings,
     Operator,
+    Showcase,
 };
 
 pub const PanelData = union(enum) {
@@ -280,6 +281,7 @@ fn panelToSnapshot(allocator: std.mem.Allocator, panel: Panel) !PanelSnapshot {
                 .Sessions => "Sessions",
                 .Settings => "Settings",
                 .Operator => "Operator",
+                .Showcase => "Showcase",
             }) };
         },
     }
@@ -368,6 +370,7 @@ fn panelFromSnapshot(allocator: std.mem.Allocator, snap: PanelSnapshot) !Panel {
 fn parseControlTab(label: []const u8) ControlTab {
     if (std.mem.eql(u8, label, "Settings")) return .Settings;
     if (std.mem.eql(u8, label, "Operator")) return .Operator;
+    if (std.mem.eql(u8, label, "Showcase")) return .Showcase;
     return .Sessions;
 }
 

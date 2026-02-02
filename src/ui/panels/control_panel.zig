@@ -4,6 +4,7 @@ const state = @import("../../client/state.zig");
 const config = @import("../../client/config.zig");
 const sessions_panel = @import("sessions_panel.zig");
 const settings_panel = @import("settings_panel.zig");
+const showcase_panel = @import("showcase_panel.zig");
 const operator_view = @import("../operator_view.zig");
 const workspace = @import("../workspace.zig");
 const components = @import("../components/components.zig");
@@ -84,6 +85,11 @@ pub fn draw(
             action.clear_node_describe = operator_action.clear_node_describe;
             action.clear_node_result = operator_action.clear_node_result;
             action.clear_operator_notice = operator_action.clear_operator_notice;
+            components.core.tab_bar.endItem();
+        }
+        if (components.core.tab_bar.beginItem("Showcase")) {
+            panel.active_tab = .Showcase;
+            showcase_panel.draw();
             components.core.tab_bar.endItem();
         }
         components.core.tab_bar.end();

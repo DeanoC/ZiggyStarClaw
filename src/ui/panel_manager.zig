@@ -362,5 +362,6 @@ pub const PanelManager = struct {
 fn parseControlTab(label: []const u8) workspace.ControlTab {
     if (std.mem.eql(u8, label, "Settings")) return .Settings;
     if (std.mem.eql(u8, label, "Operator")) return .Operator;
+    if (std.mem.eql(u8, label, "Showcase")) return .Showcase;
     return .Sessions;
 }
