@@ -131,14 +131,7 @@ pub fn draw(
         const dock_size = .{ avail[0], dock_height };
         const dock_pos = zgui.getCursorScreenPos();
         const dockspace_id = zgui.dockSpace("MainDockSpace", dock_size, .{});
-        if (dock_state.dockspace_id != 0 and dock_state.dockspace_id != dockspace_id) {
-            dock_layout.resetDockLayout(allocator, dock_state, &manager.workspace);
-        }
         dock_layout.ensureDockLayout(dock_state, &manager.workspace, dockspace_id, dock_pos, dock_size);
-        if (dockspace_id != 0) {
-            zgui.dockBuilderSetNodePos(dockspace_id, dock_pos);
-            zgui.dockBuilderSetNodeSize(dockspace_id, dock_size);
-        }
 
         var index: usize = 0;
         while (index < manager.workspace.panels.items.len) {
