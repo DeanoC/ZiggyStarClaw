@@ -1,6 +1,7 @@
 const zgui = @import("zgui");
 const state = @import("../client/state.zig");
 const theme = @import("theme.zig");
+const components = @import("components/components.zig");
 
 pub fn draw(
     client_state: state.ClientState,
@@ -13,20 +14,29 @@ pub fn draw(
     const spacing = t.spacing.sm;
     const label = t.colors.text_secondary;
     const value = t.colors.text_primary;
-    const status_color: [4]f32 = switch (client_state) {
-        .connected => t.colors.success,
-        .connecting, .authenticating => t.colors.warning,
-        .error_state => t.colors.danger,
-        .disconnected => if (is_connected) t.colors.success else t.colors.text_secondary,
+    const status_variant: components.core.badge.Variant = switch (client_state) {
+        .connected => .success,
+        .connecting, .authenticating => .warning,
+        .error_state => .danger,
+        .disconnected => if (is_connected) .success else .neutral,
     };
+    const connection_variant: components.core.badge.Variant = if (is_connected) .success else .neutral;
 
     zgui.textColored(label, "Status:", .{});
     zgui.sameLine(.{ .spacing = spacing });
-    zgui.textColored(status_color, "{s}", .{@tagName(client_state)});
+    components.core.badge.draw(@tagName(client_state), .{
+        .variant = status_variant,
+        .filled = true,
+        .size = .small,
+    });
     zgui.sameLine(.{ .spacing = spacing });
     zgui.textColored(label, "Connection:", .{});
     zgui.sameLine(.{ .spacing = spacing });
-    zgui.textColored(value, "{s}", .{if (is_connected) "online" else "offline"});
+    components.core.badge.draw(if (is_connected) "online" else "offline", .{
+        .variant = connection_variant,
+        .filled = true,
+        .size = .small,
+    });
     zgui.sameLine(.{ .spacing = spacing });
     zgui.textColored(label, "Session:", .{});
     zgui.sameLine(.{ .spacing = spacing });

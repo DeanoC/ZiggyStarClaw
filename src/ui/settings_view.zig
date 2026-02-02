@@ -114,7 +114,19 @@ pub fn draw(
                     action.connect = true;
                 }
             }
-            zgui.textWrapped("State: {s}", .{@tagName(client_state)});
+            zgui.text("State:", .{});
+            zgui.sameLine(.{ .spacing = theme.activeTheme().spacing.sm });
+            const state_variant: components.core.badge.Variant = switch (client_state) {
+                .connected => .success,
+                .connecting, .authenticating => .warning,
+                .error_state => .danger,
+                .disconnected => if (is_connected) .success else .neutral,
+            };
+            components.core.badge.draw(@tagName(client_state), .{
+                .variant = state_variant,
+                .filled = true,
+                .size = .small,
+            });
         }
         components.layout.card.end();
         zgui.dummy(.{ .w = 0.0, .h = spacing });
@@ -134,22 +146,44 @@ pub fn draw(
                 }
                 action.check_updates = true;
             }
+            zgui.text("Status:", .{});
+            zgui.sameLine(.{ .spacing = theme.activeTheme().spacing.sm });
+            const update_variant: components.core.badge.Variant = switch (snapshot.status) {
+                .idle => .neutral,
+                .checking => .warning,
+                .up_to_date => .success,
+                .update_available => .primary,
+                .failed => .danger,
+                .unsupported => .warning,
+            };
+            const update_label: []const u8 = switch (snapshot.status) {
+                .idle => "idle",
+                .checking => "checking",
+                .up_to_date => "up to date",
+                .update_available => "update available",
+                .failed => "error",
+                .unsupported => "unsupported",
+            };
+            components.core.badge.draw(update_label, .{
+                .variant = update_variant,
+                .filled = true,
+                .size = .small,
+            });
             switch (snapshot.status) {
-                .idle => zgui.textWrapped("Status: idle", .{}),
-                .checking => zgui.textWrapped("Status: checking...", .{}),
-                .up_to_date => zgui.textWrapped("Status: up to date", .{}),
-                .update_available => zgui.textWrapped(
-                    "Status: update available ({s})",
-                    .{snapshot.latest_version orelse "?"},
-                ),
+                .update_available => if (snapshot.latest_version) |ver| {
+                    zgui.textWrapped("Latest: {s}", .{ver});
+                },
                 .failed => zgui.textWrapped(
-                    "Status: error ({s})",
+                    "Error: {s}",
                     .{snapshot.error_message orelse "unknown"},
                 ),
                 .unsupported => zgui.textWrapped(
-                    "Status: unsupported ({s})",
+                    "Unsupported: {s}",
                     .{snapshot.error_message orelse "not supported"},
                 ),
+                .checking => zgui.textWrapped("Checking for updates...", .{}),
+                .up_to_date => zgui.textWrapped("Up to date.", .{}),
+                .idle => {},
             }
 
             if (snapshot.status == .update_available) {
