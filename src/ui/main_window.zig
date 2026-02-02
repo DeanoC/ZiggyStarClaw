@@ -64,6 +64,8 @@ pub fn draw(
 
     var menu_height: f32 = 0.0;
     const t = theme.activeTheme();
+    const status_padding_y = t.spacing.xs;
+    const status_height = zgui.getFrameHeightWithSpacing() + status_padding_y * 2.0;
     zgui.pushStyleVar2f(.{ .idx = .frame_padding, .v = .{ t.spacing.sm, t.spacing.xs } });
     zgui.pushStyleVar2f(.{ .idx = .item_spacing, .v = .{ t.spacing.sm, t.spacing.xs } });
     zgui.pushStyleVar2f(.{ .idx = .window_padding, .v = .{ t.spacing.sm, t.spacing.xs } });
@@ -105,7 +107,7 @@ pub fn draw(
         const bottom = safe_insets[3];
         const width = @max(1.0, display[0] - left - right);
         const extra_bottom: f32 = if (builtin.abi == .android) 24.0 else 0.0;
-        const height = @max(1.0, display[1] - top - bottom - extra_bottom);
+        const height = @max(1.0, display[1] - top - bottom - extra_bottom - status_height);
         zgui.setNextWindowPos(.{ .x = left, .y = top, .cond = .always });
         zgui.setNextWindowSize(.{ .w = width, .h = height, .cond = .always });
     }
@@ -227,8 +229,6 @@ pub fn draw(
     const status_right = safe_insets[2];
     const status_bottom = safe_insets[3] + extra_bottom;
     const status_width = @max(1.0, viewport.size[0] - status_left - status_right);
-    const status_padding_y = t.spacing.xs;
-    const status_height = zgui.getFrameHeightWithSpacing() + status_padding_y * 2.0;
     const status_x = viewport.pos[0] + status_left;
     const status_y = viewport.pos[1] + viewport.size[1] - status_bottom - status_height;
     zgui.setNextWindowPos(.{ .x = status_x, .y = status_y, .cond = .always });
