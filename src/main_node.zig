@@ -277,15 +277,16 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         }
     }
 
-    // Node connect auth token (role=node)
+    // Node auth token (role=node). Used for the node websocket handshake + connect auth + device auth.
     if (opts.node_token) |tok| {
         if (config.device_token) |old| allocator.free(old);
         config.device_token = try allocator.dupe(u8, tok);
     }
 
-    // Operator connect auth token (role=operator) for dual-connection mode
+    // Operator token (role=operator) for the operator websocket.
+    // If not provided, fall back to gateway_token.
     if (opts.operator_token) |tok| {
-        // We (currently) reuse gateway_token field for operator connect auth too.
+        // Reuse gateway_token storage for operator token (separate field can come later).
         if (config.gateway_token) |old| allocator.free(old);
         config.gateway_token = try allocator.dupe(u8, tok);
     }
@@ -349,15 +350,20 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
 
         var ws_client: ?websocket_client.WebSocketClient = null;
         if (config.enable_node_connection) {
+            // Node websocket: MUST use node token for both handshake + connect auth when gateway enforces auth.
+            const node_handshake_token = config.device_token orelse config.gateway_token orelse "";
             var ws = websocket_client.WebSocketClient.init(
                 allocator,
                 ws_url,
-                config.gateway_token orelse "",
+                node_handshake_token,
                 opts.insecure_tls,
                 null,
             );
-            // When gateway auth is enabled, the websocket handshake token and connect auth token
-            // must match. Node authorization should come from the device-auth token.
+            // Keep connect auth token consistent with the handshake token.
+            if (node_handshake_token.len > 0) {
+                ws.setConnectAuthToken(node_handshake_token);
+            }
+            // Device-auth token should also be the node token (if provided).
             if (config.device_token) |tok| {
                 ws.setDeviceAuthToken(tok);
             }
@@ -401,17 +407,17 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         // This mirrors real usage: a controller client and a node host.
         var op_ws_client: ?websocket_client.WebSocketClient = null;
         if (config.enable_operator_connection) {
+            // Operator websocket: uses operator/gateway token for both handshake + connect auth.
+            const operator_handshake_token = config.gateway_token orelse "";
             var op = websocket_client.WebSocketClient.init(
                 allocator,
                 ws_url,
-                config.gateway_token orelse "",
+                operator_handshake_token,
                 opts.insecure_tls,
                 null,
             );
-            // Operator connect auth: default to gateway token unless overridden.
-            // (Right now we reuse config.gateway_token for both handshake + operator connect.)
-            if (config.gateway_token) |tok| {
-                op.setConnectAuthToken(tok);
+            if (operator_handshake_token.len > 0) {
+                op.setConnectAuthToken(operator_handshake_token);
             }
             op.setConnectProfile(.{
                 .role = "operator",
