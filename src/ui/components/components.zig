@@ -1,5 +1,6 @@
 pub const core = struct {
     pub const button = @import("core/button.zig");
+    pub const icon_button = @import("core/icon_button.zig");
     pub const badge = @import("core/badge.zig");
     pub const tab_bar = @import("core/tab_bar.zig");
     pub const file_row = @import("core/file_row.zig");

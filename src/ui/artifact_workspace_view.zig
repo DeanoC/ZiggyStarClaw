@@ -43,13 +43,13 @@ pub fn draw() void {
         components.layout.scroll_area.end();
 
         zgui.separator();
-        if (components.core.button.draw("Copy", .{ .variant = .secondary, .size = .small })) {}
+        if (components.core.icon_button.draw("C", .{ .tooltip = "Copy" })) {}
         zgui.sameLine(.{ .spacing = t.spacing.sm });
-        if (components.core.button.draw("Undo", .{ .variant = .ghost, .size = .small })) {}
+        if (components.core.icon_button.draw("U", .{ .tooltip = "Undo" })) {}
         zgui.sameLine(.{ .spacing = t.spacing.sm });
-        if (components.core.button.draw("Redo", .{ .variant = .ghost, .size = .small })) {}
+        if (components.core.icon_button.draw("R", .{ .tooltip = "Redo" })) {}
         zgui.sameLine(.{ .spacing = t.spacing.sm });
-        if (components.core.button.draw("Expand", .{ .variant = .secondary, .size = .small })) {}
+        if (components.core.icon_button.draw("E", .{ .tooltip = "Expand" })) {}
     }
     zgui.endChild();
 }
@@ -78,8 +78,29 @@ fn drawPreview(t: *const theme.Theme) void {
     zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
 
     if (components.layout.card.begin(.{ .title = "Sales Performance (Chart)", .id = "artifact_chart" })) {
-        zgui.textWrapped("Chart placeholder: bar chart of weekly sales performance.", .{});
-        zgui.dummy(.{ .w = 0.0, .h = 120.0 });
+        zgui.textWrapped("Chart placeholder: weekly sales performance.", .{});
+        const draw_list = zgui.getWindowDrawList();
+        const cursor = zgui.getCursorScreenPos();
+        const size = zgui.getContentRegionAvail();
+        const height = @min(140.0, size[1]);
+        const width = size[0];
+        const bar_width = 18.0;
+        const gap = 10.0;
+        const base_y = cursor[1] + height;
+        const bar_color = zgui.colorConvertFloat4ToU32(theme.activeTheme().colors.primary);
+        var x = cursor[0];
+        const bars = [_]f32{ 0.4, 0.6, 0.3, 0.8, 0.5, 0.7 };
+        for (bars) |ratio| {
+            const bar_h = height * ratio;
+            draw_list.addRectFilled(.{
+                .pmin = .{ x, base_y - bar_h },
+                .pmax = .{ x + bar_width, base_y },
+                .col = bar_color,
+                .rounding = 3.0,
+            });
+            x += bar_width + gap;
+        }
+        zgui.dummy(.{ .w = width, .h = height });
     }
     components.layout.card.end();
 }

@@ -4,21 +4,33 @@ const state = @import("../client/state.zig");
 const types = @import("../protocol/types.zig");
 const theme = @import("theme.zig");
 const components = @import("components/components.zig");
+const sessions_panel = @import("panels/sessions_panel.zig");
 
 pub const ProjectsViewAction = struct {
     refresh_sessions: bool = false,
     new_session: bool = false,
     select_session: ?[]u8 = null,
+    open_attachment: ?sessions_panel.AttachmentOpen = null,
+    open_url: ?[]u8 = null,
 };
 
 var selected_project_index: ?usize = null;
+var search_buf: [128:0]u8 = [_:0]u8{0} ** 128;
 
 pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ProjectsViewAction {
     var action = ProjectsViewAction{};
     const opened = zgui.beginChild("ProjectsView", .{ .h = 0.0, .child_flags = .{ .border = true } });
     if (opened) {
         const t = theme.activeTheme();
-        if (components.layout.header_bar.begin(.{ .title = "Projects Overview", .subtitle = "ZiggyStarClaw" })) {
+        if (components.layout.header_bar.begin(.{
+            .title = "Projects Overview",
+            .subtitle = "ZiggyStarClaw",
+            .show_traffic_lights = true,
+            .show_search = true,
+            .search_buffer = search_buf[0.. :0],
+            .show_notifications = true,
+            .notification_count = ctx.approvals.items.len,
+        })) {
             if (components.core.button.draw("Refresh", .{ .variant = .secondary, .size = .small })) {
                 action.refresh_sessions = true;
             }
@@ -84,7 +96,7 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ProjectsVie
 
         zgui.sameLine(.{ .spacing = t.spacing.md });
         if (components.layout.scroll_area.begin(.{ .id = "ProjectsMain", .border = false })) {
-            drawMainContent(ctx, t);
+            drawMainContent(allocator, ctx, t, &action);
         }
         components.layout.scroll_area.end();
     }
@@ -92,7 +104,12 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ProjectsVie
     return action;
 }
 
-fn drawMainContent(ctx: *state.ClientContext, t: *const theme.Theme) void {
+fn drawMainContent(
+    allocator: std.mem.Allocator,
+    ctx: *state.ClientContext,
+    t: *const theme.Theme,
+    action: *ProjectsViewAction,
+) void {
     const selected_index = resolveSelectedIndex(ctx);
     if (selected_index == null) {
         zgui.textDisabled("Create or select a project to see details.", .{});
@@ -100,6 +117,10 @@ fn drawMainContent(ctx: *state.ClientContext, t: *const theme.Theme) void {
     }
 
     const session = ctx.sessions.items[selected_index.?];
+    var previews_buf: [12]sessions_panel.AttachmentOpen = undefined;
+    const previews = collectAttachmentPreviews(ctx.messages.items, &previews_buf);
+    var artifacts_buf: [6]components.composite.project_card.Artifact = undefined;
+    const artifacts = previewsToArtifacts(previews, &artifacts_buf);
     theme.push(.title);
     zgui.text("Welcome back!", .{});
     theme.pop();
@@ -116,9 +137,6 @@ fn drawMainContent(ctx: *state.ClientContext, t: *const theme.Theme) void {
         categories_buf[categories_len] = .{ .name = "active", .variant = .success };
         categories_len += 1;
     }
-
-    var artifacts_buf: [6]components.composite.project_card.Artifact = undefined;
-    const artifacts = collectArtifacts(ctx.messages.items, &artifacts_buf);
 
     components.composite.project_card.draw(.{
         .id = "projects_active_card",
@@ -143,17 +161,27 @@ fn drawMainContent(ctx: *state.ClientContext, t: *const theme.Theme) void {
     zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
 
     if (components.layout.card.begin(.{ .title = "Recent Artifacts", .id = "projects_artifacts" })) {
-        if (artifacts.len == 0) {
+        if (previews.len == 0) {
             zgui.textDisabled("No artifacts generated yet.", .{});
         } else {
-            for (artifacts, 0..) |artifact, idx| {
+            for (previews, 0..) |preview, idx| {
                 zgui.pushIntId(@intCast(idx));
                 defer zgui.popId();
                 components.composite.artifact_row.draw(.{
-                    .name = artifact.name,
-                    .file_type = artifact.file_type,
-                    .status = artifact.status,
+                    .name = preview.name,
+                    .file_type = preview.kind,
+                    .status = preview.role,
                 });
+                if (components.core.button.draw("Open in Editor", .{ .variant = .secondary, .size = .small })) {
+                    action.open_attachment = preview;
+                }
+                if (isHttpUrl(preview.url)) {
+                    zgui.sameLine(.{ .spacing = t.spacing.sm });
+                    if (components.core.button.draw("Open URL", .{ .variant = .ghost, .size = .small })) {
+                        action.open_url = allocator.dupe(u8, preview.url) catch null;
+                    }
+                }
+                zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
             }
         }
     }
@@ -190,10 +218,25 @@ fn displayName(session: types.Session) []const u8 {
     return session.display_name orelse session.label orelse session.key;
 }
 
-fn collectArtifacts(
-    messages: []const types.ChatMessage,
+fn previewsToArtifacts(
+    previews: []const sessions_panel.AttachmentOpen,
     buf: []components.composite.project_card.Artifact,
 ) []components.composite.project_card.Artifact {
+    const count = @min(previews.len, buf.len);
+    for (previews[0..count], 0..) |preview, idx| {
+        buf[idx] = .{
+            .name = preview.name,
+            .file_type = preview.kind,
+            .status = preview.role,
+        };
+    }
+    return buf[0..count];
+}
+
+fn collectAttachmentPreviews(
+    messages: []const types.ChatMessage,
+    buf: []sessions_panel.AttachmentOpen,
+) []sessions_panel.AttachmentOpen {
     var len: usize = 0;
     var index: usize = messages.len;
     while (index > 0 and len < buf.len) : (index -= 1) {
@@ -204,12 +247,18 @@ fn collectArtifacts(
                 const name = attachment.name orelse attachment.url;
                 buf[len] = .{
                     .name = name,
-                    .file_type = attachment.kind,
-                    .status = message.role,
+                    .kind = attachment.kind,
+                    .url = attachment.url,
+                    .role = message.role,
+                    .timestamp = message.timestamp,
                 };
                 len += 1;
             }
         }
     }
     return buf[0..len];
+}
+
+fn isHttpUrl(url: []const u8) bool {
+    return std.mem.startsWith(u8, url, "http://") or std.mem.startsWith(u8, url, "https://");
 }

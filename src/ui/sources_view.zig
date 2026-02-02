@@ -4,21 +4,32 @@ const state = @import("../client/state.zig");
 const types = @import("../protocol/types.zig");
 const theme = @import("theme.zig");
 const components = @import("components/components.zig");
+const sessions_panel = @import("panels/sessions_panel.zig");
 
 pub const SourcesViewAction = struct {
     select_session: ?[]u8 = null,
+    open_attachment: ?sessions_panel.AttachmentOpen = null,
+    open_url: ?[]u8 = null,
 };
 
 var selected_source_index: ?usize = null;
 var selected_file_index: ?usize = null;
 var split_state = components.layout.split_pane.SplitState{ .size = 240.0 };
+var search_buf: [128:0]u8 = [_:0]u8{0} ** 128;
 
 pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) SourcesViewAction {
     var action = SourcesViewAction{};
     const opened = zgui.beginChild("SourcesView", .{ .h = 0.0, .child_flags = .{ .border = true } });
     if (opened) {
         const t = theme.activeTheme();
-        if (components.layout.header_bar.begin(.{ .title = "Sources", .subtitle = "Indexed Content" })) {
+        if (components.layout.header_bar.begin(.{
+            .title = "Sources",
+            .subtitle = "Indexed Content",
+            .show_search = true,
+            .search_buffer = search_buf[0.. :0],
+            .show_notifications = true,
+            .notification_count = ctx.approvals.items.len,
+        })) {
             if (components.core.button.draw("Add Source", .{ .variant = .secondary, .size = .small })) {
                 // Placeholder for future action.
             }
@@ -63,8 +74,11 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) SourcesView
         var files_buf: [16]components.composite.source_browser.FileEntry = undefined;
         var fallback = fallbackFiles();
         var files = collectFiles(ctx.messages.items, &files_buf);
+        var previews_buf: [16]sessions_panel.AttachmentOpen = undefined;
+        var previews = collectAttachmentPreviews(ctx.messages.items, &previews_buf);
         if (active_index == null or sources_map[active_index.?] == null) {
             files = fallback[0..];
+            previews = &[_]sessions_panel.AttachmentOpen{};
         }
 
         const current_path = if (active_index != null) blk: {
@@ -87,6 +101,7 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) SourcesView
         if (source_action.select_source) |idx| {
             if (idx < sources_len) {
                 selected_source_index = idx;
+                selected_file_index = null;
                 if (sources_map[idx]) |session_index| {
                     const session_key = ctx.sessions.items[session_index].key;
                     action.select_session = allocator.dupe(u8, session_key) catch null;
@@ -97,6 +112,28 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) SourcesView
         if (source_action.select_file) |idx| {
             selected_file_index = idx;
         }
+
+        zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
+        if (components.layout.card.begin(.{ .title = "Selected File", .id = "sources_selected_file" })) {
+            if (selected_file_index == null or selected_file_index.? >= previews.len) {
+                zgui.textDisabled("Select a file to see details and actions.", .{});
+            } else {
+                const preview = previews[selected_file_index.?];
+                zgui.textWrapped("Name: {s}", .{preview.name});
+                zgui.textWrapped("Type: {s}", .{preview.kind});
+                zgui.textWrapped("Role: {s}", .{preview.role});
+                if (components.core.button.draw("Open in Editor", .{ .variant = .secondary, .size = .small })) {
+                    action.open_attachment = preview;
+                }
+                if (isHttpUrl(preview.url)) {
+                    zgui.sameLine(.{ .spacing = t.spacing.sm });
+                    if (components.core.button.draw("Open URL", .{ .variant = .ghost, .size = .small })) {
+                        action.open_url = allocator.dupe(u8, preview.url) catch null;
+                    }
+                }
+            }
+        }
+        components.layout.card.end();
     }
     zgui.endChild();
     return action;
@@ -165,6 +202,36 @@ fn collectFiles(
         }
     }
     return buf[0..len];
+}
+
+fn collectAttachmentPreviews(
+    messages: []const types.ChatMessage,
+    buf: []sessions_panel.AttachmentOpen,
+) []sessions_panel.AttachmentOpen {
+    var len: usize = 0;
+    var index: usize = messages.len;
+    while (index > 0 and len < buf.len) : (index -= 1) {
+        const message = messages[index - 1];
+        if (message.attachments) |attachments| {
+            for (attachments) |attachment| {
+                if (len >= buf.len) break;
+                const name = attachment.name orelse attachment.url;
+                buf[len] = .{
+                    .name = name,
+                    .kind = attachment.kind,
+                    .url = attachment.url,
+                    .role = message.role,
+                    .timestamp = message.timestamp,
+                };
+                len += 1;
+            }
+        }
+    }
+    return buf[0..len];
+}
+
+fn isHttpUrl(url: []const u8) bool {
+    return std.mem.startsWith(u8, url, "http://") or std.mem.startsWith(u8, url, "https://");
 }
 
 fn fallbackFiles() [4]components.composite.source_browser.FileEntry {

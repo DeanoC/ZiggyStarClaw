@@ -57,12 +57,16 @@ pub fn draw(
             action.refresh_sessions = projects_action.refresh_sessions;
             action.new_session = projects_action.new_session;
             action.select_session = projects_action.select_session;
+            action.open_attachment = projects_action.open_attachment;
+            action.open_url = projects_action.open_url;
             components.core.tab_bar.endItem();
         }
         if (components.core.tab_bar.beginItem("Sources")) {
             panel.active_tab = .Sources;
             const sources_action = sources_view.draw(allocator, ctx);
             action.select_session = sources_action.select_session;
+            action.open_attachment = sources_action.open_attachment;
+            action.open_url = sources_action.open_url;
             components.core.tab_bar.endItem();
         }
         if (components.core.tab_bar.beginItem("Artifact Workspace")) {
