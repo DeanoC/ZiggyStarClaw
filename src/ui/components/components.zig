@@ -8,4 +8,5 @@ pub const core = struct {
 pub const layout = struct {
     pub const card = @import("layout/card.zig");
     pub const scroll_area = @import("layout/scroll_area.zig");
+    pub const sidebar = @import("layout/sidebar.zig");
 };

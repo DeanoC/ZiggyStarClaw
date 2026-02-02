@@ -2,6 +2,8 @@ const std = @import("std");
 const zgui = @import("zgui");
 const state = @import("../client/state.zig");
 const types = @import("../protocol/types.zig");
+const theme = @import("theme.zig");
+const components = @import("components/components.zig");
 
 pub const NodeInvokeAction = struct {
     node_id: []u8,
@@ -63,184 +65,197 @@ pub fn draw(
     }
 
     if (zgui.beginChild("Operator", .{ .h = 0.0, .child_flags = .{ .border = true } })) {
+        const spacing = theme.activeTheme().spacing.md;
+        theme.push(.heading);
         zgui.text("Operator", .{});
+        theme.pop();
         zgui.separator();
 
-        zgui.text("Nodes", .{});
-        zgui.beginDisabled(.{ .disabled = !is_connected or ctx.nodes_loading });
-        if (zgui.button("Refresh Nodes", .{})) {
-            action.refresh_nodes = true;
-        }
-        zgui.sameLine(.{});
-        if (zgui.button("Describe Selected", .{})) {
-            if (ctx.current_node) |node_id| {
-                action.describe_node = allocator.dupe(u8, node_id) catch null;
-            }
-        }
-        zgui.endDisabled();
-        if (!is_connected) {
-            zgui.textWrapped("Connect to load nodes.", .{});
-        } else if (ctx.nodes_loading) {
-            zgui.textWrapped("Loading nodes...", .{});
-        }
+        const avail = zgui.getContentRegionAvail();
+        const sidebar_width = @min(280.0, avail[0] * 0.35);
 
-        const list_height: f32 = 150.0;
-        if (zgui.beginChild("NodesList", .{ .h = list_height, .child_flags = .{ .border = true } })) {
-            if (ctx.nodes.items.len == 0) {
-                zgui.textWrapped("No nodes available.", .{});
+        if (components.layout.sidebar.begin(.{ .id = "operator", .width = sidebar_width })) {
+            zgui.text("Nodes", .{});
+            zgui.beginDisabled(.{ .disabled = !is_connected or ctx.nodes_loading });
+            if (components.core.button.draw("Refresh Nodes", .{ .variant = .secondary, .size = .small })) {
+                action.refresh_nodes = true;
+            }
+            zgui.sameLine(.{ .spacing = spacing });
+            if (components.core.button.draw("Describe Selected", .{ .variant = .secondary, .size = .small })) {
+                if (ctx.current_node) |node_id| {
+                    action.describe_node = allocator.dupe(u8, node_id) catch null;
+                }
+            }
+            zgui.endDisabled();
+            if (!is_connected) {
+                zgui.textWrapped("Connect to load nodes.", .{});
+            } else if (ctx.nodes_loading) {
+                zgui.textWrapped("Loading nodes...", .{});
+            }
+
+            const list_height: f32 = 180.0;
+            if (components.layout.scroll_area.begin(.{ .id = "NodesList", .height = list_height, .border = true })) {
+                if (ctx.nodes.items.len == 0) {
+                    zgui.textWrapped("No nodes available.", .{});
+                } else {
+                    for (ctx.nodes.items, 0..) |node, index| {
+                        zgui.pushIntId(@intCast(index));
+                        defer zgui.popId();
+                        const selected = ctx.current_node != null and std.mem.eql(u8, ctx.current_node.?, node.id);
+                        const connected_label = statusLabel(node.connected);
+                        const paired_label = statusLabel(node.paired);
+                        const title = if (node.display_name) |name|
+                            zgui.formatZ("{s} ({s}, {s})", .{ name, connected_label, paired_label })
+                        else
+                            zgui.formatZ("{s} ({s}, {s})", .{ node.id, connected_label, paired_label });
+                        if (zgui.selectable(title, .{ .selected = selected })) {
+                            action.select_node = allocator.dupe(u8, node.id) catch null;
+                        }
+                    }
+                }
+            }
+            components.layout.scroll_area.end();
+
+            zgui.separator();
+            zgui.text("Execution Approvals", .{});
+            if (!is_connected) {
+                zgui.textWrapped("Connect to receive approval requests.", .{});
+            } else if (ctx.approvals.items.len == 0) {
+                zgui.textWrapped("No pending approvals.", .{});
             } else {
-                for (ctx.nodes.items, 0..) |node, index| {
-                    zgui.pushIntId(@intCast(index));
-                    defer zgui.popId();
-                    const selected = ctx.current_node != null and std.mem.eql(u8, ctx.current_node.?, node.id);
-                    const connected_label = statusLabel(node.connected);
-                    const paired_label = statusLabel(node.paired);
-                    const title = if (node.display_name) |name|
-                        zgui.formatZ("{s} ({s}, {s})", .{ name, connected_label, paired_label })
-                    else
-                        zgui.formatZ("{s} ({s}, {s})", .{ node.id, connected_label, paired_label });
-                    if (zgui.selectable(title, .{ .selected = selected })) {
-                        action.select_node = allocator.dupe(u8, node.id) catch null;
+                if (components.layout.scroll_area.begin(.{ .id = "ApprovalsList", .height = 160.0, .border = true })) {
+                    for (ctx.approvals.items, 0..) |approval, index| {
+                        zgui.pushIntId(@intCast(index));
+                        defer zgui.popId();
+                        zgui.textWrapped("Request: {s}", .{approval.id});
+                        if (approval.summary) |summary| {
+                            zgui.textWrapped("Summary: {s}", .{summary});
+                        }
+                        if (approval.requested_at_ms) |ts| {
+                            zgui.textWrapped("Requested At: {d}", .{ts});
+                        }
+                        if (approval.can_resolve) {
+                            if (components.core.button.draw("Allow Once", .{ .variant = .primary, .size = .small })) {
+                                const id_copy = allocator.dupe(u8, approval.id) catch null;
+                                if (id_copy) |value| {
+                                    action.resolve_approval = ExecApprovalResolveAction{
+                                        .request_id = value,
+                                        .decision = .allow_once,
+                                    };
+                                }
+                            }
+                            zgui.sameLine(.{ .spacing = spacing });
+                            if (components.core.button.draw("Allow Always", .{ .variant = .secondary, .size = .small })) {
+                                const id_copy = allocator.dupe(u8, approval.id) catch null;
+                                if (id_copy) |value| {
+                                    action.resolve_approval = ExecApprovalResolveAction{
+                                        .request_id = value,
+                                        .decision = .allow_always,
+                                    };
+                                }
+                            }
+                            zgui.sameLine(.{ .spacing = spacing });
+                            if (components.core.button.draw("Deny", .{ .variant = .danger, .size = .small })) {
+                                const id_copy = allocator.dupe(u8, approval.id) catch null;
+                                if (id_copy) |value| {
+                                    action.resolve_approval = ExecApprovalResolveAction{
+                                        .request_id = value,
+                                        .decision = .deny,
+                                    };
+                                }
+                            }
+                        } else {
+                            zgui.textWrapped("Missing approval id in payload.", .{});
+                        }
+                        zgui.textWrapped("{s}", .{approval.payload_json});
+                        zgui.separator();
                     }
                 }
+                components.layout.scroll_area.end();
             }
         }
-        zgui.endChild();
+        components.layout.sidebar.end();
 
-        drawSelectedNode(allocator, ctx, &action);
+        zgui.sameLine(.{ .spacing = spacing });
+        if (components.layout.scroll_area.begin(.{ .id = "OperatorMain", .border = false })) {
+            drawSelectedNode(allocator, ctx, &action);
 
-        zgui.separator();
-        zgui.text("Execution Approvals", .{});
-        if (!is_connected) {
-            zgui.textWrapped("Connect to receive approval requests.", .{});
-        } else if (ctx.approvals.items.len == 0) {
-            zgui.textWrapped("No pending approvals.", .{});
-        } else {
-            if (zgui.beginChild("ApprovalsList", .{ .h = 140.0, .child_flags = .{ .border = true } })) {
-                for (ctx.approvals.items, 0..) |approval, index| {
-                    zgui.pushIntId(@intCast(index));
-                    defer zgui.popId();
-                    zgui.textWrapped("Request: {s}", .{approval.id});
-                    if (approval.summary) |summary| {
-                        zgui.textWrapped("Summary: {s}", .{summary});
-                    }
-                    if (approval.requested_at_ms) |ts| {
-                        zgui.textWrapped("Requested At: {d}", .{ts});
-                    }
-                    if (approval.can_resolve) {
-                        if (zgui.button("Allow Once", .{})) {
-                            const id_copy = allocator.dupe(u8, approval.id) catch null;
-                            if (id_copy) |value| {
-                                action.resolve_approval = ExecApprovalResolveAction{
-                                    .request_id = value,
-                                    .decision = .allow_once,
-                                };
-                            }
-                        }
-                        zgui.sameLine(.{});
-                        if (zgui.button("Allow Always", .{})) {
-                            const id_copy = allocator.dupe(u8, approval.id) catch null;
-                            if (id_copy) |value| {
-                                action.resolve_approval = ExecApprovalResolveAction{
-                                    .request_id = value,
-                                    .decision = .allow_always,
-                                };
-                            }
-                        }
-                        zgui.sameLine(.{});
-                        if (zgui.button("Deny", .{})) {
-                            const id_copy = allocator.dupe(u8, approval.id) catch null;
-                            if (id_copy) |value| {
-                                action.resolve_approval = ExecApprovalResolveAction{
-                                    .request_id = value,
-                                    .decision = .deny,
-                                };
-                            }
-                        }
-                    } else {
-                        zgui.textWrapped("Missing approval id in payload.", .{});
-                    }
-                    zgui.textWrapped("{s}", .{approval.payload_json});
-                    zgui.separator();
+            zgui.separator();
+            zgui.text("Invoke Node Command", .{});
+            _ = zgui.inputText("Node ID", .{ .buf = node_id_buf[0.. :0] });
+            zgui.sameLine(.{});
+            if (components.core.button.draw("Use Selected", .{ .variant = .secondary, .size = .small })) {
+                if (ctx.current_node) |node_id| {
+                    fillBuffer(node_id_buf[0..], node_id);
                 }
             }
-            zgui.endChild();
-        }
-
-        zgui.separator();
-        zgui.text("Invoke Node Command", .{});
-        _ = zgui.inputText("Node ID", .{ .buf = node_id_buf[0.. :0] });
-        zgui.sameLine(.{});
-        if (zgui.button("Use Selected", .{})) {
-            if (ctx.current_node) |node_id| {
-                fillBuffer(node_id_buf[0..], node_id);
+            zgui.sameLine(.{ .spacing = spacing });
+            if (components.core.button.draw("Describe", .{ .variant = .secondary, .size = .small })) {
+                const node_text = std.mem.sliceTo(&node_id_buf, 0);
+                if (node_text.len > 0) {
+                    action.describe_node = allocator.dupe(u8, node_text) catch null;
+                }
             }
-        }
-        zgui.sameLine(.{});
-        if (zgui.button("Describe", .{})) {
-            const node_text = std.mem.sliceTo(&node_id_buf, 0);
-            if (node_text.len > 0) {
-                action.describe_node = allocator.dupe(u8, node_text) catch null;
-            }
-        }
-        _ = zgui.inputText("Command", .{ .buf = command_buf[0.. :0] });
-        _ = zgui.inputText("Timeout (ms)", .{ .buf = timeout_buf[0.. :0] });
-        _ = zgui.inputTextMultiline("Params (JSON)", .{
-            .buf = params_buf[0.. :0],
-            .h = 80.0,
-            .flags = .{ .allow_tab_input = true },
-        });
+            _ = zgui.inputText("Command", .{ .buf = command_buf[0.. :0] });
+            _ = zgui.inputText("Timeout (ms)", .{ .buf = timeout_buf[0.. :0] });
+            _ = zgui.inputTextMultiline("Params (JSON)", .{
+                .buf = params_buf[0.. :0],
+                .h = 80.0,
+                .flags = .{ .allow_tab_input = true },
+            });
 
-        zgui.beginDisabled(.{ .disabled = !is_connected });
-        if (zgui.button("Invoke", .{})) {
-            const node_text = std.mem.sliceTo(&node_id_buf, 0);
-            const command_text = std.mem.sliceTo(&command_buf, 0);
-            const params_text = std.mem.sliceTo(&params_buf, 0);
-            var node_copy = allocator.dupe(u8, node_text) catch null;
-            if (node_copy) |node_id| {
-                const command_copy = allocator.dupe(u8, command_text) catch {
-                    allocator.free(node_id);
-                    node_copy = null;
-                    return action;
-                };
-                var params_copy: ?[]u8 = null;
-                if (params_text.len > 0) {
-                    params_copy = allocator.dupe(u8, params_text) catch {
-                        allocator.free(command_copy);
+            zgui.beginDisabled(.{ .disabled = !is_connected });
+            if (components.core.button.draw("Invoke", .{ .variant = .primary })) {
+                const node_text = std.mem.sliceTo(&node_id_buf, 0);
+                const command_text = std.mem.sliceTo(&command_buf, 0);
+                const params_text = std.mem.sliceTo(&params_buf, 0);
+                var node_copy = allocator.dupe(u8, node_text) catch null;
+                if (node_copy) |node_id| {
+                    const command_copy = allocator.dupe(u8, command_text) catch {
                         allocator.free(node_id);
+                        node_copy = null;
                         return action;
                     };
+                    var params_copy: ?[]u8 = null;
+                    if (params_text.len > 0) {
+                        params_copy = allocator.dupe(u8, params_text) catch {
+                            allocator.free(command_copy);
+                            allocator.free(node_id);
+                            return action;
+                        };
+                    }
+                    action.invoke_node = NodeInvokeAction{
+                        .node_id = node_id,
+                        .command = command_copy,
+                        .params_json = params_copy,
+                        .timeout_ms = parseTimeout(std.mem.sliceTo(&timeout_buf, 0)),
+                    };
                 }
-                action.invoke_node = NodeInvokeAction{
-                    .node_id = node_id,
-                    .command = command_copy,
-                    .params_json = params_copy,
-                    .timeout_ms = parseTimeout(std.mem.sliceTo(&timeout_buf, 0)),
-                };
             }
-        }
-        zgui.endDisabled();
+            zgui.endDisabled();
 
-        if (ctx.operator_notice) |notice| {
-            zgui.separator();
-            zgui.textColored(.{ 0.9, 0.6, 0.2, 1.0 }, "Notice", .{});
-            zgui.textWrapped("{s}", .{notice});
-            if (zgui.button("Clear Notice", .{})) {
-                action.clear_operator_notice = true;
+            if (ctx.operator_notice) |notice| {
+                zgui.separator();
+                zgui.textColored(.{ 0.9, 0.6, 0.2, 1.0 }, "Notice", .{});
+                zgui.textWrapped("{s}", .{notice});
+                if (components.core.button.draw("Clear Notice", .{ .variant = .ghost })) {
+                    action.clear_operator_notice = true;
+                }
             }
-        }
 
-        if (ctx.node_result) |result| {
-            zgui.separator();
-            zgui.text("Last Operator Response", .{});
-            if (zgui.beginChild("NodeResult", .{ .h = 120.0, .child_flags = .{ .border = true } })) {
-                zgui.textWrapped("{s}", .{result});
-            }
-            zgui.endChild();
-            if (zgui.button("Clear Response", .{})) {
-                action.clear_node_result = true;
+            if (ctx.node_result) |result| {
+                zgui.separator();
+                zgui.text("Last Operator Response", .{});
+                if (components.layout.scroll_area.begin(.{ .id = "NodeResult", .height = 140.0, .border = true })) {
+                    zgui.textWrapped("{s}", .{result});
+                }
+                components.layout.scroll_area.end();
+                if (components.core.button.draw("Clear Response", .{ .variant = .secondary })) {
+                    action.clear_node_result = true;
+                }
             }
         }
+        components.layout.scroll_area.end();
     }
     zgui.endChild();
 
