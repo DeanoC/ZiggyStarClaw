@@ -87,8 +87,12 @@ pub const NodeCliOptions = struct {
     // Token for the operator connect auth (role=operator) when --as-operator is enabled.
     operator_token: ?[]const u8 = null,
 
-    gateway_host: []const u8 = "127.0.0.1",
-    gateway_port: u16 = 18789,
+    // IMPORTANT: these are optional so we can distinguish "flag not provided" from
+    // "use defaults". Otherwise we clobber values loaded from node.json.
+    gateway_host: ?[]const u8 = null,
+    gateway_port: ?u16 = null,
+    tls: ?bool = null,
+
     display_name: ?[]const u8 = null,
     node_id: ?[]const u8 = null,
     config_path: ?[]const u8 = null,
@@ -98,7 +102,6 @@ pub const NodeCliOptions = struct {
     as_node: ?bool = null,
     as_operator: ?bool = null,
 
-    tls: bool = false,
     insecure_tls: bool = false,
     log_level: logger.Level = .info,
 };
@@ -253,7 +256,8 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         else
             try allocator.dupe(u8, "ZiggyStarClaw Node");
         errdefer allocator.free(display_name);
-        break :blk try NodeConfig.initDefault(allocator, node_id, display_name, opts.gateway_host);
+        const host_for_default = opts.gateway_host orelse "127.0.0.1";
+        break :blk try NodeConfig.initDefault(allocator, node_id, display_name, host_for_default);
     };
 
     // Override config with CLI options
@@ -270,11 +274,17 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     if (opts.gateway_url) |value| {
         try applyUrlToConfig(allocator, &config, value);
     } else {
-        // host/port only apply when --url isn't set
-        allocator.free(config.gateway_host);
-        config.gateway_host = try allocator.dupe(u8, opts.gateway_host);
-        config.gateway_port = opts.gateway_port;
-        if (opts.tls) config.tls = true;
+        // Only override values loaded from config if the user explicitly set flags.
+        if (opts.gateway_host) |h| {
+            allocator.free(config.gateway_host);
+            config.gateway_host = try allocator.dupe(u8, h);
+        }
+        if (opts.gateway_port) |p| {
+            config.gateway_port = p;
+        }
+        if (opts.tls) |t| {
+            if (t) config.tls = true;
+        }
     }
 
     // Websocket handshake token (gateway auth):
