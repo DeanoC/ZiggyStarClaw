@@ -214,9 +214,9 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     const ws_url = try unified_config.normalizeGatewayWsUrl(allocator, cfg.gateway.url);
     defer allocator.free(ws_url);
 
-    const node_id = cfg.node.id orelse "";
+    const node_id = cfg.node.id;
     if (cfg.node.enabled and node_id.len == 0) {
-        logger.err("Config missing node.nodeId (required for node-mode)", .{});
+        logger.err("Config missing node.id (required for node-mode)", .{});
         return error.InvalidArguments;
     }
 

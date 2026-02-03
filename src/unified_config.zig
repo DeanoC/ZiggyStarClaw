@@ -17,13 +17,9 @@ pub const UnifiedConfig = struct {
 
         /// Optional stable node id (what the gateway calls nodeId).
         /// Stored in config.json as: node.id
-        id: ?[]const u8 = null,
+        id: []const u8 = "",
 
-        /// Back-compat: previous config.json field names.
-        /// If node.token is empty and node.deviceToken is set, we use deviceToken.
-        deviceToken: ?[]const u8 = null,
-        /// If node.id is null and node.nodeId is set, we use nodeId.
-        nodeId: ?[]const u8 = null,
+        // (no backward compat)
 
         /// Optional display name (falls back to "ZiggyStarClaw Node").
         displayName: ?[]const u8 = null,
@@ -61,7 +57,7 @@ pub const UnifiedConfig = struct {
         allocator.free(self.node.deviceIdentityPath);
         allocator.free(self.node.execApprovalsPath);
         if (self.node.displayName) |v| allocator.free(v);
-        if (self.node.id) |v| allocator.free(v);
+        allocator.free(self.node.id);
 
         if (self.operator.token) |v| allocator.free(v);
         if (self.operator.deviceIdentityPath) |v| allocator.free(v);
@@ -154,13 +150,8 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !UnifiedConfig {
     const gw_tok = try expandVarsAlloc(allocator, parsed.value.gateway.authToken);
     errdefer allocator.free(gw_tok);
 
-    // node.token (preferred) with back-compat to node.deviceToken
-    const raw_node_token = if (parsed.value.node.token.len > 0)
-        parsed.value.node.token
-    else if (parsed.value.node.deviceToken) |v|
-        v
-    else
-        "";
+    // node.token (no backward compat)
+    const raw_node_token = parsed.value.node.token;
 
     const node_tok = try expandVarsAlloc(allocator, raw_node_token);
     errdefer allocator.free(node_tok);
@@ -175,18 +166,8 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !UnifiedConfig {
         null;
     errdefer if (display) |v| allocator.free(v);
 
-    const raw_node_id = if (parsed.value.node.id) |v|
-        v
-    else if (parsed.value.node.nodeId) |v|
-        v
-    else
-        null;
-
-    const node_id = if (raw_node_id) |v|
-        try expandVarsAlloc(allocator, v)
-    else
-        null;
-    errdefer if (node_id) |v| allocator.free(v);
+    const node_id = try expandVarsAlloc(allocator, parsed.value.node.id);
+    errdefer allocator.free(node_id);
 
     const op_token = if (parsed.value.operator.token) |v|
         try expandVarsAlloc(allocator, v)
@@ -218,8 +199,6 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !UnifiedConfig {
             .enabled = parsed.value.node.enabled,
             .token = node_tok,
             .id = node_id,
-            .deviceToken = null,
-            .nodeId = null,
             .displayName = display,
             .deviceIdentityPath = node_identity,
             .execApprovalsPath = approvals,

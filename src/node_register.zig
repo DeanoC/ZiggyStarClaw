@@ -173,10 +173,8 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
     const node_id = identity.device_id;
 
     // If config.json contains a different node.id, we'll overwrite it after approval.
-    if (cfg.node.id) |configured| {
-        if (!std.mem.eql(u8, configured, node_id)) {
-            logger.warn("config node.id differs from device identity; will overwrite: {s} -> {s}", .{ configured, node_id });
-        }
+    if (cfg.node.id.len > 0 and !std.mem.eql(u8, cfg.node.id, node_id)) {
+        logger.warn("config node.id differs from device identity; will overwrite: {s} -> {s}", .{ cfg.node.id, node_id });
     }
 
     const req_payload = try sendRequestAwait(
@@ -270,7 +268,7 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
             // Update in-memory cfg for immediate verify.
             allocator.free(cfg.node.token);
             cfg.node.token = try allocator.dupe(u8, t);
-            if (cfg.node.id) |old| allocator.free(old);
+            allocator.free(cfg.node.id);
             cfg.node.id = try allocator.dupe(u8, node_id);
 
             // Finally: verify node can connect.
@@ -395,12 +393,8 @@ fn saveUpdatedNodeAuth(
     if (node_val.* != .object) return error.InvalidArguments;
 
     try node_val.object.put("token", std.json.Value{ .string = token });
-    // For compatibility with older configs, also update deviceToken.
-    try node_val.object.put("deviceToken", std.json.Value{ .string = token });
-
     if (node_id) |nid| {
         try node_val.object.put("id", std.json.Value{ .string = nid });
-        try node_val.object.put("nodeId", std.json.Value{ .string = nid });
     }
 
     const out = try std.json.Stringify.valueAlloc(allocator, parsed.value, .{ .whitespace = .indent_2 });
