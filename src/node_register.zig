@@ -167,16 +167,27 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
     try waitForHelloOk(allocator, &op_ws, 8000);
 
     const display_name = cfg.node.displayName orelse "ZiggyStarClaw Node";
+    const node_id = cfg.node.id orelse identity.device_id;
+
     const req_payload = try sendRequestAwait(
         allocator,
         &op_ws,
         "node.pair.request",
         .{
-            .deviceId = identity.device_id,
-            .publicKey = identity.public_key_b64,
+            // NOTE: OpenClaw gateway expects nodeId (not deviceId/publicKey).
+            .nodeId = node_id,
             .displayName = display_name,
             .platform = @tagName(builtin.target.os.tag),
-            .nodeId = cfg.node.id,
+            // optional metadata; keep minimal and schema-safe
+            .caps = &.{"system"},
+            .commands = &.{
+                "system.run",
+                "system.which",
+                "system.notify",
+                "system.execApprovals.get",
+                "system.execApprovals.set",
+            },
+            .silent = false,
         },
         8000,
     );
@@ -188,8 +199,12 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
         if (parsed) |*p| {
             defer p.deinit();
             if (p.value == .object) {
-                if (p.value.object.get("requestId")) |ridv| {
-                    if (ridv == .string and ridv.string.len > 0) request_id = ridv.string;
+                if (p.value.object.get("request")) |rv| {
+                    if (rv == .object) {
+                        if (rv.object.get("requestId")) |ridv| {
+                            if (ridv == .string and ridv.string.len > 0) request_id = ridv.string;
+                        }
+                    }
                 }
             }
         }
@@ -209,17 +224,17 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
     } else {
         logger.info("  3) Approve the pending node request for device_id={s}", .{identity.device_id});
     }
-    logger.info("  4) Leave this window open; we'll poll node.pair.verify", .{});
+    logger.info("  4) Leave this window open; we'll poll until the node is paired", .{});
     logger.info("", .{});
 
-    // 3) Poll verify until approved and we receive node.id + node.token.
+    // 3) Poll node.pair.list until the node appears in paired, then store the minted token.
     const verify_deadline_ms: i64 = std.time.milliTimestamp() + (5 * 60 * 1000);
     while (std.time.milliTimestamp() < verify_deadline_ms) {
-        const verify_payload = sendRequestAwait(
+        const list_payload = sendRequestAwait(
             allocator,
             &op_ws,
-            "node.pair.verify",
-            .{ .deviceId = identity.device_id, .requestId = request_id },
+            "node.pair.list",
+            .{},
             8000,
         ) catch |err| {
             if (err == error.Timeout) {
@@ -228,38 +243,21 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
             }
             return err;
         };
-        defer allocator.free(verify_payload);
+        defer allocator.free(list_payload);
 
-        var parsed = std.json.parseFromSlice(std.json.Value, allocator, verify_payload, .{}) catch {
-            std.Thread.sleep(1000 * std.time.ns_per_ms);
-            continue;
-        };
-        defer parsed.deinit();
+        const tok = extractTokenFromPairList(allocator, list_payload, node_id) catch null;
+        if (tok) |t| {
+            defer allocator.free(t);
 
-        if (parsed.value != .object) {
-            std.Thread.sleep(1000 * std.time.ns_per_ms);
-            continue;
-        }
-
-        // Expect { id, token } (or { nodeId, token })
-        const obj = parsed.value.object;
-        const tokv = obj.get("token") orelse obj.get("nodeToken");
-        const idv = obj.get("id") orelse obj.get("nodeId");
-
-        if (tokv != null and tokv.? == .string and tokv.?.string.len > 0) {
-            const tok = tokv.?.string;
-            const nid = if (idv != null and idv.? == .string and idv.?.string.len > 0) idv.?.string else null;
-
-            try saveUpdatedNodeAuth(allocator, cfg_path, nid, tok);
+            // Persist node.id + node.token.
+            try saveUpdatedNodeAuth(allocator, cfg_path, node_id, t);
             logger.info("Approved! Saved node auth to config.json (node.id + node.token).", .{});
 
             // Update in-memory cfg for immediate verify.
             allocator.free(cfg.node.token);
-            cfg.node.token = try allocator.dupe(u8, tok);
-            if (nid) |v| {
-                if (cfg.node.id) |old| allocator.free(old);
-                cfg.node.id = try allocator.dupe(u8, v);
-            }
+            cfg.node.token = try allocator.dupe(u8, t);
+            if (cfg.node.id) |old| allocator.free(old);
+            cfg.node.id = try allocator.dupe(u8, node_id);
 
             // Finally: verify node can connect.
             if (try verifyNodeToken(allocator, ws_url, &cfg, insecure_tls)) {
@@ -278,6 +276,33 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
 
     logger.err("Timed out waiting for approval.", .{});
     return error.Timeout;
+}
+
+fn extractTokenFromPairList(
+    allocator: std.mem.Allocator,
+    json_payload: []const u8,
+    node_id: []const u8,
+) !?[]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, json_payload, .{}) catch return null;
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return null;
+    const pairedv = parsed.value.object.get("paired") orelse return null;
+    if (pairedv != .array) return null;
+
+    for (pairedv.array.items) |item| {
+        if (item != .object) continue;
+        const nidv = item.object.get("nodeId") orelse continue;
+        if (nidv != .string) continue;
+        if (!std.mem.eql(u8, nidv.string, node_id)) continue;
+
+        const tokv = item.object.get("token") orelse continue;
+        if (tokv != .string or tokv.string.len == 0) continue;
+
+        return try allocator.dupe(u8, tokv.string);
+    }
+
+    return null;
 }
 
 fn verifyNodeToken(
