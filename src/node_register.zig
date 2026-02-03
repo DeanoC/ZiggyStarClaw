@@ -385,7 +385,8 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
         }
 
         if (info.token) |t| {
-            defer allocator.free(t);
+            // Take ownership of token (PairListInfo.deinit would free it otherwise).
+            info.token = null;
 
             logger.info("Approved detected; writing config.json...", .{});
 
@@ -399,15 +400,13 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
             allocator.free(cfg.node.nodeId);
             cfg.node.nodeId = try allocator.dupe(u8, node_id);
 
-            // Finally: verify node can connect.
-            if (try verifyNodeToken(allocator, ws_url, &cfg, insecure_tls)) {
-                logger.info("node-register: node token verified (connected as node).", .{});
-                printTestOneLiner();
-                return;
-            }
-
-            logger.err("node-register: received token, but node connect still failed. Check gateway logs.", .{});
-            return error.ConnectionFailed;
+            // NOTE: ZiggyStarClaw node-mode currently uses the gateway WebSocket transport.
+            // OpenClaw nodes are authenticated via the node bridge (TCP, default port 18790),
+            // so a websocket connect here can fail with "device signature invalid" even when
+            // pairing succeeded. For now, treat "token saved" as success.
+            logger.info("Pairing complete. Token saved. Next: run node-mode.", .{});
+            printTestOneLiner();
+            return;
         }
 
         std.Thread.sleep(1500 * std.time.ns_per_ms);
