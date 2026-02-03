@@ -3,6 +3,8 @@ const zgui = @import("zgui");
 const theme = @import("theme.zig");
 const colors = @import("theme/colors.zig");
 const components = @import("components/components.zig");
+const ui_systems = @import("ui_systems.zig");
+const undo_redo = @import("systems/undo_redo.zig");
 
 const ArtifactTab = enum {
     preview,
@@ -12,6 +14,13 @@ const ArtifactTab = enum {
 var active_tab: ArtifactTab = .preview;
 var edit_initialized = false;
 var edit_buf: [4096:0]u8 = [_:0]u8{0} ** 4096;
+var edit_len: usize = 0;
+var undo_stack: ?undo_redo.UndoRedoStack(EditState) = null;
+
+const EditState = struct {
+    len: usize,
+    buf: [4096]u8,
+};
 
 const ToolbarIcon = enum {
     copy,
@@ -24,6 +33,7 @@ pub fn draw() void {
     const opened = zgui.beginChild("ArtifactWorkspaceView", .{ .h = 0.0, .child_flags = .{ .border = true } });
     if (opened) {
         const t = theme.activeTheme();
+        registerShortcuts();
         if (components.layout.header_bar.begin(.{ .title = "Artifact Workspace", .subtitle = "Preview & Edit" })) {
             components.layout.header_bar.end();
         }
@@ -51,9 +61,13 @@ pub fn draw() void {
         zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
         _ = drawToolbarIcon("toolbar_copy", .copy, t);
         zgui.sameLine(.{ .spacing = t.spacing.sm });
-        _ = drawToolbarIcon("toolbar_undo", .undo, t);
+        if (drawToolbarIcon("toolbar_undo", .undo, t)) {
+            applyUndo();
+        }
         zgui.sameLine(.{ .spacing = t.spacing.sm });
-        _ = drawToolbarIcon("toolbar_redo", .redo, t);
+        if (drawToolbarIcon("toolbar_redo", .redo, t)) {
+            applyRedo();
+        }
         zgui.sameLine(.{ .spacing = t.spacing.sm });
         _ = drawToolbarIcon("toolbar_expand", .expand, t);
     }
@@ -148,14 +162,31 @@ fn drawEditor() void {
             "## Action Items\n\n" ++
             "- Follow up with sales leadership\n";
         fillBuffer(edit_buf[0..], seed);
+        edit_len = bufferLen();
+        ensureUndoStack();
         edit_initialized = true;
     }
 
-    _ = zgui.inputTextMultiline("##ArtifactEditor", .{
+    const before = captureState();
+    const changed = zgui.inputTextMultiline("##ArtifactEditor", .{
         .buf = edit_buf[0.. :0],
         .h = 340.0,
         .flags = .{ .allow_tab_input = true },
     });
+    if (changed) {
+        edit_len = bufferLen();
+        const after = captureState();
+        if (!statesEqual(before, after)) {
+            ensureUndoStack();
+            if (undo_stack) |*stack| {
+                _ = stack.execute(.{
+                    .name = "edit",
+                    .state_before = before,
+                    .state_after = after,
+                }) catch {};
+            }
+        }
+    }
 }
 
 fn fillBuffer(buf: []u8, text: []const u8) void {
@@ -165,6 +196,87 @@ fn fillBuffer(buf: []u8, text: []const u8) void {
     if (len + 1 < buf.len) {
         @memset(buf[len + 1 ..], 0);
     }
+}
+
+fn ensureUndoStack() void {
+    if (undo_stack == null) {
+        undo_stack = undo_redo.UndoRedoStack(EditState).init(std.heap.page_allocator, 64);
+    }
+}
+
+fn captureState() EditState {
+    var state = EditState{
+        .len = edit_len,
+        .buf = [_]u8{0} ** 4096,
+    };
+    const slice = edit_buf[0..edit_len];
+    std.mem.copyForwards(u8, state.buf[0..edit_len], slice);
+    return state;
+}
+
+fn applyState(state: EditState) void {
+    edit_len = @min(state.len, edit_buf.len - 1);
+    std.mem.copyForwards(u8, edit_buf[0..edit_len], state.buf[0..edit_len]);
+    edit_buf[edit_len] = 0;
+    if (edit_len + 1 < edit_buf.len) {
+        @memset(edit_buf[edit_len + 1 ..], 0);
+    }
+}
+
+fn statesEqual(a: EditState, b: EditState) bool {
+    if (a.len != b.len) return false;
+    return std.mem.eql(u8, a.buf[0..a.len], b.buf[0..b.len]);
+}
+
+fn bufferLen() usize {
+    return std.mem.sliceTo(&edit_buf, 0).len;
+}
+
+fn applyUndo() void {
+    if (undo_stack) |*stack| {
+        if (stack.undo()) |state| {
+            applyState(state);
+        }
+    }
+}
+
+fn applyRedo() void {
+    if (undo_stack) |*stack| {
+        if (stack.redo()) |state| {
+            applyState(state);
+        }
+    }
+}
+
+fn registerShortcuts() void {
+    const sys = ui_systems.get();
+    sys.keyboard.register(.{
+        .id = "artifact.undo",
+        .key = .z,
+        .ctrl = true,
+        .action = onUndoShortcut,
+    }) catch {};
+    sys.keyboard.register(.{
+        .id = "artifact.redo",
+        .key = .y,
+        .ctrl = true,
+        .action = onRedoShortcut,
+    }) catch {};
+    sys.keyboard.register(.{
+        .id = "artifact.redo_shift",
+        .key = .z,
+        .ctrl = true,
+        .shift = true,
+        .action = onRedoShortcut,
+    }) catch {};
+}
+
+fn onUndoShortcut(_: ?*anyopaque) void {
+    applyUndo();
+}
+
+fn onRedoShortcut(_: ?*anyopaque) void {
+    applyRedo();
 }
 
 fn drawTabToggle(label: []const u8, active: bool) bool {

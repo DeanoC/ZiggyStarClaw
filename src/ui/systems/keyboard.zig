@@ -22,16 +22,18 @@ pub const Shortcut = struct {
 pub const KeyboardManager = struct {
     shortcuts: std.ArrayList(Shortcut),
     focused_id: ?[]const u8 = null,
+    allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) KeyboardManager {
         return .{
-            .shortcuts = std.ArrayList(Shortcut).init(allocator),
+            .shortcuts = .empty,
             .focused_id = null,
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *KeyboardManager) void {
-        self.shortcuts.deinit();
+        self.shortcuts.deinit(self.allocator);
     }
 
     pub fn beginFrame(self: *KeyboardManager) void {
@@ -43,7 +45,7 @@ pub const KeyboardManager = struct {
     }
 
     pub fn register(self: *KeyboardManager, shortcut: Shortcut) !void {
-        try self.shortcuts.append(shortcut);
+        try self.shortcuts.append(self.allocator, shortcut);
     }
 
     pub fn setFocus(self: *KeyboardManager, id: ?[]const u8) void {

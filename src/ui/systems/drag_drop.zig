@@ -27,16 +27,18 @@ pub const DropTarget = struct {
 pub const DragDropManager = struct {
     active_drag: ?DragPayload = null,
     drop_targets: std.ArrayList(DropTarget),
+    allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) DragDropManager {
         return .{
             .active_drag = null,
-            .drop_targets = std.ArrayList(DropTarget).init(allocator),
+            .drop_targets = .empty,
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *DragDropManager) void {
-        self.drop_targets.deinit();
+        self.drop_targets.deinit(self.allocator);
     }
 
     pub fn beginFrame(self: *DragDropManager) void {
@@ -52,7 +54,7 @@ pub const DragDropManager = struct {
     }
 
     pub fn registerDropTarget(self: *DragDropManager, target: DropTarget) !void {
-        try self.drop_targets.append(target);
+        try self.drop_targets.append(self.allocator, target);
     }
 
     pub fn endDrag(self: *DragDropManager) ?DropTarget {

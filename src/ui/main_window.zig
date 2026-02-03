@@ -13,6 +13,7 @@ const dock_layout = @import("dock_layout.zig");
 const ui_command_inbox = @import("ui_command_inbox.zig");
 const imgui_bridge = @import("imgui_bridge.zig");
 const image_cache = @import("image_cache.zig");
+const ui_systems = @import("ui_systems.zig");
 const chat_panel = @import("panels/chat_panel.zig");
 const code_editor_panel = @import("panels/code_editor_panel.zig");
 const tool_output_panel = @import("panels/tool_output_panel.zig");
@@ -80,6 +81,7 @@ pub fn draw(
     var action = UiAction{};
     var pending_attachment: ?sessions_panel.AttachmentOpen = null;
     image_cache.beginFrame();
+    _ = ui_systems.beginFrame();
 
     inbox.collectFromMessages(allocator, ctx.messages.items, manager);
 
@@ -275,6 +277,8 @@ pub fn draw(
         imgui_bridge.clearWantSaveIniSettings();
     }
     if (manager.workspace.dirty) action.save_workspace = true;
+
+    ui_systems.endFrame();
 
     return action;
 }

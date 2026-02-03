@@ -6,6 +6,8 @@ const theme = @import("theme.zig");
 const colors = @import("theme/colors.zig");
 const components = @import("components/components.zig");
 const image_cache = @import("image_cache.zig");
+const ui_systems = @import("ui_systems.zig");
+const drag_drop = @import("systems/drag_drop.zig");
 
 const MediaItem = struct {
     name: []const u8,
@@ -18,6 +20,8 @@ var stack_split_state = components.layout.split_pane.SplitState{ .size = 360.0 }
 var viewer_zoom: f32 = 1.0;
 var viewer_offset: [2]f32 = .{ 0.0, 0.0 };
 var viewer_fit_mode: FitMode = .fit;
+var pending_drop_url: ?[]const u8 = null;
+var drag_preview_label: ?[]const u8 = null;
 
 const FitMode = enum { fit, fill, actual, custom };
 
@@ -42,6 +46,7 @@ pub fn draw(ctx: *state.ClientContext) void {
         if (selected_index == null or selected_index.? >= items.len) {
             selected_index = 0;
         }
+        applyPendingDrop(items);
 
         const avail = zgui.getContentRegionAvail();
         const use_stack = avail[0] < 780.0;
@@ -145,6 +150,17 @@ fn drawThumb(item: MediaItem, idx: usize, thumb: f32, padding: f32, t: *const th
         viewer_fit_mode = .fit;
         viewer_zoom = 1.0;
         viewer_offset = .{ 0.0, 0.0 };
+    }
+    if (zgui.isItemActive() and zgui.isMouseDragging(.left, 2.0)) {
+        const sys = ui_systems.get();
+        if (sys.drag_drop.active_drag == null) {
+            drag_preview_label = item.name;
+            sys.drag_drop.beginDrag(.{
+                .source_id = item.url,
+                .data_type = "image",
+                .preview_fn = drawDragPreview,
+            });
+        }
     }
 
     const draw_list = zgui.getWindowDrawList();
@@ -255,6 +271,16 @@ fn drawViewerArea(item: MediaItem, t: *const theme.Theme) void {
     const draw_list = zgui.getWindowDrawList();
     const cursor = zgui.getCursorScreenPos();
     const avail = zgui.getContentRegionAvail();
+    const sys = ui_systems.get();
+    sys.drag_drop.registerDropTarget(.{
+        .id = "media_viewer",
+        .bounds = .{
+            .min = cursor,
+            .max = .{ cursor[0] + avail[0], cursor[1] + avail[1] },
+        },
+        .accepts = &[_][]const u8{ "image" },
+        .on_drop = handleDrop,
+    }) catch {};
 
     draw_list.addRectFilled(.{
         .pmin = cursor,
@@ -317,6 +343,55 @@ fn computeDrawSize(image: [2]f32, container: [2]f32) [2]f32 {
         .custom => viewer_zoom,
     };
     return .{ image[0] * scale, image[1] * scale };
+}
+
+fn handleDrop(payload: drag_drop.DragPayload) void {
+    pending_drop_url = payload.source_id;
+}
+
+fn applyPendingDrop(items: []const MediaItem) void {
+    if (pending_drop_url) |url| {
+        for (items, 0..) |item, idx| {
+            if (std.mem.eql(u8, item.url, url)) {
+                selected_index = idx;
+                viewer_fit_mode = .fit;
+                viewer_zoom = 1.0;
+                viewer_offset = .{ 0.0, 0.0 };
+                break;
+            }
+        }
+        pending_drop_url = null;
+    }
+}
+
+fn drawDragPreview(pos: [2]f32) void {
+    const label = drag_preview_label orelse "Media";
+    const t = theme.activeTheme();
+    const draw_list = zgui.getForegroundDrawList();
+    const padding = t.spacing.xs;
+    const text_size = zgui.calcTextSize(label, .{});
+    const rect = .{
+        .min = .{ pos[0] + 12.0, pos[1] + 12.0 },
+        .max = .{ pos[0] + 12.0 + text_size[0] + padding * 2.0, pos[1] + 12.0 + text_size[1] + padding * 2.0 },
+    };
+    draw_list.addRectFilled(.{
+        .pmin = rect.min,
+        .pmax = rect.max,
+        .col = zgui.colorConvertFloat4ToU32(colors.withAlpha(t.colors.surface, 0.95)),
+        .rounding = t.radius.sm,
+    });
+    draw_list.addRect(.{
+        .pmin = rect.min,
+        .pmax = rect.max,
+        .col = zgui.colorConvertFloat4ToU32(colors.withAlpha(t.colors.border, 0.8)),
+        .rounding = t.radius.sm,
+    });
+    draw_list.addText(
+        .{ rect.min[0] + padding, rect.min[1] + padding },
+        zgui.colorConvertFloat4ToU32(t.colors.text_primary),
+        "{s}",
+        .{label},
+    );
 }
 
 fn collectImages(messages: []const types.ChatMessage, buf: []MediaItem) []MediaItem {
