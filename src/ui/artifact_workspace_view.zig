@@ -1,6 +1,7 @@
 const std = @import("std");
 const zgui = @import("zgui");
 const theme = @import("theme.zig");
+const colors = @import("theme/colors.zig");
 const components = @import("components/components.zig");
 
 const ArtifactTab = enum {
@@ -12,6 +13,13 @@ var active_tab: ArtifactTab = .preview;
 var edit_initialized = false;
 var edit_buf: [4096:0]u8 = [_:0]u8{0} ** 4096;
 
+const ToolbarIcon = enum {
+    copy,
+    undo,
+    redo,
+    expand,
+};
+
 pub fn draw() void {
     const opened = zgui.beginChild("ArtifactWorkspaceView", .{ .h = 0.0, .child_flags = .{ .border = true } });
     if (opened) {
@@ -21,16 +29,12 @@ pub fn draw() void {
         }
 
         zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
-        if (components.core.tab_bar.begin("ArtifactTabs")) {
-            if (components.core.tab_bar.beginItem("Preview")) {
-                active_tab = .preview;
-                components.core.tab_bar.endItem();
-            }
-            if (components.core.tab_bar.beginItem("Edit")) {
-                active_tab = .edit;
-                components.core.tab_bar.endItem();
-            }
-            components.core.tab_bar.end();
+        if (drawTabToggle("Preview", active_tab == .preview)) {
+            active_tab = .preview;
+        }
+        zgui.sameLine(.{ .spacing = t.spacing.sm });
+        if (drawTabToggle("Edit", active_tab == .edit)) {
+            active_tab = .edit;
         }
 
         zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
@@ -45,13 +49,13 @@ pub fn draw() void {
 
         zgui.separator();
         zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
-        if (components.core.icon_button.draw("C", .{ .tooltip = "Copy" })) {}
+        _ = drawToolbarIcon("toolbar_copy", .copy, t);
         zgui.sameLine(.{ .spacing = t.spacing.sm });
-        if (components.core.icon_button.draw("U", .{ .tooltip = "Undo" })) {}
+        _ = drawToolbarIcon("toolbar_undo", .undo, t);
         zgui.sameLine(.{ .spacing = t.spacing.sm });
-        if (components.core.icon_button.draw("R", .{ .tooltip = "Redo" })) {}
+        _ = drawToolbarIcon("toolbar_redo", .redo, t);
         zgui.sameLine(.{ .spacing = t.spacing.sm });
-        if (components.core.icon_button.draw("E", .{ .tooltip = "Expand" })) {}
+        _ = drawToolbarIcon("toolbar_expand", .expand, t);
     }
     zgui.endChild();
 }
@@ -80,7 +84,7 @@ fn drawPreview(t: *const theme.Theme) void {
     zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
 
     if (components.layout.card.begin(.{ .title = "Sales Performance (Chart)", .id = "artifact_chart" })) {
-        zgui.textWrapped("Chart placeholder: weekly sales performance.", .{});
+        zgui.textWrapped("Weekly sales performance", .{});
         const draw_list = zgui.getWindowDrawList();
         const cursor = zgui.getCursorScreenPos();
         const size = zgui.getContentRegionAvail();
@@ -102,7 +106,33 @@ fn drawPreview(t: *const theme.Theme) void {
             });
             x += bar_width + gap;
         }
-        zgui.dummy(.{ .w = width, .h = height });
+        const axis_color = zgui.colorConvertFloat4ToU32(theme.activeTheme().colors.border);
+        draw_list.addLine(.{
+            .p1 = .{ cursor[0], base_y },
+            .p2 = .{ cursor[0] + width, base_y },
+            .col = axis_color,
+            .thickness = 1.0,
+        });
+        draw_list.addLine(.{
+            .p1 = .{ cursor[0], cursor[1] },
+            .p2 = .{ cursor[0], base_y },
+            .col = axis_color,
+            .thickness = 1.0,
+        });
+        draw_list.addText(.{ cursor[0] + width - 36.0, base_y + 4.0 }, axis_color, "Week", .{});
+        draw_list.addText(.{ cursor[0] + 4.0, cursor[1] - 16.0 }, axis_color, "Sales", .{});
+        zgui.dummy(.{ .w = width, .h = height + 12.0 });
+
+        zgui.separator();
+        zgui.text("Competitor Analysis", .{});
+        zgui.sameLine(.{ .spacing = t.spacing.sm });
+        _ = drawTabToggle("Sales", true);
+        zgui.sameLine(.{ .spacing = t.spacing.sm });
+        _ = drawTabToggle("Dow", false);
+        zgui.sameLine(.{ .spacing = t.spacing.sm });
+        _ = drawTabToggle("Proclues", false);
+        zgui.sameLine(.{ .spacing = t.spacing.sm });
+        _ = drawTabToggle("Pemble", false);
     }
     components.layout.card.end();
 }
@@ -135,4 +165,131 @@ fn fillBuffer(buf: []u8, text: []const u8) void {
     if (len + 1 < buf.len) {
         @memset(buf[len + 1 ..], 0);
     }
+}
+
+fn drawTabToggle(label: []const u8, active: bool) bool {
+    return components.core.button.draw(label, .{
+        .variant = if (active) .primary else .secondary,
+        .size = .small,
+    });
+}
+
+fn drawToolbarIcon(id: []const u8, icon: ToolbarIcon, t: *const theme.Theme) bool {
+    const size = t.spacing.lg + t.spacing.sm;
+    const cursor = zgui.getCursorScreenPos();
+    const id_z = zgui.formatZ("##{s}", .{id});
+    _ = zgui.invisibleButton(id_z, .{ .w = size, .h = size });
+    const hovered = zgui.isItemHovered(.{});
+    const clicked = zgui.isItemClicked(.left);
+
+    const draw_list = zgui.getWindowDrawList();
+    const bg = if (hovered)
+        colors.withAlpha(t.colors.primary, 0.12)
+    else
+        t.colors.surface;
+    draw_list.addRectFilled(.{
+        .pmin = cursor,
+        .pmax = .{ cursor[0] + size, cursor[1] + size },
+        .col = zgui.colorConvertFloat4ToU32(bg),
+        .rounding = t.radius.sm,
+    });
+    draw_list.addRect(.{
+        .pmin = cursor,
+        .pmax = .{ cursor[0] + size, cursor[1] + size },
+        .col = zgui.colorConvertFloat4ToU32(colors.withAlpha(t.colors.border, 0.7)),
+        .rounding = t.radius.sm,
+    });
+
+    const center = .{ cursor[0] + size * 0.5, cursor[1] + size * 0.5 };
+    const icon_color = zgui.colorConvertFloat4ToU32(t.colors.text_primary);
+    switch (icon) {
+        .copy => {
+            const rect_size: f32 = size * 0.35;
+            draw_list.addRect(.{
+                .pmin = .{ center[0] - rect_size, center[1] - rect_size },
+                .pmax = .{ center[0] + rect_size * 0.4, center[1] + rect_size * 0.4 },
+                .col = icon_color,
+                .rounding = 2.0,
+            });
+            draw_list.addRect(.{
+                .pmin = .{ center[0] - rect_size * 0.4, center[1] - rect_size * 0.4 },
+                .pmax = .{ center[0] + rect_size, center[1] + rect_size },
+                .col = icon_color,
+                .rounding = 2.0,
+            });
+        },
+        .undo => {
+            const left = center[0] - size * 0.18;
+            const right = center[0] + size * 0.18;
+            draw_list.addLine(.{
+                .p1 = .{ right, center[1] },
+                .p2 = .{ left, center[1] },
+                .col = icon_color,
+                .thickness = 2.0,
+            });
+            draw_list.addLine(.{
+                .p1 = .{ left, center[1] },
+                .p2 = .{ left + size * 0.1, center[1] - size * 0.1 },
+                .col = icon_color,
+                .thickness = 2.0,
+            });
+            draw_list.addLine(.{
+                .p1 = .{ left, center[1] },
+                .p2 = .{ left + size * 0.1, center[1] + size * 0.1 },
+                .col = icon_color,
+                .thickness = 2.0,
+            });
+        },
+        .redo => {
+            const left = center[0] - size * 0.18;
+            const right = center[0] + size * 0.18;
+            draw_list.addLine(.{
+                .p1 = .{ left, center[1] },
+                .p2 = .{ right, center[1] },
+                .col = icon_color,
+                .thickness = 2.0,
+            });
+            draw_list.addLine(.{
+                .p1 = .{ right, center[1] },
+                .p2 = .{ right - size * 0.1, center[1] - size * 0.1 },
+                .col = icon_color,
+                .thickness = 2.0,
+            });
+            draw_list.addLine(.{
+                .p1 = .{ right, center[1] },
+                .p2 = .{ right - size * 0.1, center[1] + size * 0.1 },
+                .col = icon_color,
+                .thickness = 2.0,
+            });
+        },
+        .expand => {
+            const offset = size * 0.18;
+            draw_list.addLine(.{
+                .p1 = .{ center[0] - offset, center[1] - offset },
+                .p2 = .{ center[0] - offset, center[1] - size * 0.3 },
+                .col = icon_color,
+                .thickness = 2.0,
+            });
+            draw_list.addLine(.{
+                .p1 = .{ center[0] - offset, center[1] - offset },
+                .p2 = .{ center[0] - size * 0.3, center[1] - offset },
+                .col = icon_color,
+                .thickness = 2.0,
+            });
+            draw_list.addLine(.{
+                .p1 = .{ center[0] + offset, center[1] + offset },
+                .p2 = .{ center[0] + offset, center[1] + size * 0.3 },
+                .col = icon_color,
+                .thickness = 2.0,
+            });
+            draw_list.addLine(.{
+                .p1 = .{ center[0] + offset, center[1] + offset },
+                .p2 = .{ center[0] + size * 0.3, center[1] + offset },
+                .col = icon_color,
+                .thickness = 2.0,
+            });
+        },
+    }
+
+    return clicked;
 }
