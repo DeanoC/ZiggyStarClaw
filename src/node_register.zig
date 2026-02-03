@@ -213,6 +213,7 @@ fn saveUpdatedNodeConfig(
     path: []const u8,
     node_id: ?[]const u8,
     node_token: ?[]const u8,
+    display_name: ?[]const u8,
 ) !void {
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
@@ -234,6 +235,9 @@ fn saveUpdatedNodeConfig(
     if (node_token) |tok| {
         try node_val.object.put("nodeToken", std.json.Value{ .string = tok });
     }
+    if (display_name) |name| {
+        try node_val.object.put("displayName", std.json.Value{ .string = name });
+    }
 
     const out = try std.json.Stringify.valueAlloc(allocator, parsed.value, .{ .whitespace = .indent_2 });
     defer allocator.free(out);
@@ -247,7 +251,7 @@ fn saveUpdatedNodeConfig(
     try wf.writeAll("\n");
 }
 
-pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls: bool, wait_for_approval: bool) !void {
+pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls: bool, wait_for_approval: bool, display_name: ?[]const u8) !void {
     const cfg_path = config_path orelse try unified_config.defaultConfigPath(allocator);
     defer if (config_path == null) allocator.free(cfg_path);
 
@@ -301,9 +305,17 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
 
     if (cfg.node.nodeId.len == 0 or !std.mem.eql(u8, cfg.node.nodeId, identity.device_id)) {
         logger.info("Saving node.nodeId to config.json: {s}", .{identity.device_id});
-        try saveUpdatedNodeConfig(allocator, cfg_path, identity.device_id, null);
+        try saveUpdatedNodeConfig(allocator, cfg_path, identity.device_id, null, display_name);
         allocator.free(cfg.node.nodeId);
         cfg.node.nodeId = try allocator.dupe(u8, identity.device_id);
+    }
+
+    // Apply display name override (optional)
+    if (display_name) |name| {
+        if (cfg.node.displayName) |old| allocator.free(old);
+        cfg.node.displayName = try allocator.dupe(u8, name);
+        // Best-effort persist so future runs show the same name.
+        saveUpdatedNodeConfig(allocator, cfg_path, null, null, name) catch {};
     }
 
     logger.info("Connecting as node-host to obtain/verify device token...", .{});
@@ -372,7 +384,7 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
         if (token) |t| {
             if (!std.mem.eql(u8, cfg.node.nodeToken, t)) {
                 logger.info("Saving node.nodeToken to config.json (device token)", .{});
-                try saveUpdatedNodeConfig(allocator, cfg_path, null, t);
+                try saveUpdatedNodeConfig(allocator, cfg_path, null, t, display_name);
                 allocator.free(cfg.node.nodeToken);
                 cfg.node.nodeToken = try allocator.dupe(u8, t);
             }
