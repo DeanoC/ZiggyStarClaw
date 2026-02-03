@@ -179,7 +179,7 @@ pub fn draw(
                         action.send_message = chat_action.send_message;
                         action.refresh_sessions = chat_action.refresh_sessions;
                         action.new_session = chat_action.new_session;
-                        action.select_session = chat_action.select_session;
+                        replaceOwnedSlice(allocator, &action.select_session, chat_action.select_session);
                     },
                     .CodeEditor => {
                         if (code_editor_panel.draw(panel, allocator)) {
@@ -205,7 +205,6 @@ pub fn draw(
                         action.config_updated = control_action.config_updated;
                         action.refresh_sessions = control_action.refresh_sessions;
                         action.new_session = control_action.new_session;
-                        action.select_session = control_action.select_session;
                         action.check_updates = control_action.check_updates;
                         action.open_release = control_action.open_release;
                         action.download_update = control_action.download_update;
@@ -222,7 +221,8 @@ pub fn draw(
                         if (control_action.open_attachment) |attachment| {
                             pending_attachment = attachment;
                         }
-                        action.open_url = control_action.open_url;
+                        replaceOwnedSlice(allocator, &action.select_session, control_action.select_session);
+                        replaceOwnedSlice(allocator, &action.open_url, control_action.open_url);
                     },
                 }
             }
@@ -281,6 +281,14 @@ pub fn draw(
     ui_systems.endFrame();
 
     return action;
+}
+
+fn replaceOwnedSlice(allocator: std.mem.Allocator, target: *?[]u8, value: ?[]u8) void {
+    if (value == null) return;
+    if (target.*) |existing| {
+        allocator.free(existing);
+    }
+    target.* = value;
 }
 
 pub fn syncSettings(cfg: config.Config) void {
