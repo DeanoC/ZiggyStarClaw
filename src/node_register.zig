@@ -167,7 +167,17 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
     try waitForHelloOk(allocator, &op_ws, 8000);
 
     const display_name = cfg.node.displayName orelse "ZiggyStarClaw Node";
-    const node_id = cfg.node.id orelse identity.device_id;
+    // IMPORTANT: OpenClaw's nodeId is the identifier used for node token verification.
+    // Our connect/signing path uses the device identity's device_id as the device auth id,
+    // so we must pair/approve using the SAME value.
+    const node_id = identity.device_id;
+
+    // If config.json contains a different node.id, we'll overwrite it after approval.
+    if (cfg.node.id) |configured| {
+        if (!std.mem.eql(u8, configured, node_id)) {
+            logger.warn("config node.id differs from device identity; will overwrite: {s} -> {s}", .{ configured, node_id });
+        }
+    }
 
     const req_payload = try sendRequestAwait(
         allocator,
