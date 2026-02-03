@@ -22,8 +22,6 @@ pub const SplitState = struct {
 
 pub fn begin(args: Args, state: *SplitState) void {
     const t = theme.activeTheme();
-    state.avail = zgui.getContentRegionAvail();
-    state.size = clampSize(args, state.size, state.avail);
 
     const padding = if (args.padded)
         .{ t.spacing.sm, t.spacing.sm }
@@ -40,6 +38,8 @@ pub fn begin(args: Args, state: *SplitState) void {
     zgui.pushStyleColor4f(.{ .idx = .border, .c = t.colors.border });
 
     _ = zgui.beginChild(label_z, .{ .child_flags = .{ .border = args.border } });
+    state.avail = zgui.getContentRegionAvail();
+    state.size = clampSize(args, state.size, state.avail);
 }
 
 pub fn end() void {
