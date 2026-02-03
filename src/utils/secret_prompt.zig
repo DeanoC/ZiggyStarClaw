@@ -18,11 +18,12 @@ pub fn readSecretAlloc(allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
             if (handle != w.INVALID_HANDLE_VALUE) {
                 var mode: u32 = 0;
                 if (w.kernel32.GetConsoleMode(handle, &mode) != 0) {
-                restore_mode = mode;
-                // Disable echo
-                const ENABLE_ECHO_INPUT: u32 = 0x0004;
-                const new_mode = mode & ~ENABLE_ECHO_INPUT;
-                _ = w.kernel32.SetConsoleMode(handle, new_mode);
+                    restore_mode = mode;
+                    // Disable echo
+                    const ENABLE_ECHO_INPUT: u32 = 0x0004;
+                    const new_mode = mode & ~ENABLE_ECHO_INPUT;
+                    _ = w.kernel32.SetConsoleMode(handle, new_mode);
+                }
             }
         }
     }
