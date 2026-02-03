@@ -71,6 +71,9 @@ pub fn endSecondary() void {
 pub fn handleSplitter(args: Args, state: *SplitState) void {
     const t = theme.activeTheme();
     const thickness: f32 = 6.0;
+    if (args.axis == .vertical) {
+        zgui.sameLine(.{ .spacing = 0.0 });
+    }
     const cursor = zgui.getCursorScreenPos();
     const avail = zgui.getContentRegionAvail();
     const splitter_size: [2]f32 = switch (args.axis) {
@@ -97,7 +100,9 @@ pub fn handleSplitter(args: Args, state: *SplitState) void {
         state.dragging = false;
     }
 
-    zgui.sameLine(.{ .spacing = 0.0 });
+    if (args.axis == .vertical) {
+        zgui.sameLine(.{ .spacing = 0.0 });
+    }
 }
 
 fn paneSize(args: Args, primary: f32) [2]f32 {
