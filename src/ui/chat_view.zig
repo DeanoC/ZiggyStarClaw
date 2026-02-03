@@ -94,56 +94,44 @@ pub fn draw(
             });
         } else {
             const now_ms = std.time.milliTimestamp();
-            const visible_count = countVisible(messages, inbox, opts.show_tool_output);
-            if (visible_count == 0) {
-                zgui.textDisabled("No messages yet.", .{});
-            } else {
-                const estimated_height = estimateMessageHeight();
-                var clipper = zgui.ListClipper.init();
-                clipper.begin(@intCast(visible_count), estimated_height);
-                while (clipper.step()) {
-                    var visible_index: i32 = 0;
-                    for (messages, 0..) |msg, index| {
-                        if (inbox) |store| {
-                            if (store.isCommandMessage(msg.id)) continue;
-                        }
-                        if (!opts.show_tool_output and isToolRole(msg.role)) {
-                            continue;
-                        }
-                        if (visible_index < clipper.DisplayStart or visible_index >= clipper.DisplayEnd) {
-                            visible_index += 1;
-                            continue;
-                        }
-                        zgui.pushIntId(@intCast(index));
-                        defer zgui.popId();
-                        const align_right = std.mem.eql(u8, msg.role, "user");
-                        components.composite.message_bubble.draw(.{
-                            .id = msg.id,
-                            .role = msg.role,
-                            .content = msg.content,
-                            .timestamp_ms = msg.timestamp,
-                            .now_ms = now_ms,
-                            .align_right = align_right,
-                        });
-
-                        if (msg.attachments) |attachments| {
-                            drawAttachments(attachments, align_right);
-                        }
-
-                        if (zgui.beginPopupContextItem()) {
-                            if (zgui.menuItem("Copy message", .{})) {
-                                const msg_z = zgui.formatZ("{s}", .{msg.content});
-                                zgui.setClipboardText(msg_z);
-                                zgui.closeCurrentPopup();
-                            }
-                            zgui.endPopup();
-                        }
-
-                        zgui.dummy(.{ .w = 0.0, .h = theme.activeTheme().spacing.sm });
-                        visible_index += 1;
-                    }
+            var rendered: usize = 0;
+            for (messages, 0..) |msg, index| {
+                if (inbox) |store| {
+                    if (store.isCommandMessage(msg.id)) continue;
                 }
-                clipper.end();
+                if (!opts.show_tool_output and isToolRole(msg.role)) {
+                    continue;
+                }
+                rendered += 1;
+                zgui.pushIntId(@intCast(index));
+                defer zgui.popId();
+                const align_right = std.mem.eql(u8, msg.role, "user");
+                components.composite.message_bubble.draw(.{
+                    .id = msg.id,
+                    .role = msg.role,
+                    .content = msg.content,
+                    .timestamp_ms = msg.timestamp,
+                    .now_ms = now_ms,
+                    .align_right = align_right,
+                });
+
+                if (msg.attachments) |attachments| {
+                    drawAttachments(attachments, align_right);
+                }
+
+                if (zgui.beginPopupContextItem()) {
+                    if (zgui.menuItem("Copy message", .{})) {
+                        const msg_z = zgui.formatZ("{s}", .{msg.content});
+                        zgui.setClipboardText(msg_z);
+                        zgui.closeCurrentPopup();
+                    }
+                    zgui.endPopup();
+                }
+
+                zgui.dummy(.{ .w = 0.0, .h = theme.activeTheme().spacing.sm });
+            }
+            if (rendered == 0) {
+                zgui.textDisabled("No messages yet.", .{});
             }
             if (stream_text) |stream| {
                 zgui.dummy(.{ .w = 0.0, .h = theme.activeTheme().spacing.sm });
