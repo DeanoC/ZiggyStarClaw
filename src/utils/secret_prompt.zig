@@ -10,8 +10,10 @@ pub fn readSecretAlloc(allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
 
     const stdin = std.fs.File.stdin();
 
+    const is_windows = builtin.os.tag == .windows;
+
     var restore_mode: ?u32 = null;
-    if (builtin.os.tag == .windows) {
+    if (is_windows) {
         const w = std.os.windows;
         const handle_opt = w.kernel32.GetStdHandle(w.STD_INPUT_HANDLE);
         if (handle_opt) |handle| {
@@ -27,7 +29,9 @@ pub fn readSecretAlloc(allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
             }
         }
     }
-    defer {
+
+    // IMPORTANT: keep windows-only symbols out of non-windows builds.
+    defer if (is_windows) {
         if (restore_mode) |m| {
             const w = std.os.windows;
             const handle_opt = w.kernel32.GetStdHandle(w.STD_INPUT_HANDLE);
@@ -37,7 +41,7 @@ pub fn readSecretAlloc(allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
                 }
             }
         }
-    }
+    };
 
     const line = try stdin.deprecatedReader().readUntilDelimiterOrEofAlloc(allocator, '\n', 4096);
     if (line == null) return error.EndOfStream;
@@ -51,7 +55,7 @@ pub fn readSecretAlloc(allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
     }
 
     // Re-enable echo before printing newline
-    if (builtin.os.tag == .windows and restore_mode != null) {
+    if (is_windows and restore_mode != null) {
         const w = std.os.windows;
         const handle_opt = w.kernel32.GetStdHandle(w.STD_INPUT_HANDLE);
         if (handle_opt) |handle| {
