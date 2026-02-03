@@ -17,11 +17,13 @@ pub const Args = struct {
 pub const SplitState = struct {
     size: f32,
     dragging: bool = false,
+    avail: [2]f32 = .{ 0.0, 0.0 },
 };
 
 pub fn begin(args: Args, state: *SplitState) void {
     const t = theme.activeTheme();
-    state.size = clampSize(args, state.size);
+    state.avail = zgui.getContentRegionAvail();
+    state.size = clampSize(args, state.size, state.avail);
 
     const padding = if (args.padded)
         .{ t.spacing.sm, t.spacing.sm }
@@ -48,8 +50,8 @@ pub fn end() void {
 }
 
 pub fn beginPrimary(args: Args, state: *SplitState) bool {
-    state.size = clampSize(args, state.size);
-    const size = paneSize(args, state.size);
+    state.size = clampSize(args, state.size, state.avail);
+    const size = paneSize(args, state.size, state.avail);
     const label = zgui.formatZ("##split_primary_{s}", .{args.id});
     return zgui.beginChild(label, .{ .w = size[0], .h = size[1], .child_flags = .{ .border = false } });
 }
@@ -59,7 +61,7 @@ pub fn endPrimary() void {
 }
 
 pub fn beginSecondary(args: Args, state: *SplitState) bool {
-    const size = secondarySize(args, state.size);
+    const size = secondarySize(args, state.size, state.avail);
     const label = zgui.formatZ("##split_secondary_{s}", .{args.id});
     return zgui.beginChild(label, .{ .w = size[0], .h = size[1], .child_flags = .{ .border = false } });
 }
@@ -93,7 +95,7 @@ pub fn handleSplitter(args: Args, state: *SplitState) void {
     if (active) {
         const drag = zgui.getMouseDragDelta(.left, .{ .lock_threshold = 0.0 });
         const delta = if (args.axis == .vertical) drag[0] else drag[1];
-        state.size = clampSize(args, state.size + delta);
+        state.size = clampSize(args, state.size + delta, state.avail);
         zgui.resetMouseDragDelta(.left);
         state.dragging = true;
     } else if (!hovered) {
@@ -105,26 +107,26 @@ pub fn handleSplitter(args: Args, state: *SplitState) void {
     }
 }
 
-fn paneSize(args: Args, primary: f32) [2]f32 {
-    const avail = zgui.getContentRegionAvail();
+fn paneSize(args: Args, primary: f32, avail: [2]f32) [2]f32 {
+    const size = if (avail[0] > 0.0 or avail[1] > 0.0) avail else zgui.getContentRegionAvail();
     return switch (args.axis) {
-        .vertical => .{ primary, avail[1] },
-        .horizontal => .{ avail[0], primary },
+        .vertical => .{ primary, size[1] },
+        .horizontal => .{ size[0], primary },
     };
 }
 
-fn secondarySize(args: Args, primary: f32) [2]f32 {
-    const avail = zgui.getContentRegionAvail();
+fn secondarySize(args: Args, primary: f32, avail: [2]f32) [2]f32 {
+    const size = if (avail[0] > 0.0 or avail[1] > 0.0) avail else zgui.getContentRegionAvail();
     const thickness: f32 = 6.0;
     return switch (args.axis) {
-        .vertical => .{ avail[0] - primary - thickness, avail[1] },
-        .horizontal => .{ avail[0], avail[1] - primary - thickness },
+        .vertical => .{ size[0] - primary - thickness, size[1] },
+        .horizontal => .{ size[0], size[1] - primary - thickness },
     };
 }
 
-fn clampSize(args: Args, size: f32) f32 {
-    const avail = zgui.getContentRegionAvail();
-    const total = if (args.axis == .vertical) avail[0] else avail[1];
+fn clampSize(args: Args, size: f32, avail: [2]f32) f32 {
+    const size_avail = if (avail[0] > 0.0 or avail[1] > 0.0) avail else zgui.getContentRegionAvail();
+    const total = if (args.axis == .vertical) size_avail[0] else size_avail[1];
     const thickness: f32 = 6.0;
     const max_primary = @max(args.min_primary, total - args.min_secondary - thickness);
     return std.math.clamp(size, args.min_primary, max_primary);
