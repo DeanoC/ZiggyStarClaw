@@ -312,6 +312,8 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
                 break;
             }
 
+            ws_client_val.poll() catch {};
+
             const payload = ws_client_val.receive() catch |err| {
                 logger.err("WebSocket receive failed: {s}", .{@errorName(err)});
                 break;

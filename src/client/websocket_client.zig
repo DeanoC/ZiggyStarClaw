@@ -32,6 +32,9 @@ pub const WebSocketClient = struct {
     device_identity_path: []const u8 = identity.default_path,
     connect_nonce: ?[]u8 = null,
     connect_sent: bool = false,
+    // When using device identity, we want to allow a short window for the gateway
+    // to send connect.challenge before we send connect (matches OpenClaw behavior).
+    connect_send_after_ms: ?i64 = null,
     use_device_identity: bool = true,
 
     // Connect profile (defaults match CLI/operator)
@@ -160,6 +163,7 @@ pub const WebSocketClient = struct {
         self.client = client;
         self.is_connected = true;
         self.connect_sent = false;
+        self.connect_send_after_ms = null;
         clearConnectNonce(self);
         self.clearLastClose();
 
@@ -167,10 +171,10 @@ pub const WebSocketClient = struct {
             if (self.device_identity == null) {
                 self.device_identity = try identity.loadOrCreate(self.allocator, self.device_identity_path);
             }
-            // OpenClaw's GatewayClient sends "connect" even if we never receive a
-            // connect.challenge. In that case it uses a v1 device signature (no nonce).
-            try sendConnectRequest(self, null);
+            // Match OpenClaw GatewayClient: wait ~750ms for connect.challenge, then send connect.
+            self.connect_send_after_ms = std.time.milliTimestamp() + 750;
         } else {
+            // No device identity: send connect immediately.
             try sendConnectRequest(self, null);
         }
     }
@@ -196,8 +200,34 @@ pub const WebSocketClient = struct {
         return error.NotConnected;
     }
 
+    pub fn poll(self: *WebSocketClient) !void {
+        if (!self.is_connected) return;
+        if (self.connect_sent) return;
+
+        // If we already have a nonce, send connect immediately.
+        if (self.use_device_identity and self.connect_nonce != null) {
+            try sendConnectRequest(self, self.connect_nonce);
+            return;
+        }
+
+        // If we're waiting for a nonce, send connect after the grace window.
+        if (self.use_device_identity) {
+            if (self.connect_send_after_ms) |deadline| {
+                if (std.time.milliTimestamp() >= deadline) {
+                    // No nonce received yet. Send connect without nonce (v1 signature).
+                    // Note: some gateways require nonce; in that case this will fail and
+                    // the reconnect loop will try again.
+                    try sendConnectRequest(self, null);
+                    return;
+                }
+            }
+        }
+    }
+
     pub fn receive(self: *WebSocketClient) !?[]u8 {
         if (!self.is_connected) return error.NotConnected;
+        // Ensure connect is sent promptly even if no traffic is flowing.
+        self.poll() catch {};
         if (self.client) |*client| {
             const message = try client.read() orelse return null;
             defer client.done(message);
@@ -511,6 +541,7 @@ fn handleConnectChallenge(self: *WebSocketClient, raw: []const u8) !void {
     clearConnectNonce(self);
     self.connect_nonce = nonce;
     logger.info("Connect challenge nonce received: {s}", .{nonce});
+    // Send connect as soon as we receive the nonce.
     try sendConnectRequest(self, nonce);
 }
 
