@@ -282,6 +282,10 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
                 "system.execApprovals.set",
             },
         });
+        // Critical: ensure node-mode uses the SAME device identity file as node-register/config.
+        // Otherwise it will generate a new device id and trigger pairing again.
+        ws_client_val.setDeviceIdentityPath(cfg.node.deviceIdentityPath);
+
         // Use the gateway token for connect auth and the signed device payload (matches OpenClaw node-host).
         ws_client_val.setConnectAuthToken(cfg.gateway.authToken);
         ws_client_val.setDeviceAuthToken(cfg.gateway.authToken);
