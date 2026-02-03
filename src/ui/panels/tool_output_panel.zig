@@ -8,9 +8,11 @@ pub fn draw(panel: *workspace.Panel, allocator: std.mem.Allocator) void {
     _ = allocator;
     const output = &panel.data.ToolOutput;
 
+    var subtitle_buf: [32]u8 = undefined;
+    const subtitle = std.fmt.bufPrint(&subtitle_buf, "exit {d}", .{output.exit_code}) catch "exit ?";
     if (components.layout.header_bar.begin(.{
         .title = output.tool_name,
-        .subtitle = zgui.formatZ("exit {d}", .{output.exit_code}),
+        .subtitle = subtitle,
     })) {
         components.layout.header_bar.end();
     }
