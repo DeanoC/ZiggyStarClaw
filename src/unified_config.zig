@@ -207,27 +207,28 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !UnifiedConfig {
 
 pub fn normalizeGatewayWsUrl(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     // Ensure we have a ws:// or wss:// URL and ensure path ends with /ws.
-    var url = raw;
     // Convert http(s) to ws(s)
-    if (std.mem.startsWith(u8, url, "http://")) {
-        url = url[7..];
-        url = try std.fmt.allocPrint(allocator, "ws://{s}", .{url});
-        return ensureWsPath(allocator, url);
-    } else if (std.mem.startsWith(u8, url, "https://")) {
-        url = url[8..];
-        url = try std.fmt.allocPrint(allocator, "wss://{s}", .{url});
-        return ensureWsPath(allocator, url);
+    if (std.mem.startsWith(u8, raw, "http://")) {
+        const tmp = try std.fmt.allocPrint(allocator, "ws://{s}", .{raw[7..]});
+        defer allocator.free(tmp);
+        return ensureWsPath(allocator, tmp);
+    } else if (std.mem.startsWith(u8, raw, "https://")) {
+        const tmp = try std.fmt.allocPrint(allocator, "wss://{s}", .{raw[8..]});
+        defer allocator.free(tmp);
+        return ensureWsPath(allocator, tmp);
     }
     return ensureWsPath(allocator, raw);
 }
 
 fn ensureWsPath(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
-    // If already ends with /ws, keep. If has a path, append /ws if empty or not /ws.
+    // If already ends with /ws, keep. Otherwise force /ws.
     const uri = std.Uri.parse(raw) catch {
         // If it's not a full URI, assume host:port
         return std.fmt.allocPrint(allocator, "ws://{s}/ws", .{raw});
     };
-    const path_raw = try uri.path.toRawMaybeAlloc(allocator);
+
+    // IMPORTANT: use toRawAlloc (always allocates) so freeing is valid.
+    const path_raw = try uri.path.toRawAlloc(allocator);
     defer allocator.free(path_raw);
 
     if (std.mem.eql(u8, path_raw, "/ws")) {
