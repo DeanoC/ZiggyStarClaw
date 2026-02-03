@@ -27,6 +27,16 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
     const ws_url = try unified_config.normalizeGatewayWsUrl(allocator, cfg.gateway.url);
     defer allocator.free(ws_url);
 
+    // Ensure identity exists and print the device id so we can mint the correct node token.
+    // Note: the gateway only knows about this device_id after it is approved/paired.
+    const identity = try @import("client/device_identity.zig").loadOrCreate(allocator, cfg.node.deviceIdentityPath);
+    defer {
+        var ident = identity;
+        ident.deinit(allocator);
+    }
+    logger.info("node-register device_id={s}", .{identity.device_id});
+    logger.info("node-register public_key={s}", .{identity.public_key_b64});
+
     // Attempt connect as node. If it fails due to signature invalid, prompt for node token.
     var attempt: usize = 0;
     while (attempt < 10) : (attempt += 1) {
@@ -90,6 +100,9 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
             std.mem.indexOf(u8, reason, "unauthorized role") != null)
         {
             logger.err("Node token rejected ({s}).", .{reason});
+            logger.err("To generate a ROLE=node token for this device, run on the gateway host (wizball):", .{});
+            logger.err("  openclaw devices rotate --device {s} --role node --json", .{identity.device_id});
+            logger.err("Then paste the 'token' value here.", .{});
             // Ask user for node token
             const tok = try secret_prompt.readSecretAlloc(allocator, "Paste ROLE=node device token (will be stored in config.json):");
             defer allocator.free(tok);
