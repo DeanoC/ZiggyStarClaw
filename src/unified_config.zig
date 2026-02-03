@@ -240,8 +240,8 @@ fn ensureWsPath(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
 
     // Rebuild with /ws
     const scheme = uri.scheme;
-    const host = try uri.getHostAlloc(allocator);
-    defer allocator.free(host);
+    // getHostAlloc may return a borrowed slice; use the arena allocator here and do not free.
+    const host = try uri.getHostAlloc(aa);
     const port = uri.port;
 
     const base = if (port) |p|

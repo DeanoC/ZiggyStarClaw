@@ -348,7 +348,7 @@ pub fn main() !void {
             return;
         } else {
             // When running a specialized mode, allow that mode to parse its own flags.
-            if (!(node_mode or operator_mode)) {
+            if (!(node_mode or operator_mode or node_register_mode)) {
                 logger.warn("Unknown argument: {s}", .{arg});
             }
         }
