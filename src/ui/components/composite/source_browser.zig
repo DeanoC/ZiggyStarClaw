@@ -30,6 +30,7 @@ pub const Args = struct {
     current_path: []const u8 = "",
     files: []const FileEntry = &[_]FileEntry{},
     selected_file: ?usize = null,
+    sections: []const Section = &[_]Section{},
     split_state: ?*components.layout.split_pane.SplitState = null,
     show_add_source: bool = false,
 };
@@ -38,6 +39,13 @@ pub const Action = struct {
     select_source: ?usize = null,
     select_file: ?usize = null,
     add_source: bool = false,
+};
+
+pub const Section = struct {
+    name: []const u8,
+    files: []const FileEntry,
+    start_index: usize,
+    expanded: *bool,
 };
 
 var default_split_state = components.layout.split_pane.SplitState{ .size = 220.0 };
@@ -97,7 +105,11 @@ fn drawFileRow(file: FileEntry, selected: bool, t: *const theme.Theme) bool {
     draw_list.addText(text_pos, zgui.colorConvertFloat4ToU32(t.colors.text_primary), "{s}", .{name});
 
     if (file.status) |status| {
-        drawStatusBadge(draw_list, t, status, cursor_screen, avail[0], row_height);
+        if (std.ascii.eqlIgnoreCase(status, "indexed")) {
+            drawCheckmark(draw_list, t, cursor_screen, avail[0], row_height);
+        } else {
+            drawStatusBadge(draw_list, t, status, cursor_screen, avail[0], row_height);
+        }
     }
 
     zgui.setCursorPos(.{ cursor_local[0], cursor_local[1] + row_height + t.spacing.xs });
@@ -147,6 +159,25 @@ fn drawStatusBadge(
         "{s}",
         .{label},
     );
+}
+
+fn drawCheckmark(draw_list: zgui.DrawList, t: *const theme.Theme, row_pos: [2]f32, row_width: f32, row_height: f32) void {
+    const size = row_height * 0.35;
+    const x = row_pos[0] + row_width - size - t.spacing.sm;
+    const y = row_pos[1] + (row_height - size) * 0.5;
+    const color = zgui.colorConvertFloat4ToU32(t.colors.success);
+    draw_list.addLine(.{
+        .p1 = .{ x, y + size * 0.6 },
+        .p2 = .{ x + size * 0.4, y + size },
+        .col = color,
+        .thickness = 2.0,
+    });
+    draw_list.addLine(.{
+        .p1 = .{ x + size * 0.4, y + size },
+        .p2 = .{ x + size, y },
+        .col = color,
+        .thickness = 2.0,
+    });
 }
 
 pub fn draw(args: Args) Action {
@@ -234,7 +265,38 @@ pub fn draw(args: Args) Action {
         var files_id_buf: [96]u8 = undefined;
         const files_id = std.fmt.bufPrint(&files_id_buf, "{s}_files", .{args.id}) catch "files";
         if (components.layout.scroll_area.begin(.{ .id = files_id, .height = 0.0, .border = true })) {
-            if (args.files.len == 0) {
+            if (args.sections.len > 0) {
+                for (args.sections, 0..) |section, section_idx| {
+                    zgui.pushIntId(@intCast(section_idx));
+                    defer zgui.popId();
+                    var header_buf: [128]u8 = undefined;
+                    const header_label = std.fmt.bufPrint(
+                        &header_buf,
+                        "{s} {s}",
+                        .{ if (section.expanded.*) "v" else ">", section.name },
+                    ) catch section.name;
+                    const header_z = zgui.formatZ("{s}##section_{s}", .{ header_label, section.name });
+                    theme.push(.heading);
+                    if (zgui.selectable(header_z, .{ .selected = section.expanded.* })) {
+                        section.expanded.* = !section.expanded.*;
+                    }
+                    theme.pop();
+                    if (section.expanded.*) {
+                        for (section.files, 0..) |file, idx| {
+                            zgui.pushIntId(@intCast(idx));
+                            defer zgui.popId();
+                            const global_index = section.start_index + idx;
+                            const selected = args.selected_file != null and args.selected_file.? == global_index;
+                            if (drawFileRow(file, selected, t)) {
+                                action.select_file = global_index;
+                            }
+                        }
+                        if (section_idx + 1 < args.sections.len) {
+                            zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
+                        }
+                    }
+                }
+            } else if (args.files.len == 0) {
                 zgui.textDisabled("No files in this source.", .{});
             } else {
                 for (args.files, 0..) |file, idx| {

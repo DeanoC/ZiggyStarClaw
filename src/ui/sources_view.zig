@@ -16,6 +16,9 @@ var selected_source_index: ?usize = null;
 var selected_file_index: ?usize = null;
 var split_state = components.layout.split_pane.SplitState{ .size = 240.0 };
 var search_buf: [128:0]u8 = [_:0]u8{0} ** 128;
+var expand_research = true;
+var expand_drive = true;
+var expand_repo = true;
 
 pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) SourcesViewAction {
     var action = SourcesViewAction{};
@@ -76,9 +79,13 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) SourcesView
         var files = collectFiles(ctx.messages.items, &files_buf);
         var previews_buf: [16]sessions_panel.AttachmentOpen = undefined;
         var previews = collectAttachmentPreviews(ctx.messages.items, &previews_buf);
+        var sections_buf: [3]components.composite.source_browser.Section = undefined;
+        var sections_len: usize = 0;
         if (active_index == null or sources_map[active_index.?] == null) {
             files = fallback[0..];
             previews = &[_]sessions_panel.AttachmentOpen{};
+        } else {
+            sections_len = buildSections(files, &sections_buf);
         }
 
         const current_path = if (active_index != null) blk: {
@@ -95,6 +102,7 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) SourcesView
             .current_path = current_path,
             .files = files,
             .selected_file = selected_file_index,
+            .sections = sections_buf[0..sections_len],
             .split_state = &split_state,
             .show_add_source = true,
         });
@@ -141,6 +149,50 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) SourcesView
     }
     zgui.endChild();
     return action;
+}
+
+fn buildSections(
+    files: []const components.composite.source_browser.FileEntry,
+    buf: []components.composite.source_browser.Section,
+) usize {
+    if (files.len == 0 or buf.len < 3) return 0;
+    const first_count = @min(files.len, 3);
+    const second_count = if (files.len > first_count) @min(files.len - first_count, 3) else 0;
+    const third_count = if (files.len > first_count + second_count)
+        files.len - first_count - second_count
+    else
+        0;
+    var len: usize = 0;
+    if (first_count > 0) {
+        buf[len] = .{
+            .name = "Research Docs",
+            .files = files[0..first_count],
+            .start_index = 0,
+            .expanded = &expand_research,
+        };
+        len += 1;
+    }
+    if (second_count > 0) {
+        const start = first_count;
+        buf[len] = .{
+            .name = "Google Drive Team",
+            .files = files[start .. start + second_count],
+            .start_index = start,
+            .expanded = &expand_drive,
+        };
+        len += 1;
+    }
+    if (third_count > 0) {
+        const start = first_count + second_count;
+        buf[len] = .{
+            .name = "GitHub Repo",
+            .files = files[start .. start + third_count],
+            .start_index = start,
+            .expanded = &expand_repo,
+        };
+        len += 1;
+    }
+    return len;
 }
 
 fn addSource(
