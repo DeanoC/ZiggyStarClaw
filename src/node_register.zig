@@ -365,6 +365,9 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
         // Parse pairing list for diagnostics + token.
         var info = parsePairListInfo(allocator, list_payload, node_id) catch |perr| {
             logger.warn("failed to parse node.pair.list payload ({s}); will retry", .{@errorName(perr)});
+            // Show a small snippet once so we can see the actual shape.
+            const snip_len = @min(list_payload.len, 240);
+            logger.warn("node.pair.list snippet: {s}", .{list_payload[0..snip_len]});
             std.Thread.sleep(1500 * std.time.ns_per_ms);
             continue;
         };
@@ -432,7 +435,14 @@ fn parsePairListInfo(
     defer parsed.deinit();
 
     if (parsed.value != .object) return error.InvalidFormat;
-    const pairedv = parsed.value.object.get("paired") orelse return error.InvalidFormat;
+
+    // Be tolerant: sometimes callers hand us the full {type:"res", payload:{...}} frame.
+    var root_obj = parsed.value.object;
+    if (root_obj.get("payload")) |pv| {
+        if (pv == .object) root_obj = pv.object;
+    }
+
+    const pairedv = root_obj.get("paired") orelse return error.InvalidFormat;
     if (pairedv != .array) return error.InvalidFormat;
 
     var out = PairListInfo{
