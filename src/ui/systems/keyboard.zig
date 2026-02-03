@@ -1,0 +1,84 @@
+const std = @import("std");
+const zgui = @import("zgui");
+
+pub const Scope = enum {
+    global,
+    focused,
+};
+
+pub const Shortcut = struct {
+    id: []const u8,
+    key: zgui.Key,
+    ctrl: bool = false,
+    shift: bool = false,
+    alt: bool = false,
+    super: bool = false,
+    enabled: bool = true,
+    scope: Scope = .global,
+    action: ?*const fn (?*anyopaque) void = null,
+    ctx: ?*anyopaque = null,
+};
+
+pub const KeyboardManager = struct {
+    shortcuts: std.ArrayList(Shortcut),
+    focused_id: ?[]const u8 = null,
+
+    pub fn init(allocator: std.mem.Allocator) KeyboardManager {
+        return .{
+            .shortcuts = std.ArrayList(Shortcut).init(allocator),
+            .focused_id = null,
+        };
+    }
+
+    pub fn deinit(self: *KeyboardManager) void {
+        self.shortcuts.deinit();
+    }
+
+    pub fn beginFrame(self: *KeyboardManager) void {
+        _ = self;
+    }
+
+    pub fn clear(self: *KeyboardManager) void {
+        self.shortcuts.clearRetainingCapacity();
+    }
+
+    pub fn register(self: *KeyboardManager, shortcut: Shortcut) !void {
+        try self.shortcuts.append(shortcut);
+    }
+
+    pub fn setFocus(self: *KeyboardManager, id: ?[]const u8) void {
+        self.focused_id = id;
+    }
+
+    pub fn handle(self: *KeyboardManager) void {
+        for (self.shortcuts.items) |shortcut| {
+            if (!shortcut.enabled) continue;
+            if (!scopeMatches(shortcut.scope, self.focused_id)) continue;
+            if (!modifiersMatch(shortcut)) continue;
+            if (zgui.isKeyPressed(shortcut.key, false)) {
+                if (shortcut.action) |action| {
+                    action(shortcut.ctx);
+                }
+            }
+        }
+    }
+};
+
+fn scopeMatches(scope: Scope, focused_id: ?[]const u8) bool {
+    return switch (scope) {
+        .global => true,
+        .focused => focused_id != null,
+    };
+}
+
+fn modifiersMatch(shortcut: Shortcut) bool {
+    if (shortcut.ctrl != modifierDown(.left_ctrl, .right_ctrl)) return false;
+    if (shortcut.shift != modifierDown(.left_shift, .right_shift)) return false;
+    if (shortcut.alt != modifierDown(.left_alt, .right_alt)) return false;
+    if (shortcut.super != modifierDown(.left_super, .right_super)) return false;
+    return true;
+}
+
+fn modifierDown(left: zgui.Key, right: zgui.Key) bool {
+    return zgui.isKeyDown(left) or zgui.isKeyDown(right);
+}
