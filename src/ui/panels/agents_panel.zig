@@ -235,8 +235,11 @@ fn drawAgentSessions(
 
     for (ctx.sessions.items, 0..) |session, index| {
         if (isNotificationSession(session)) continue;
-        const parts = session_keys.parse(session.key) orelse continue;
-        if (!std.mem.eql(u8, parts.agent_id, agent.id)) continue;
+        if (session_keys.parse(session.key)) |parts| {
+            if (!std.mem.eql(u8, parts.agent_id, agent.id)) continue;
+        } else {
+            if (!std.mem.eql(u8, agent.id, "main")) continue;
+        }
         session_indices.append(allocator, index) catch {};
     }
 
@@ -253,7 +256,12 @@ fn drawAgentSessions(
         zgui.pushIntId(@intCast(idx));
         defer zgui.popId();
 
-        const label = session.display_name orelse session.label orelse session.key;
+        const legacy = session_keys.parse(session.key) == null;
+        const base_label = session.display_name orelse session.label orelse session.key;
+        const label = if (legacy)
+            zgui.formatZ("[legacy] {s}", .{base_label})
+        else
+            zgui.formatZ("{s}", .{base_label});
         zgui.text("{s}", .{label});
         zgui.sameLine(.{ .spacing = 12.0 });
         renderRelativeTime(now_ms, session.updated_at);
