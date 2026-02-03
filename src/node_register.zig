@@ -285,10 +285,12 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
         },
     });
 
-    // Prefer device token if we have one; otherwise use gateway token.
-    const preferred = if (cfg.node.nodeToken.len > 0) cfg.node.nodeToken else cfg.gateway.authToken;
-    ws.setConnectAuthToken(preferred);
-    ws.setDeviceAuthToken(preferred);
+    // IMPORTANT: the gateway requires connect.auth.token to match the websocket Authorization token.
+    // For ZiggyStarClaw, the websocket Authorization token is gateway.authToken.
+    // The per-device token returned in hello-ok (auth.deviceToken) is stored in node.nodeToken for
+    // future use, but we do NOT use it as the gateway auth token.
+    ws.setConnectAuthToken(cfg.gateway.authToken);
+    ws.setDeviceAuthToken(cfg.gateway.authToken);
 
     try ws.connect();
 
