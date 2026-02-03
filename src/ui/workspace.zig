@@ -50,6 +50,7 @@ pub const ControlTab = enum {
     RunInspector,
     ApprovalsInbox,
     ActiveAgents,
+    MediaGallery,
     Sessions,
     Settings,
     Operator,
@@ -290,6 +291,7 @@ fn panelToSnapshot(allocator: std.mem.Allocator, panel: Panel) !PanelSnapshot {
                 .RunInspector => "Run Inspector",
                 .ApprovalsInbox => "Approvals Inbox",
                 .ActiveAgents => "Active Agents",
+                .MediaGallery => "Media Gallery",
                 .Sessions => "Sessions",
                 .Settings => "Settings",
                 .Operator => "Operator",
@@ -386,6 +388,7 @@ fn parseControlTab(label: []const u8) ControlTab {
     if (std.mem.eql(u8, label, "Run Inspector")) return .RunInspector;
     if (std.mem.eql(u8, label, "Approvals Inbox")) return .ApprovalsInbox;
     if (std.mem.eql(u8, label, "Active Agents")) return .ActiveAgents;
+    if (std.mem.eql(u8, label, "Media Gallery")) return .MediaGallery;
     if (std.mem.eql(u8, label, "Settings")) return .Settings;
     if (std.mem.eql(u8, label, "Operator")) return .Operator;
     if (std.mem.eql(u8, label, "Showcase")) return .Showcase;
