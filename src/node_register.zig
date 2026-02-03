@@ -345,13 +345,16 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
     logger.info("Waiting for approval...", .{});
     const verify_deadline_ms: i64 = std.time.milliTimestamp() + (5 * 60 * 1000);
 
+    // Use a named empty params struct to ensure JSON encodes params as an object {}.
+    const NodePairListParams = struct {};
+
     var last_paired_count: ?usize = null;
     while (std.time.milliTimestamp() < verify_deadline_ms) {
         const list_payload = sendRequestAwait(
             allocator,
             &op_ws,
             "node.pair.list",
-            .{},
+            NodePairListParams{},
             8000,
         ) catch |err| {
             if (err == error.Timeout) {
@@ -436,8 +439,13 @@ fn parsePairListInfo(
 
     if (parsed.value != .object) return error.InvalidFormat;
 
-    // Be tolerant: sometimes callers hand us the full {type:"res", payload:{...}} frame.
+    // Tolerate full {type:"res", ok, payload?, error?} frames.
     var root_obj = parsed.value.object;
+    if (root_obj.get("ok")) |okv| {
+        if (okv == .bool and !okv.bool) {
+            return error.InvalidRequest;
+        }
+    }
     if (root_obj.get("payload")) |pv| {
         if (pv == .object) root_obj = pv.object;
     }
