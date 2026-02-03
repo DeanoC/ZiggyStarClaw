@@ -97,7 +97,8 @@ fn drawChatMain(
 ) void {
     const avail = zgui.getContentRegionAvail();
     if (input_split_state.size == 0.0) {
-        input_split_state.size = avail[1] * 0.7;
+        const desired_input: f32 = 160.0;
+        input_split_state.size = @max(avail[1] - desired_input, 200.0);
     }
     components.layout.split_pane.begin(.{
         .id = "chat_split",
@@ -112,7 +113,8 @@ fn drawChatMain(
         .id = "chat_split",
         .axis = .horizontal,
     }, &input_split_state)) {
-        chat_view.draw(allocator, ctx.messages.items, ctx.stream_text, inbox, avail[1], .{
+        const history_avail = zgui.getContentRegionAvail();
+        chat_view.draw(allocator, ctx.messages.items, ctx.stream_text, inbox, history_avail[1], .{
             .select_copy_mode = select_copy_mode,
             .show_tool_output = show_tool_output,
         });
