@@ -96,6 +96,7 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) SourcesView
             .files = files,
             .selected_file = selected_file_index,
             .split_state = &split_state,
+            .show_add_source = true,
         });
 
         if (source_action.select_source) |idx| {
