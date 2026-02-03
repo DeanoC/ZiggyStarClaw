@@ -10,6 +10,19 @@ pub const Args = struct {
 
 pub fn draw(args: Args) void {
     const t = theme.activeTheme();
+    const cursor = zgui.getCursorScreenPos();
+    const local = zgui.getCursorPos();
+    const icon_size = zgui.getTextLineHeight();
+    const icon_color = zgui.colorConvertFloat4ToU32(theme.activeTheme().colors.primary);
+    const draw_list = zgui.getWindowDrawList();
+    draw_list.addRectFilled(.{
+        .pmin = cursor,
+        .pmax = .{ cursor[0] + icon_size, cursor[1] + icon_size },
+        .col = icon_color,
+        .rounding = 2.0,
+    });
+
+    zgui.setCursorPos(.{ local[0] + icon_size + t.spacing.xs, local[1] });
     zgui.text("{s}", .{args.name});
     var has_badge = false;
     if (args.file_type) |file_type| {

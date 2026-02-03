@@ -3,6 +3,7 @@ const zgui = @import("zgui");
 const state = @import("../client/state.zig");
 const types = @import("../protocol/types.zig");
 const theme = @import("theme.zig");
+const colors = @import("theme/colors.zig");
 const components = @import("components/components.zig");
 const sessions_panel = @import("panels/sessions_panel.zig");
 
@@ -71,20 +72,15 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ProjectsVie
                 }
                 const active_index = resolveSelectedIndex(ctx);
                 for (ctx.sessions.items, 0..) |session, idx| {
-                    zgui.pushIntId(@intCast(idx));
-                    defer zgui.popId();
                     const name = displayName(session);
                     const is_active = ctx.current_session != null and std.mem.eql(u8, ctx.current_session.?, session.key);
-                    var label_buf: [256]u8 = undefined;
-                    const label = if (is_active)
-                        std.fmt.bufPrint(&label_buf, "{s} (active)", .{name}) catch name
-                    else
-                        name;
                     const selected = active_index != null and active_index.? == idx;
-                    if (components.data.list_item.draw(.{
-                        .label = label,
-                        .selected = selected,
+                    if (drawProjectRow(.{
                         .id = session.key,
+                        .label = name,
+                        .active = is_active,
+                        .selected = selected,
+                        .t = t,
                     })) {
                         selected_project_index = idx;
                         action.select_session = allocator.dupe(u8, session.key) catch null;
@@ -150,12 +146,23 @@ fn drawMainContent(
     zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
 
     if (components.layout.card.begin(.{ .title = "Categories", .id = "projects_categories" })) {
-        zgui.text("Marketing Analysis", .{});
+        const avail = zgui.getContentRegionAvail();
+        const card_width = (avail[0] - t.spacing.sm) / 2.0;
+        if (beginMiniCard("category_marketing", card_width, 86.0, t)) {
+            theme.push(.heading);
+            zgui.text("Marketing Analysis", .{});
+            theme.pop();
+            components.core.badge.draw("active", .{ .variant = .primary, .filled = false, .size = .small });
+        }
+        endMiniCard();
         zgui.sameLine(.{ .spacing = t.spacing.sm });
-        components.core.badge.draw("active", .{ .variant = .primary, .filled = false, .size = .small });
-        zgui.text("Design Concepts", .{});
-        zgui.sameLine(.{ .spacing = t.spacing.sm });
-        components.core.badge.draw("draft", .{ .variant = .neutral, .filled = false, .size = .small });
+        if (beginMiniCard("category_design", card_width, 86.0, t)) {
+            theme.push(.heading);
+            zgui.text("Design Concepts", .{});
+            theme.pop();
+            components.core.badge.draw("draft", .{ .variant = .neutral, .filled = false, .size = .small });
+        }
+        endMiniCard();
     }
     components.layout.card.end();
 
@@ -190,6 +197,111 @@ fn drawMainContent(
         }
     }
     components.layout.card.end();
+}
+
+const ProjectRowArgs = struct {
+    id: []const u8,
+    label: []const u8,
+    active: bool,
+    selected: bool,
+    t: *const theme.Theme,
+};
+
+fn drawProjectRow(args: ProjectRowArgs) bool {
+    const cursor_screen = zgui.getCursorScreenPos();
+    const cursor_local = zgui.getCursorPos();
+    const avail = zgui.getContentRegionAvail();
+    const row_height = zgui.getFrameHeight() + args.t.spacing.xs;
+    const id_z = zgui.formatZ("##project_row_{s}", .{args.id});
+
+    _ = zgui.invisibleButton(id_z, .{ .w = avail[0], .h = row_height });
+    const hovered = zgui.isItemHovered(.{});
+    const clicked = zgui.isItemClicked(.left);
+
+    const draw_list = zgui.getWindowDrawList();
+    if (args.selected or hovered) {
+        const base = if (args.selected) args.t.colors.primary else args.t.colors.surface;
+        const alpha: f32 = if (args.selected) 0.12 else 0.08;
+        draw_list.addRectFilled(.{
+            .pmin = cursor_screen,
+            .pmax = .{ cursor_screen[0] + avail[0], cursor_screen[1] + row_height },
+            .col = zgui.colorConvertFloat4ToU32(colors.withAlpha(base, alpha)),
+            .rounding = args.t.radius.sm,
+        });
+    }
+
+    const icon_size = row_height - args.t.spacing.xs * 2.0;
+    const icon_pos = .{ cursor_screen[0] + args.t.spacing.xs, cursor_screen[1] + args.t.spacing.xs };
+    draw_list.addRectFilled(.{
+        .pmin = icon_pos,
+        .pmax = .{ icon_pos[0] + icon_size, icon_pos[1] + icon_size },
+        .col = zgui.colorConvertFloat4ToU32(colors.withAlpha(args.t.colors.primary, 0.2)),
+        .rounding = 3.0,
+    });
+
+    const text_pos = .{ icon_pos[0] + icon_size + args.t.spacing.sm, cursor_screen[1] + args.t.spacing.xs };
+    draw_list.addText(text_pos, zgui.colorConvertFloat4ToU32(args.t.colors.text_primary), "{s}", .{args.label});
+
+    if (args.active) {
+        drawActiveBadge(draw_list, args.t, "active", cursor_screen, avail[0], row_height);
+    }
+
+    zgui.setCursorPos(.{ cursor_local[0], cursor_local[1] + row_height + args.t.spacing.xs });
+    return clicked;
+}
+
+fn drawActiveBadge(
+    draw_list: zgui.DrawList,
+    t: *const theme.Theme,
+    label: []const u8,
+    row_pos: [2]f32,
+    row_width: f32,
+    row_height: f32,
+) void {
+    const label_size = zgui.calcTextSize(label, .{});
+    const padding = .{ t.spacing.xs, t.spacing.xs * 0.5 };
+    const badge_size = .{
+        label_size[0] + padding[0] * 2.0,
+        label_size[1] + padding[1] * 2.0,
+    };
+    const x = row_pos[0] + row_width - badge_size[0] - t.spacing.sm;
+    const y = row_pos[1] + (row_height - badge_size[1]) * 0.5;
+    const bg = colors.withAlpha(t.colors.success, 0.18);
+    const border = colors.withAlpha(t.colors.success, 0.4);
+    draw_list.addRectFilled(.{
+        .pmin = .{ x, y },
+        .pmax = .{ x + badge_size[0], y + badge_size[1] },
+        .col = zgui.colorConvertFloat4ToU32(bg),
+        .rounding = t.radius.lg,
+    });
+    draw_list.addRect(.{
+        .pmin = .{ x, y },
+        .pmax = .{ x + badge_size[0], y + badge_size[1] },
+        .col = zgui.colorConvertFloat4ToU32(border),
+        .rounding = t.radius.lg,
+    });
+    draw_list.addText(
+        .{ x + padding[0], y + padding[1] },
+        zgui.colorConvertFloat4ToU32(t.colors.success),
+        "{s}",
+        .{label},
+    );
+}
+
+fn beginMiniCard(id: []const u8, width: f32, height: f32, t: *const theme.Theme) bool {
+    const label_z = zgui.formatZ("##mini_{s}", .{id});
+    zgui.pushStyleVar2f(.{ .idx = .window_padding, .v = .{ t.spacing.sm, t.spacing.sm } });
+    zgui.pushStyleVar1f(.{ .idx = .child_rounding, .v = t.radius.md });
+    zgui.pushStyleVar1f(.{ .idx = .child_border_size, .v = 1.0 });
+    zgui.pushStyleColor4f(.{ .idx = .child_bg, .c = t.colors.surface });
+    zgui.pushStyleColor4f(.{ .idx = .border, .c = t.colors.border });
+    return zgui.beginChild(label_z, .{ .w = width, .h = height, .child_flags = .{ .border = true } });
+}
+
+fn endMiniCard() void {
+    zgui.endChild();
+    zgui.popStyleColor(.{ .count = 2 });
+    zgui.popStyleVar(.{ .count = 3 });
 }
 
 fn resolveSelectedIndex(ctx: *state.ClientContext) ?usize {
