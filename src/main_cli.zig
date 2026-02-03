@@ -381,22 +381,27 @@ pub fn main() !void {
                 }
                 return err;
             };
+            // Print a plain success message as well (some environments filter logs).
             logger.info("Installed scheduled task for node-mode.", .{});
+            _ = std.fs.File.stdout().write("Installed scheduled task for node-mode.\n") catch {};
             return;
         }
         if (node_service_uninstall) {
             try win_service.uninstallTask(allocator, node_service_name);
             logger.info("Uninstalled scheduled task.", .{});
+            _ = std.fs.File.stdout().write("Uninstalled scheduled task.\n") catch {};
             return;
         }
         if (node_service_start) {
             try win_service.startTask(allocator, node_service_name);
             logger.info("Started scheduled task.", .{});
+            _ = std.fs.File.stdout().write("Started scheduled task.\n") catch {};
             return;
         }
         if (node_service_stop) {
             try win_service.stopTask(allocator, node_service_name);
             logger.info("Stopped scheduled task.", .{});
+            _ = std.fs.File.stdout().write("Stopped scheduled task.\n") catch {};
             return;
         }
         if (node_service_status) {
