@@ -14,17 +14,52 @@ pub const InstallMode = enum {
 };
 
 fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) !void {
+    // We capture output so we can detect common Windows errors (e.g. schtasks access denied)
+    // and provide actionable guidance.
     var child = std.process.Child.init(argv, allocator);
     child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
-    const term = try child.spawnAndWait();
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+
+    try child.spawn();
+
+    var stdout_buf: []u8 = &.{};
+    var stderr_buf: []u8 = &.{};
+    defer {
+        if (stdout_buf.len != 0) allocator.free(stdout_buf);
+        if (stderr_buf.len != 0) allocator.free(stderr_buf);
+    }
+
+    if (child.stdout) |out| {
+        stdout_buf = out.readToEndAlloc(allocator, 64 * 1024) catch &.{};
+    }
+    if (child.stderr) |err| {
+        stderr_buf = err.readToEndAlloc(allocator, 64 * 1024) catch &.{};
+    }
+
+    const term = try child.wait();
+
+    // Preserve original tool output for the user.
+    if (stdout_buf.len != 0) {
+        _ = std.fs.File.stdout().write(stdout_buf) catch {};
+    }
+    if (stderr_buf.len != 0) {
+        _ = std.fs.File.stderr().write(stderr_buf) catch {};
+    }
+
     switch (term) {
         .Exited => |code| {
             if (code != 0) {
-                // schtasks returns common Windows error codes.
-                // 5 = ACCESS_DENIED
-                if (code == 5) return ServiceError.AccessDenied;
+                // schtasks often exits 1 even for specific errors; match the message too.
+                if (std.mem.indexOf(u8, stderr_buf, "Access is denied") != null or
+                    std.mem.indexOf(u8, stderr_buf, "ERROR: Access is denied") != null)
+                {
+                    return ServiceError.AccessDenied;
+                }
+                // Some systems emit "The requested operation requires elevation." for non-admin.
+                if (std.mem.indexOf(u8, stderr_buf, "requires elevation") != null) {
+                    return ServiceError.AccessDenied;
+                }
                 return ServiceError.ExecFailed;
             }
         },
