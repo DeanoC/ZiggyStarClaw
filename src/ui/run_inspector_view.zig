@@ -181,6 +181,7 @@ fn drawStepRow(step: Step, index: usize, t: *const theme.Theme) void {
 
     drawStepBadge(draw_list, t, statusLabel(step.state), variant, cursor_screen, avail[0], row_height);
     zgui.setCursorPos(.{ cursor_local[0], cursor_local[1] + row_height });
+    zgui.dummy(.{ .w = 0.0, .h = 0.0 });
 }
 
 fn drawStepBadge(

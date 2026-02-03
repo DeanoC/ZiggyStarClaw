@@ -247,6 +247,7 @@ fn drawProjectRow(args: ProjectRowArgs) bool {
     }
 
     zgui.setCursorPos(.{ cursor_local[0], cursor_local[1] + row_height + args.t.spacing.xs });
+    zgui.dummy(.{ .w = 0.0, .h = 0.0 });
     return clicked;
 }
 

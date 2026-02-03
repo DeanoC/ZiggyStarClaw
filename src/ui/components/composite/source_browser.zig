@@ -101,6 +101,7 @@ fn drawFileRow(file: FileEntry, selected: bool, t: *const theme.Theme) bool {
     }
 
     zgui.setCursorPos(.{ cursor_local[0], cursor_local[1] + row_height + t.spacing.xs });
+    zgui.dummy(.{ .w = 0.0, .h = 0.0 });
     return clicked;
 }
 

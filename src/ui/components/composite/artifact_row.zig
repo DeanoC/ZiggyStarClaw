@@ -23,6 +23,7 @@ pub fn draw(args: Args) void {
     });
 
     zgui.setCursorPos(.{ local[0] + icon_size + t.spacing.xs, local[1] });
+    zgui.dummy(.{ .w = 0.0, .h = 0.0 });
     zgui.text("{s}", .{args.name});
     var has_badge = false;
     if (args.file_type) |file_type| {
