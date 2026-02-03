@@ -23,6 +23,18 @@ pub fn draw(ctx: *state.ClientContext) void {
 
         zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
 
+        if (components.layout.card.begin(.{ .title = "Status Overview", .id = "agents_overview" })) {
+            const counts = collectCounts(ctx.nodes.items);
+            drawCountBadge("Ready", counts.ready, .success);
+            zgui.sameLine(.{ .spacing = t.spacing.sm });
+            drawCountBadge("Pairing", counts.pairing, .warning);
+            zgui.sameLine(.{ .spacing = t.spacing.sm });
+            drawCountBadge("Offline", counts.offline, .neutral);
+        }
+        components.layout.card.end();
+
+        zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
+
         if (components.layout.scroll_area.begin(.{ .id = "AgentsList", .border = false })) {
             if (ctx.nodes.items.len == 0) {
                 zgui.textDisabled("No active agents connected.", .{});
@@ -72,4 +84,29 @@ fn statusForNode(node: types.Node) AgentStatus {
         return .{ .label = "Pairing", .variant = .warning };
     }
     return .{ .label = "Offline", .variant = .neutral };
+}
+
+const StatusCounts = struct {
+    ready: usize = 0,
+    pairing: usize = 0,
+    offline: usize = 0,
+};
+
+fn collectCounts(nodes: []const types.Node) StatusCounts {
+    var counts = StatusCounts{};
+    for (nodes) |node| {
+        const status = statusForNode(node);
+        switch (status.variant) {
+            .success => counts.ready += 1,
+            .warning => counts.pairing += 1,
+            else => counts.offline += 1,
+        }
+    }
+    return counts;
+}
+
+fn drawCountBadge(label: []const u8, count: usize, variant: components.core.badge.Variant) void {
+    var buf: [32]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, "{s} ({d})", .{ label, count }) catch label;
+    components.core.badge.draw(text, .{ .variant = variant, .filled = false, .size = .small });
 }

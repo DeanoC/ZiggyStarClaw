@@ -37,7 +37,7 @@ pub fn draw() void {
             active_tab = .edit;
         }
 
-        zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
+        zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
 
         if (components.layout.scroll_area.begin(.{ .id = "ArtifactWorkspaceContent", .border = false })) {
             switch (active_tab) {
@@ -72,7 +72,7 @@ fn drawPreview(t: *const theme.Theme) void {
     }
     components.layout.card.end();
 
-    zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
+    zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
 
     if (components.layout.card.begin(.{ .title = "Key Insights", .id = "artifact_insights" })) {
         zgui.bulletText("North America revenue is trending up 12% month-over-month.", .{});
@@ -81,7 +81,7 @@ fn drawPreview(t: *const theme.Theme) void {
     }
     components.layout.card.end();
 
-    zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
+    zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
 
     if (components.layout.card.begin(.{ .title = "Sales Performance (Chart)", .id = "artifact_chart" })) {
         zgui.textWrapped("Weekly sales performance", .{});

@@ -99,7 +99,7 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ApprovalsIn
                         };
                     }
                     if (idx + 1 < ctx.approvals.items.len) {
-                        zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
+                        zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
                     }
                 }
             }

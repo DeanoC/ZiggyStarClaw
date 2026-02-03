@@ -10,6 +10,13 @@ pub const DockState = struct {
     right: workspace.DockNodeId = 0,
     bottom: workspace.DockNodeId = 0,
     initialized: bool = false,
+    preset: LayoutPreset = .wide,
+};
+
+const LayoutPreset = enum {
+    wide,
+    medium,
+    narrow,
 };
 
 pub fn ensureDockLayout(
@@ -19,9 +26,12 @@ pub fn ensureDockLayout(
     dock_pos: [2]f32,
     dock_size: [2]f32,
 ) void {
-    if (state.initialized) return;
+    const desired = presetForSize(dock_size);
+    if (state.initialized and (workspace_state.layout.imgui_ini.len > 0 or state.preset == desired)) return;
+
     state.initialized = true;
     state.dockspace_id = dockspace_id;
+    state.preset = desired;
 
     if (workspace_state.layout.imgui_ini.len > 0) return;
 
@@ -30,15 +40,29 @@ pub fn ensureDockLayout(
     zgui.dockBuilderSetNodePos(dockspace_id, dock_pos);
     zgui.dockBuilderSetNodeSize(dockspace_id, dock_size);
 
-    var left: zgui.Ident = 0;
-    var right: zgui.Ident = 0;
-
-    _ = zgui.dockBuilderSplitNode(dockspace_id, .left, 0.35, &left, &right);
-
-    state.left = left;
-    state.right = right;
+    state.left = 0;
+    state.right = 0;
+    state.center = dockspace_id;
     state.bottom = 0;
-    state.center = right;
+
+    switch (desired) {
+        .wide => {
+            var left: zgui.Ident = 0;
+            var right: zgui.Ident = 0;
+            _ = zgui.dockBuilderSplitNode(dockspace_id, .left, 0.35, &left, &right);
+            state.left = left;
+            state.right = right;
+            state.center = right;
+        },
+        .medium => {
+            var bottom: zgui.Ident = 0;
+            var top: zgui.Ident = 0;
+            _ = zgui.dockBuilderSplitNode(dockspace_id, .down, 0.32, &bottom, &top);
+            state.bottom = bottom;
+            state.center = top;
+        },
+        .narrow => {},
+    }
 
     for (workspace_state.panels.items) |panel| {
         var label_buf: [256:0]u8 = undefined;
@@ -51,12 +75,24 @@ pub fn ensureDockLayout(
 }
 
 pub fn defaultDockForKind(state: *DockState, kind: workspace.PanelKind) workspace.DockNodeId {
-    return switch (kind) {
-        .Chat => if (state.left != 0) state.left else state.dockspace_id,
-        .CodeEditor => if (state.right != 0) state.right else state.dockspace_id,
-        .ToolOutput => if (state.right != 0) state.right else state.dockspace_id,
-        .Control => if (state.right != 0) state.right else state.dockspace_id,
+    return switch (state.preset) {
+        .wide => switch (kind) {
+            .Chat => if (state.left != 0) state.left else state.dockspace_id,
+            .CodeEditor, .ToolOutput, .Control => if (state.right != 0) state.right else state.dockspace_id,
+        },
+        .medium => switch (kind) {
+            .Chat => if (state.bottom != 0) state.bottom else state.dockspace_id,
+            .CodeEditor, .ToolOutput, .Control => if (state.center != 0) state.center else state.dockspace_id,
+        },
+        .narrow => state.dockspace_id,
     };
+}
+
+fn presetForSize(size: [2]f32) LayoutPreset {
+    const width = size[0];
+    if (width < 780.0) return .narrow;
+    if (width < 1100.0) return .medium;
+    return .wide;
 }
 
 pub fn captureIni(allocator: std.mem.Allocator, workspace_state: *workspace.Workspace) !void {

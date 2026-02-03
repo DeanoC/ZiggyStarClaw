@@ -132,7 +132,7 @@ fn drawStepList(steps: []const Step, t: *const theme.Theme) void {
         defer zgui.popId();
         drawStepRow(step, idx + 1, t);
         if (idx + 1 < steps.len) {
-            zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
+            zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
         }
     }
 }
@@ -141,7 +141,7 @@ fn drawStepRow(step: Step, index: usize, t: *const theme.Theme) void {
     const cursor_screen = zgui.getCursorScreenPos();
     const cursor_local = zgui.getCursorPos();
     const avail = zgui.getContentRegionAvail();
-    const row_height = zgui.getFrameHeight() + t.spacing.xs;
+    const row_height = zgui.getFrameHeight() + t.spacing.sm;
     _ = zgui.invisibleButton("##step_row", .{ .w = avail[0], .h = row_height });
 
     const draw_list = zgui.getWindowDrawList();
@@ -171,7 +171,11 @@ fn drawStepRow(step: Step, index: usize, t: *const theme.Theme) void {
         .{idx_label},
     );
 
-    const text_pos = .{ cursor_screen[0] + circle_size + t.spacing.sm, cursor_screen[1] + t.spacing.xs * 0.5 };
+    const label_size = zgui.calcTextSize(step.label, .{});
+    const text_pos = .{
+        cursor_screen[0] + circle_size + t.spacing.sm,
+        cursor_screen[1] + (row_height - label_size[1]) * 0.5,
+    };
     draw_list.addText(
         text_pos,
         zgui.colorConvertFloat4ToU32(t.colors.text_primary),
