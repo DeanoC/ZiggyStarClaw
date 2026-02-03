@@ -193,6 +193,7 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
         const tok = try secret_prompt.readSecretAlloc(allocator, "Gateway auth token:");
         defer allocator.free(tok);
         if (tok.len == 0) return error.InvalidArguments;
+        logger.info("(received {d} chars)", .{tok.len});
 
         try writeDefaultConfig(allocator, cfg_path, url, tok);
         // Reload now that we have a config.

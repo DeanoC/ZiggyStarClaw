@@ -42,9 +42,12 @@ pub fn readSecretAlloc(allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
     const line = try stdin.deprecatedReader().readUntilDelimiterOrEofAlloc(allocator, '\n', 4096);
     if (line == null) return error.EndOfStream;
     var s = line.?;
-    // Trim \r
+    // Trim trailing \r (Windows). IMPORTANT: we must not return a subslice of an allocation
+    // that the caller will free, because allocator.free() requires the original slice length.
     if (s.len > 0 and s[s.len - 1] == '\r') {
-        s = s[0 .. s.len - 1];
+        const trimmed = try allocator.dupe(u8, s[0 .. s.len - 1]);
+        allocator.free(s);
+        s = trimmed;
     }
 
     // Re-enable echo before printing newline
