@@ -62,6 +62,19 @@ pub const SingleThreadConnectionManager = struct {
         self.allocator.free(self.token);
     }
 
+    /// Update the token used for the WS handshake and connect auth.
+    /// This matters when the gateway issues a new device token (rotation) and we later reconnect.
+    pub fn setToken(self: *SingleThreadConnectionManager, token: []const u8) !void {
+        if (std.mem.eql(u8, self.token, token)) return;
+
+        const tok_copy = try self.allocator.dupe(u8, token);
+        self.allocator.free(self.token);
+        self.token = tok_copy;
+
+        // Keep the active client in sync so the next reconnect/deinit/reinit uses the updated token.
+        self.ws_client.token = self.token;
+    }
+
     fn computeDelayMs(self: *SingleThreadConnectionManager) u64 {
         // Cap exponent to avoid overflow and because we clamp anyway.
         const exp: u32 = @min(self.reconnect_attempt, 15);
