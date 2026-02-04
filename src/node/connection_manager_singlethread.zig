@@ -28,6 +28,10 @@ pub const SingleThreadConnectionManager = struct {
     // Optional user context for callbacks
     user_ctx: ?*anyopaque = null,
 
+    // Optional mutex to guard ws_client operations when another thread (e.g. HealthReporter)
+    // may call send concurrently.
+    ws_mutex: ?*std.Thread.Mutex = null,
+
     // Callbacks (run on caller thread)
     onConfigureClient: ?*const fn (*SingleThreadConnectionManager, *websocket_client.WebSocketClient) void = null,
     onConnected: ?*const fn (*SingleThreadConnectionManager) void = null,
@@ -72,6 +76,10 @@ pub const SingleThreadConnectionManager = struct {
             self.is_connected = false;
             if (self.onDisconnected) |cb| cb(self);
         }
+
+        if (self.ws_mutex) |m| m.lock();
+        defer if (self.ws_mutex) |m| m.unlock();
+
         self.ws_client.deinit();
         // Re-init client in a clean state (preserves url/token copies).
         self.ws_client = websocket_client.WebSocketClient.init(self.allocator, self.ws_url, self.token, self.insecure_tls, null);
@@ -84,6 +92,9 @@ pub const SingleThreadConnectionManager = struct {
 
         if (!self.is_connected) {
             if (now < self.next_attempt_at_ms) return;
+
+            if (self.ws_mutex) |m| m.lock();
+            defer if (self.ws_mutex) |m| m.unlock();
 
             if (self.onConfigureClient) |cb| cb(self, &self.ws_client);
 
@@ -101,7 +112,9 @@ pub const SingleThreadConnectionManager = struct {
         }
 
         // Connected: keep pumping.
+        if (self.ws_mutex) |m| m.lock();
         self.ws_client.poll() catch {};
+        if (self.ws_mutex) |m| m.unlock();
 
         if (!self.ws_client.is_connected) {
             self.disconnect();

@@ -311,7 +311,12 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     }.cb;
 
     // Start health reporter (threaded, but uses per-heartbeat arena + page allocator).
+    // Guard ws_client access with a mutex: reporter thread may send while we reconnect.
+    var ws_mutex: std.Thread.Mutex = .{};
+    conn.ws_mutex = &ws_mutex;
+
     var reporter = HealthReporter.init(allocator, &node_ctx, &conn.ws_client);
+    reporter.setMutex(&ws_mutex);
     reporter.start() catch |err| {
         logger.warn("Failed to start health reporter: {s}", .{@errorName(err)});
     };
@@ -326,11 +331,14 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
             continue;
         }
 
+        ws_mutex.lock();
         const payload = conn.ws_client.receive() catch |err| {
+            ws_mutex.unlock();
             logger.err("WebSocket receive failed: {s}", .{@errorName(err)});
             conn.disconnect();
             continue;
         };
+        ws_mutex.unlock();
 
         if (payload) |text| {
             defer allocator.free(text);
