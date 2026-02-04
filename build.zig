@@ -647,6 +647,34 @@ pub fn build(b: *std.Build) void {
 
     const wasm_node_install = b.addInstallArtifact(wasm_node_exe, .{});
     node_wasm_step.dependOn(&wasm_node_install.step);
+
+    // ---------------------------------------------------------------------
+    // Android node runtime (connect-only skeleton)
+    //
+    // This produces a static library for a future Android node runtime.
+    // It is intentionally libc/NDK independent so it can cross-compile on CI.
+    //
+    // Usage:
+    //   zig build node-android
+    //
+    const node_android_step = b.step("node-android", "Build Android node runtime (connect-only skeleton)");
+    const android_node_target = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .android });
+    const android_node_mod = b.createModule(.{
+        .root_source_file = b.path("src/node/android/main.zig"),
+        .target = android_node_target,
+        .optimize = optimize,
+    });
+    const android_node_lib = b.addLibrary(.{
+        .name = "zsc_node_android",
+        .root_module = android_node_mod,
+        .linkage = .static,
+    });
+    android_node_lib.root_module.addOptions("build_options", build_options);
+    android_node_lib.root_module.link_libc = false;
+    android_node_lib.root_module.link_libcpp = false;
+
+    const android_node_install = b.addInstallArtifact(android_node_lib, .{});
+    node_android_step.dependOn(&android_node_install.step);
 }
 
 fn readAppVersion(b: *std.Build) []const u8 {
