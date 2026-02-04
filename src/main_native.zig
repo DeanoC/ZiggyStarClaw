@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ui = @import("ui/main_window.zig");
+const input_router = @import("ui/input/input_router.zig");
 const operator_view = @import("ui/operator_view.zig");
 const theme = @import("ui/theme.zig");
 const imgui_bridge = @import("ui/imgui_bridge.zig");
@@ -30,7 +31,6 @@ const types = @import("protocol/types.zig");
 const sdl = @import("platform/sdl3.zig").c;
 const input_backend = @import("ui/input/input_backend.zig");
 const sdl_input_backend = @import("ui/input/sdl_input_backend.zig");
-const input_router = @import("ui/input/input_router.zig");
 
 const webgpu_renderer = @import("client/renderer.zig");
 const imgui_wgpu = @import("ui/imgui_wrapper_wgpu.zig");
@@ -839,6 +839,7 @@ pub fn main() !void {
     _ = sdl.SDL_SetHint("SDL_IME_SHOW_UI", "1");
     sdl_input_backend.init(allocator);
     input_router.setBackend(input_backend.sdl3);
+    defer input_router.deinit(allocator);
     defer sdl_input_backend.deinit();
 
     var window_width: c_int = 1280;
@@ -904,6 +905,7 @@ pub fn main() !void {
     };
     var manager = panel_manager.PanelManager.init(allocator, workspace_state);
     defer manager.deinit();
+    defer ui.deinit(allocator);
     var command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);
     defer command_inbox.deinit(allocator);
     var dock_state = dock_layout.DockState{};

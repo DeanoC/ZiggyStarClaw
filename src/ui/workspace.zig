@@ -19,6 +19,12 @@ pub const PanelState = struct {
     is_dirty: bool = false,
 };
 
+pub const CustomLayoutState = struct {
+    left_ratio: f32 = 0.42,
+    min_left_width: f32 = 360.0,
+    min_right_width: f32 = 320.0,
+};
+
 pub const EditorOwner = enum { user, ai };
 
 pub const ChatPanel = struct {
@@ -112,6 +118,7 @@ pub const DockLayout = struct {
 pub const Workspace = struct {
     panels: std.ArrayList(Panel),
     layout: DockLayout,
+    custom_layout: CustomLayoutState,
     focused_panel_id: ?PanelId,
     active_project: ProjectId,
     dirty: bool = false,
@@ -120,6 +127,7 @@ pub const Workspace = struct {
         return .{
             .panels = std.ArrayList(Panel).empty,
             .layout = .{ .imgui_ini = allocator.dupe(u8, "") catch unreachable },
+            .custom_layout = .{},
             .focused_panel_id = null,
             .active_project = 0,
             .dirty = false,
@@ -173,6 +181,11 @@ pub const Workspace = struct {
             .active_project = self.active_project,
             .focused_panel_id = self.focused_panel_id,
             .layout_ini = layout_copy,
+            .custom_layout = .{
+                .left_ratio = self.custom_layout.left_ratio,
+                .min_left_width = self.custom_layout.min_left_width,
+                .min_right_width = self.custom_layout.min_right_width,
+            },
             .panels = panels,
         };
     }
@@ -185,6 +198,13 @@ pub const Workspace = struct {
         if (snapshot.layout_ini) |ini| {
             allocator.free(ws.layout.imgui_ini);
             ws.layout.imgui_ini = try allocator.dupe(u8, ini);
+        }
+        if (snapshot.custom_layout) |layout| {
+            ws.custom_layout = .{
+                .left_ratio = layout.left_ratio,
+                .min_left_width = layout.min_left_width,
+                .min_right_width = layout.min_right_width,
+            };
         }
 
         if (snapshot.panels) |panel_snaps| {
@@ -228,6 +248,12 @@ pub const ControlPanelSnapshot = struct {
     selected_agent_id: ?[]const u8 = null,
 };
 
+pub const CustomLayoutSnapshot = struct {
+    left_ratio: f32 = 0.42,
+    min_left_width: f32 = 360.0,
+    min_right_width: f32 = 320.0,
+};
+
 pub const PanelSnapshot = struct {
     id: PanelId,
     kind: PanelKind,
@@ -243,6 +269,7 @@ pub const WorkspaceSnapshot = struct {
     active_project: ProjectId = 0,
     focused_panel_id: ?PanelId = null,
     layout_ini: ?[]const u8 = null,
+    custom_layout: ?CustomLayoutSnapshot = null,
     panels: ?[]PanelSnapshot = null,
 
     pub fn deinit(self: *WorkspaceSnapshot, allocator: std.mem.Allocator) void {

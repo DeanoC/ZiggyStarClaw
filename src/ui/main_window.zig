@@ -5,13 +5,17 @@ const state = @import("../client/state.zig");
 const config = @import("../client/config.zig");
 const theme = @import("theme.zig");
 const components = @import("components/components.zig");
+const custom_layout = @import("layout/custom_layout.zig");
+const panel_host = @import("layout/panel_host.zig");
 const panel_manager = @import("panel_manager.zig");
 const text_buffer = @import("text_buffer.zig");
 const workspace = @import("workspace.zig");
+const draw_context = @import("draw_context.zig");
 const data_uri = @import("data_uri.zig");
 const attachment_cache = @import("attachment_cache.zig");
 const dock_layout = @import("dock_layout.zig");
 const ui_command_inbox = @import("ui_command_inbox.zig");
+const chat_view = @import("chat_view.zig");
 const imgui_bridge = @import("imgui_bridge.zig");
 const image_cache = @import("image_cache.zig");
 const ui_systems = @import("ui_systems.zig");
@@ -65,7 +69,28 @@ pub const UiAction = struct {
     open_url: ?[]u8 = null,
 };
 
+const PanelDrawResult = struct {
+    session_key: ?[]const u8 = null,
+    agent_id: ?[]const u8 = null,
+};
+
+const PanelIdList = struct {
+    items: [4]workspace.PanelId = undefined,
+    len: usize = 0,
+
+    pub fn append(self: *PanelIdList, id: workspace.PanelId) void {
+        if (self.len >= self.items.len) return;
+        self.items[self.len] = id;
+        self.len += 1;
+    }
+
+    pub fn slice(self: *const PanelIdList) []const workspace.PanelId {
+        return self.items[0..self.len];
+    }
+};
+
 var safe_insets: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };
+var use_custom_layout: bool = false;
 const attachment_fetch_limit: usize = 256 * 1024;
 const attachment_editor_limit: usize = 128 * 1024;
 const attachment_json_pretty_limit: usize = 64 * 1024;
@@ -135,6 +160,9 @@ pub fn draw(
                 manager.ensurePanel(.CodeEditor);
             }
             zgui.separator();
+            if (zgui.menuItem("Use Custom Layout", .{ .selected = use_custom_layout })) {
+                use_custom_layout = !use_custom_layout;
+            }
             if (zgui.menuItem("Reset Layout", .{})) {
                 dock_layout.resetDockLayout(allocator, dock_state, &manager.workspace);
             }
@@ -176,199 +204,278 @@ pub fn draw(
         const dock_height = @max(1.0, avail[1] - status_height);
         const dock_size = .{ avail[0], dock_height };
         const dock_pos = zgui.getCursorScreenPos();
-        const dockspace_id = zgui.dockSpace("MainDockSpace", dock_size, .{});
-        dock_layout.ensureDockLayout(dock_state, &manager.workspace, dockspace_id, dock_pos, dock_size);
-
         var focused_session_key: ?[]const u8 = null;
         var focused_agent_id: ?[]const u8 = null;
+        if (use_custom_layout) {
+            var closed_panels = PanelIdList{};
+            const chat_panel_ptr = selectPanelForKind(manager, .Chat);
+            const control_panel_ptr = selectPanelForKind(manager, .Control);
+            const editor_panel_ptr = selectPanelForKind(manager, .CodeEditor);
+            const tool_panel_ptr = selectPanelForKind(manager, .ToolOutput);
 
-        var index: usize = 0;
-        while (index < manager.workspace.panels.items.len) {
-            var panel = &manager.workspace.panels.items[index];
-            var panel_session_key: ?[]const u8 = null;
-            var panel_agent_id: ?[]const u8 = null;
-            if (panel.state.dock_node == 0 and dock_state.dockspace_id != 0) {
-                imgui_bridge.setNextWindowDockId(
-                    dock_layout.defaultDockForKind(dock_state, panel.kind),
-                    .first_use_ever,
-                );
+            var right_kinds: [3]workspace.PanelKind = undefined;
+            var right_count: usize = 0;
+            if (control_panel_ptr != null) {
+                right_kinds[right_count] = .Control;
+                right_count += 1;
             }
-            if (manager.focus_request_id != null and manager.focus_request_id.? == panel.id) {
-                zgui.setNextWindowFocus();
-                manager.focus_request_id = null;
+            if (editor_panel_ptr != null) {
+                right_kinds[right_count] = .CodeEditor;
+                right_count += 1;
+            }
+            if (tool_panel_ptr != null) {
+                right_kinds[right_count] = .ToolOutput;
+                right_count += 1;
             }
 
-            var open = true;
-            const label = zgui.formatZ("{s}##panel_{d}", .{ panel.title, panel.id });
-            var panel_flags = zgui.WindowFlags{};
-            if (panel.kind == .Chat) {
-                panel_flags.no_scrollbar = true;
-                panel_flags.no_scroll_with_mouse = true;
-                const min_width = components.composite.message_bubble.minPanelWidth();
-                const min_height: f32 = 360.0;
-                imgui_bridge.setNextWindowSizeConstraints(
-                    .{ min_width, min_height },
-                    .{ 10000.0, 10000.0 },
-                );
+            const pad = t.spacing.sm;
+            const gap = t.spacing.sm;
+            const inner_min = .{ dock_pos[0] + pad, dock_pos[1] + pad };
+            const inner_size = .{
+                @max(1.0, dock_size[0] - pad * 2.0),
+                @max(1.0, dock_size[1] - pad * 2.0),
+            };
+            const viewport = draw_context.Rect.fromMinSize(inner_min, inner_size);
+            const layout_state = &manager.workspace.custom_layout;
+            const min_left = @max(
+                components.composite.message_bubble.minPanelWidth(),
+                layout_state.min_left_width,
+            );
+            const min_right = layout_state.min_right_width;
+            const available = @max(1.0, inner_size[0] - gap);
+            var left_width = available * layout_state.left_ratio;
+            left_width = std.math.clamp(left_width, min_left, @max(min_left, available - min_right));
+            if (available < min_left + min_right) {
+                left_width = @max(1.0, available - min_right);
             }
-            if (zgui.begin(label, .{ .popen = &open, .flags = panel_flags })) {
-                switch (panel.kind) {
-                    .Chat => {
-                        var agent_id = panel.data.Chat.agent_id;
-                        if (agent_id == null) {
-                            if (panel.data.Chat.session_key) |session_key| {
-                                if (session_keys.parse(session_key)) |parts| {
-                                    panel.data.Chat.agent_id = allocator.dupe(u8, parts.agent_id) catch panel.data.Chat.agent_id;
-                                    agent_id = panel.data.Chat.agent_id;
-                                    manager.workspace.markDirty();
-                                }
-                            }
-                        }
+            const left_ratio = if (available > 0.0) left_width / available else layout_state.left_ratio;
 
-                        var resolved_session_key = panel.data.Chat.session_key;
-                        if (resolved_session_key == null and agent_id != null) {
-                            if (registry.find(agent_id.?)) |agent| {
-                                if (agent.default_session_key) |default_key| {
-                                    resolved_session_key = default_key;
-                                }
-                            }
-                        }
-                        if (resolved_session_key == null) {
-                            if (ctx.current_session) |current| {
-                                resolved_session_key = current;
-                                if (panel.data.Chat.session_key == null) {
-                                    panel.data.Chat.session_key = allocator.dupe(u8, current) catch panel.data.Chat.session_key;
-                                    manager.workspace.markDirty();
-                                }
-                                if (agent_id == null) {
-                                    if (session_keys.parse(current)) |parts| {
-                                        panel.data.Chat.agent_id = allocator.dupe(u8, parts.agent_id) catch panel.data.Chat.agent_id;
-                                        agent_id = panel.data.Chat.agent_id;
-                                        manager.workspace.markDirty();
-                                    }
-                                }
-                            }
-                        }
-
-                        const agent_info = resolveAgentInfo(registry, agent_id);
-                        const session_label = if (resolved_session_key) |session_key|
-                            resolveSessionLabel(ctx.sessions.items, session_key)
-                        else
-                            null;
-
-                        const session_state = if (resolved_session_key) |session_key|
-                            ctx.getOrCreateSessionState(session_key) catch null
-                        else
-                            null;
-
-                        const chat_action = chat_panel.draw(
-                            allocator,
-                            &panel.data.Chat,
-                            resolved_session_key,
-                            session_state,
-                            agent_info.icon,
-                            agent_info.name,
-                            session_label,
-                            inbox,
-                        );
-                        if (chat_action.send_message) |message| {
-                            if (resolved_session_key) |session_key| {
-                                const key_copy = allocator.dupe(u8, session_key) catch null;
-                                if (key_copy) |owned| {
-                                    action.send_message = .{ .session_key = owned, .message = message };
-                                } else {
-                                    allocator.free(message);
-                                }
-                            } else {
-                                allocator.free(message);
-                            }
-                        }
-
-                        panel_session_key = resolved_session_key;
-                        panel_agent_id = agent_id;
-                    },
-                    .CodeEditor => {
-                        if (code_editor_panel.draw(panel, allocator)) {
-                            manager.workspace.markDirty();
-                        }
-                    },
-                    .ToolOutput => {
-                        tool_output_panel.draw(panel, allocator);
-                    },
-                    .Control => {
-                        const control_action = control_panel.draw(
-                            allocator,
-                            ctx,
-                            cfg,
-                            registry,
-                            is_connected,
-                            app_version,
-                            &panel.data.Control,
-                        );
-                        action.connect = control_action.connect;
-                        action.disconnect = control_action.disconnect;
-                        action.save_config = control_action.save_config;
-                        action.clear_saved = control_action.clear_saved;
-                        action.config_updated = control_action.config_updated;
-                        action.refresh_sessions = control_action.refresh_sessions;
-                        action.new_session = control_action.new_session;
-                        action.new_chat_agent_id = control_action.new_chat_agent_id;
-                        action.open_session = control_action.open_session;
-                        action.set_default_session = control_action.set_default_session;
-                        action.delete_session = control_action.delete_session;
-                        action.add_agent = control_action.add_agent;
-                        action.remove_agent_id = control_action.remove_agent_id;
-                        action.check_updates = control_action.check_updates;
-                        action.open_release = control_action.open_release;
-                        action.download_update = control_action.download_update;
-                        action.open_download = control_action.open_download;
-                        action.install_update = control_action.install_update;
-                        action.refresh_nodes = control_action.refresh_nodes;
-                        action.select_node = control_action.select_node;
-                        action.invoke_node = control_action.invoke_node;
-                        action.describe_node = control_action.describe_node;
-                        action.resolve_approval = control_action.resolve_approval;
-                        action.clear_node_describe = control_action.clear_node_describe;
-                        action.clear_node_result = control_action.clear_node_result;
-                        action.clear_operator_notice = control_action.clear_operator_notice;
-                        if (control_action.open_attachment) |attachment| {
-                            pending_attachment = attachment;
-                        }
-                        replaceOwnedSlice(allocator, &action.select_session, control_action.select_session);
-                        replaceOwnedSlice(allocator, &action.open_url, control_action.open_url);
-                    },
+            var layout_tree = custom_layout.LayoutTree{};
+            layout_tree.root = custom_layout.buildTwoColumnStacked(
+                &layout_tree,
+                if (chat_panel_ptr != null) workspace.PanelKind.Chat else null,
+                right_kinds[0..right_count],
+                left_ratio,
+                gap,
+            );
+            const layout_result = custom_layout.computeRects(&layout_tree, viewport);
+            var left_rect: ?draw_context.Rect = null;
+            for (layout_result.slice()) |panel_rect| {
+                if (panel_rect.kind == .Chat) {
+                    left_rect = panel_rect.rect;
+                    break;
                 }
             }
 
-            const dock_id = imgui_bridge.getWindowDockId();
-            if (dock_id != 0 and dock_id != panel.state.dock_node) {
-                panel.state.dock_node = dock_id;
-                manager.workspace.markDirty();
-            } else {
-                panel.state.dock_node = dock_id;
-            }
-            panel.state.is_focused = zgui.isWindowFocused(zgui.FocusedFlags.root_and_child_windows);
-            if (panel.state.is_focused) {
-                if (manager.workspace.focused_panel_id == null or manager.workspace.focused_panel_id.? != panel.id) {
-                    manager.workspace.focused_panel_id = panel.id;
+            for (layout_result.slice()) |panel_rect| {
+                const panel_ptr = switch (panel_rect.kind) {
+                    .Chat => chat_panel_ptr,
+                    .Control => control_panel_ptr,
+                    .CodeEditor => editor_panel_ptr,
+                    .ToolOutput => tool_panel_ptr,
+                } orelse continue;
+
+                if (manager.focus_request_id != null and manager.focus_request_id.? == panel_ptr.id) {
+                    zgui.setNextWindowFocus();
+                    manager.focus_request_id = null;
+                }
+
+                var open = true;
+                const label = zgui.formatZ("{s}##panel_{d}", .{ panel_ptr.title, panel_ptr.id });
+                var panel_flags = zgui.WindowFlags{
+                    .no_move = true,
+                    .no_resize = true,
+                    .no_saved_settings = true,
+                    .no_docking = true,
+                    .no_collapse = true,
+                };
+                if (panel_ptr.kind == .Chat) {
+                    panel_flags.no_scrollbar = true;
+                    panel_flags.no_scroll_with_mouse = true;
+                }
+
+                var panel_result: PanelDrawResult = .{};
+                if (panel_host.beginPanelInRect(label, panel_rect.rect, panel_flags, &open)) {
+                    panel_result = drawPanelContents(
+                        allocator,
+                        ctx,
+                        cfg,
+                        registry,
+                        is_connected,
+                        app_version,
+                        panel_ptr,
+                        inbox,
+                        manager,
+                        &action,
+                        &pending_attachment,
+                    );
+                }
+                zgui.end();
+
+                if (panel_ptr.state.dock_node != 0) {
+                    panel_ptr.state.dock_node = 0;
                     manager.workspace.markDirty();
                 }
-                if (panel_session_key != null) {
-                    focused_session_key = panel_session_key;
+                panel_ptr.state.is_focused = zgui.isWindowFocused(zgui.FocusedFlags.root_and_child_windows);
+                if (panel_ptr.state.is_focused) {
+                    if (manager.workspace.focused_panel_id == null or manager.workspace.focused_panel_id.? != panel_ptr.id) {
+                        manager.workspace.focused_panel_id = panel_ptr.id;
+                        manager.workspace.markDirty();
+                    }
+                    if (panel_result.session_key != null) {
+                        focused_session_key = panel_result.session_key;
+                    }
+                    if (panel_result.agent_id != null) {
+                        focused_agent_id = panel_result.agent_id;
+                    }
                 }
-                if (panel_agent_id != null) {
-                    focused_agent_id = panel_agent_id;
+
+                if (!open) {
+                    closed_panels.append(panel_ptr.id);
                 }
             }
 
-            zgui.end();
-
-            if (!open) {
-                _ = manager.closePanel(panel.id);
-                continue;
+            if (left_rect != null and right_count > 0) {
+                const splitter_width: f32 = @max(2.0, @min(gap, 8.0));
+                const split_rect = draw_context.Rect.fromMinSize(
+                    .{ left_rect.?.max[0], viewport.min[1] },
+                    .{ splitter_width, viewport.size()[1] },
+                );
+                if (split_rect.size()[0] > 0.0 and split_rect.size()[1] > 0.0) {
+                    var splitter_open = true;
+                    const splitter_flags = zgui.WindowFlags{
+                        .no_title_bar = true,
+                        .no_resize = true,
+                        .no_move = true,
+                        .no_saved_settings = true,
+                        .no_collapse = true,
+                        .no_scrollbar = true,
+                        .no_scroll_with_mouse = true,
+                        .no_background = true,
+                        .no_nav_focus = true,
+                    };
+                    const splitter_label = zgui.formatZ("##custom_layout_splitter", .{});
+                    if (panel_host.beginPanelInRect(splitter_label, split_rect, splitter_flags, &splitter_open)) {
+                        _ = zgui.invisibleButton(
+                            "##custom_layout_splitter_hit",
+                            .{ .w = split_rect.size()[0], .h = split_rect.size()[1] },
+                        );
+                        const hovered = zgui.isItemHovered(.{});
+                        const draw_list = zgui.getWindowDrawList();
+                        const color = if (hovered or zgui.isItemActive())
+                            zgui.colorConvertFloat4ToU32(t.colors.primary)
+                        else
+                            zgui.colorConvertFloat4ToU32(t.colors.divider);
+                        draw_list.addRectFilled(.{
+                            .pmin = split_rect.min,
+                            .pmax = split_rect.max,
+                            .col = color,
+                        });
+                        if (zgui.isItemHovered(.{})) {
+                            zgui.setMouseCursor(.resize_ew);
+                        }
+                        if (zgui.isItemActive()) {
+                            const drag = zgui.getMouseDragDelta(.left, .{ .lock_threshold = 0.0 });
+                            if (drag[0] != 0.0) {
+                                const current = left_rect.?.size()[0];
+                                const max_left = @max(min_left, available - min_right);
+                                const next_left = std.math.clamp(current + drag[0], min_left, max_left);
+                                if (available > 0.0) {
+                                    layout_state.left_ratio = next_left / available;
+                                    manager.workspace.markDirty();
+                                }
+                                zgui.resetMouseDragDelta(.left);
+                            }
+                        }
+                    }
+                    zgui.end();
+                }
             }
 
-            index += 1;
+            for (closed_panels.slice()) |panel_id| {
+                _ = manager.closePanel(panel_id);
+            }
+        } else {
+            const dockspace_id = zgui.dockSpace("MainDockSpace", dock_size, .{});
+            dock_layout.ensureDockLayout(dock_state, &manager.workspace, dockspace_id, dock_pos, dock_size);
+
+            var index: usize = 0;
+            while (index < manager.workspace.panels.items.len) {
+                var panel = &manager.workspace.panels.items[index];
+                var panel_session_key: ?[]const u8 = null;
+                var panel_agent_id: ?[]const u8 = null;
+                if (panel.state.dock_node == 0 and dock_state.dockspace_id != 0) {
+                    imgui_bridge.setNextWindowDockId(
+                        dock_layout.defaultDockForKind(dock_state, panel.kind),
+                        .first_use_ever,
+                    );
+                }
+                if (manager.focus_request_id != null and manager.focus_request_id.? == panel.id) {
+                    zgui.setNextWindowFocus();
+                    manager.focus_request_id = null;
+                }
+
+                var open = true;
+                const label = zgui.formatZ("{s}##panel_{d}", .{ panel.title, panel.id });
+                var panel_flags = zgui.WindowFlags{};
+                if (panel.kind == .Chat) {
+                    panel_flags.no_scrollbar = true;
+                    panel_flags.no_scroll_with_mouse = true;
+                    const min_width = components.composite.message_bubble.minPanelWidth();
+                    const min_height: f32 = 360.0;
+                    imgui_bridge.setNextWindowSizeConstraints(
+                        .{ min_width, min_height },
+                        .{ 10000.0, 10000.0 },
+                    );
+                }
+                if (zgui.begin(label, .{ .popen = &open, .flags = panel_flags })) {
+                    const panel_result = drawPanelContents(
+                        allocator,
+                        ctx,
+                        cfg,
+                        registry,
+                        is_connected,
+                        app_version,
+                        panel,
+                        inbox,
+                        manager,
+                        &action,
+                        &pending_attachment,
+                    );
+                    panel_session_key = panel_result.session_key;
+                    panel_agent_id = panel_result.agent_id;
+                }
+
+                const dock_id = imgui_bridge.getWindowDockId();
+                if (dock_id != 0 and dock_id != panel.state.dock_node) {
+                    panel.state.dock_node = dock_id;
+                    manager.workspace.markDirty();
+                } else {
+                    panel.state.dock_node = dock_id;
+                }
+                panel.state.is_focused = zgui.isWindowFocused(zgui.FocusedFlags.root_and_child_windows);
+                if (panel.state.is_focused) {
+                    if (manager.workspace.focused_panel_id == null or manager.workspace.focused_panel_id.? != panel.id) {
+                        manager.workspace.focused_panel_id = panel.id;
+                        manager.workspace.markDirty();
+                    }
+                    if (panel_session_key != null) {
+                        focused_session_key = panel_session_key;
+                    }
+                    if (panel_agent_id != null) {
+                        focused_agent_id = panel_agent_id;
+                    }
+                }
+
+                zgui.end();
+
+                if (!open) {
+                    _ = manager.closePanel(panel.id);
+                    continue;
+                }
+
+                index += 1;
+            }
         }
 
         if (pending_attachment) |attachment| {
@@ -376,6 +483,8 @@ pub fn draw(
         }
 
         syncAttachmentFetches(allocator, manager);
+
+        zgui.setCursorPos(.{ 0.0, dock_height });
 
         var status_agent: ?[]const u8 = null;
         var status_session: ?[]const u8 = null;
@@ -434,6 +543,170 @@ pub fn draw(
     return action;
 }
 
+fn drawPanelContents(
+    allocator: std.mem.Allocator,
+    ctx: *state.ClientContext,
+    cfg: *config.Config,
+    registry: *agent_registry.AgentRegistry,
+    is_connected: bool,
+    app_version: []const u8,
+    panel: *workspace.Panel,
+    inbox: *ui_command_inbox.UiCommandInbox,
+    manager: *panel_manager.PanelManager,
+    action: *UiAction,
+    pending_attachment: *?sessions_panel.AttachmentOpen,
+) PanelDrawResult {
+    var result: PanelDrawResult = .{};
+    switch (panel.kind) {
+        .Chat => {
+            var agent_id = panel.data.Chat.agent_id;
+            if (agent_id == null) {
+                if (panel.data.Chat.session_key) |session_key| {
+                    if (session_keys.parse(session_key)) |parts| {
+                        panel.data.Chat.agent_id = allocator.dupe(u8, parts.agent_id) catch panel.data.Chat.agent_id;
+                        agent_id = panel.data.Chat.agent_id;
+                        manager.workspace.markDirty();
+                    }
+                }
+            }
+
+            var resolved_session_key = panel.data.Chat.session_key;
+            if (resolved_session_key == null and agent_id != null) {
+                if (registry.find(agent_id.?)) |agent| {
+                    if (agent.default_session_key) |default_key| {
+                        resolved_session_key = default_key;
+                    }
+                }
+            }
+            if (resolved_session_key == null) {
+                if (ctx.current_session) |current| {
+                    resolved_session_key = current;
+                    if (panel.data.Chat.session_key == null) {
+                        panel.data.Chat.session_key = allocator.dupe(u8, current) catch panel.data.Chat.session_key;
+                        manager.workspace.markDirty();
+                    }
+                    if (agent_id == null) {
+                        if (session_keys.parse(current)) |parts| {
+                            panel.data.Chat.agent_id = allocator.dupe(u8, parts.agent_id) catch panel.data.Chat.agent_id;
+                            agent_id = panel.data.Chat.agent_id;
+                            manager.workspace.markDirty();
+                        }
+                    }
+                }
+            }
+
+            const agent_info = resolveAgentInfo(registry, agent_id);
+            const session_label = if (resolved_session_key) |session_key|
+                resolveSessionLabel(ctx.sessions.items, session_key)
+            else
+                null;
+
+            const session_state = if (resolved_session_key) |session_key|
+                ctx.getOrCreateSessionState(session_key) catch null
+            else
+                null;
+
+            const chat_action = chat_panel.draw(
+                allocator,
+                &panel.data.Chat,
+                resolved_session_key,
+                session_state,
+                agent_info.icon,
+                agent_info.name,
+                session_label,
+                inbox,
+            );
+            if (chat_action.send_message) |message| {
+                if (resolved_session_key) |session_key| {
+                    const key_copy = allocator.dupe(u8, session_key) catch null;
+                    if (key_copy) |owned| {
+                        action.send_message = .{ .session_key = owned, .message = message };
+                    } else {
+                        allocator.free(message);
+                    }
+                } else {
+                    allocator.free(message);
+                }
+            }
+
+            result.session_key = resolved_session_key;
+            result.agent_id = agent_id;
+        },
+        .CodeEditor => {
+            if (code_editor_panel.draw(panel, allocator)) {
+                manager.workspace.markDirty();
+            }
+        },
+        .ToolOutput => {
+            tool_output_panel.draw(panel, allocator);
+        },
+        .Control => {
+            const control_action = control_panel.draw(
+                allocator,
+                ctx,
+                cfg,
+                registry,
+                is_connected,
+                app_version,
+                &panel.data.Control,
+            );
+            action.connect = control_action.connect;
+            action.disconnect = control_action.disconnect;
+            action.save_config = control_action.save_config;
+            action.clear_saved = control_action.clear_saved;
+            action.config_updated = control_action.config_updated;
+            action.refresh_sessions = control_action.refresh_sessions;
+            action.new_session = control_action.new_session;
+            action.new_chat_agent_id = control_action.new_chat_agent_id;
+            action.open_session = control_action.open_session;
+            action.set_default_session = control_action.set_default_session;
+            action.delete_session = control_action.delete_session;
+            action.add_agent = control_action.add_agent;
+            action.remove_agent_id = control_action.remove_agent_id;
+            action.check_updates = control_action.check_updates;
+            action.open_release = control_action.open_release;
+            action.download_update = control_action.download_update;
+            action.open_download = control_action.open_download;
+            action.install_update = control_action.install_update;
+            action.refresh_nodes = control_action.refresh_nodes;
+            action.select_node = control_action.select_node;
+            action.invoke_node = control_action.invoke_node;
+            action.describe_node = control_action.describe_node;
+            action.resolve_approval = control_action.resolve_approval;
+            action.clear_node_describe = control_action.clear_node_describe;
+            action.clear_node_result = control_action.clear_node_result;
+            action.clear_operator_notice = control_action.clear_operator_notice;
+            if (control_action.open_attachment) |attachment| {
+                pending_attachment.* = attachment;
+            }
+            replaceOwnedSlice(allocator, &action.select_session, control_action.select_session);
+            replaceOwnedSlice(allocator, &action.open_url, control_action.open_url);
+        },
+    }
+
+    return result;
+}
+
+fn selectPanelForKind(
+    manager: *panel_manager.PanelManager,
+    kind: workspace.PanelKind,
+) ?*workspace.Panel {
+    if (manager.focus_request_id) |panel_id| {
+        for (manager.workspace.panels.items) |*panel| {
+            if (panel.id == panel_id and panel.kind == kind) return panel;
+        }
+    }
+    if (manager.workspace.focused_panel_id) |panel_id| {
+        for (manager.workspace.panels.items) |*panel| {
+            if (panel.id == panel_id and panel.kind == kind) return panel;
+        }
+    }
+    for (manager.workspace.panels.items) |*panel| {
+        if (panel.kind == kind) return panel;
+    }
+    return null;
+}
+
 fn replaceOwnedSlice(allocator: std.mem.Allocator, target: *?[]u8, value: ?[]u8) void {
     if (value == null) return;
     if (target.*) |existing| {
@@ -468,6 +741,15 @@ fn resolveSessionLabel(sessions: []const types.Session, key: []const u8) ?[]cons
 
 pub fn syncSettings(cfg: config.Config) void {
     @import("settings_view.zig").syncFromConfig(cfg);
+}
+
+pub fn deinit(allocator: std.mem.Allocator) void {
+    chat_view.deinitGlobals(allocator);
+    for (pending_attachment_fetches.items) |*entry| {
+        freePendingAttachment(allocator, entry);
+    }
+    pending_attachment_fetches.deinit(allocator);
+    pending_attachment_fetches = .empty;
 }
 
 fn openAttachmentInEditor(

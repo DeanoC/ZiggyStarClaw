@@ -11,6 +11,7 @@ const workspace = @import("ui/workspace.zig");
 const ui_command_inbox = @import("ui/ui_command_inbox.zig");
 const dock_layout = @import("ui/dock_layout.zig");
 const image_cache = @import("ui/image_cache.zig");
+const input_router = @import("ui/input/input_router.zig");
 const client_state = @import("client/state.zig");
 const agent_registry = @import("client/agent_registry.zig");
 const session_keys = @import("client/session_keys.zig");
@@ -210,8 +211,10 @@ fn deinitApp() void {
     ImGui_ImplGlfw_Shutdown();
     image_cache.deinit();
     zgui.deinit();
+    ui.deinit(allocator);
     manager.deinit();
     command_inbox.deinit(allocator);
+    input_router.deinit(allocator);
     ctx.deinit();
     saveAgentRegistryToStorage();
     agents.deinit(allocator);

@@ -10,6 +10,7 @@ const workspace_store = @import("ui/workspace_store.zig");
 const workspace = @import("ui/workspace.zig");
 const ui_command_inbox = @import("ui/ui_command_inbox.zig");
 const dock_layout = @import("ui/dock_layout.zig");
+const input_router = @import("ui/input/input_router.zig");
 const image_cache = @import("ui/image_cache.zig");
 const client_state = @import("client/state.zig");
 const agent_registry = @import("client/agent_registry.zig");
@@ -896,8 +897,10 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
     };
     var manager = panel_manager.PanelManager.init(allocator, workspace_state);
     defer manager.deinit();
+    defer ui.deinit(allocator);
     var command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);
     defer command_inbox.deinit(allocator);
+    defer input_router.deinit(allocator);
     var dock_state = dock_layout.DockState{};
     var cfg = config.loadOrDefault(allocator, "ziggystarclaw_config.json") catch |err| blk: {
         logger.warn("Failed to load config: {}", .{err});

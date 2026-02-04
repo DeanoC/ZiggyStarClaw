@@ -1114,6 +1114,11 @@ fn nextCharIndex(text: []const u8, index: usize) usize {
 }
 
 var chat_buffer: std.ArrayList(u8) = .empty;
+
+pub fn deinitGlobals(allocator: std.mem.Allocator) void {
+    chat_buffer.deinit(allocator);
+    chat_buffer = .empty;
+}
 fn ensureChatBuffer(
     allocator: std.mem.Allocator,
     messages: []const types.ChatMessage,

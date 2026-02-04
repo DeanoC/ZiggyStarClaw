@@ -31,3 +31,10 @@ pub fn getBackend() input_backend.Backend {
 pub fn getQueue() *input_state.InputQueue {
     return &global_queue.?;
 }
+
+pub fn deinit(allocator: std.mem.Allocator) void {
+    if (global_queue) |*queue| {
+        queue.deinit(allocator);
+        global_queue = null;
+    }
+}
