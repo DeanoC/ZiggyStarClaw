@@ -282,12 +282,11 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
 
     const Ctx = struct {
         cfg: *UnifiedConfig,
-        node_token: []const u8,
         node_ctx: *NodeContext,
         caps: []const []const u8,
         commands: []const []const u8,
     };
-    var cb_ctx = Ctx{ .cfg = &cfg, .node_token = node_token, .node_ctx = &node_ctx, .caps = caps, .commands = commands };
+    var cb_ctx = Ctx{ .cfg = &cfg, .node_ctx = &node_ctx, .caps = caps, .commands = commands };
     conn.user_ctx = @ptrCast(&cb_ctx);
 
     conn.onConfigureClient = struct {
@@ -302,8 +301,10 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
             });
             client.setConnectNodeMetadata(.{ .caps = ctx.caps, .commands = ctx.commands });
             client.setDeviceIdentityPath(ctx.cfg.node.deviceIdentityPath);
-            client.setConnectAuthToken(ctx.node_token);
-            client.setDeviceAuthToken(ctx.node_token);
+            // Use the connection manager's current token. This may be refreshed at runtime
+            // when the gateway issues a new device token.
+            client.setConnectAuthToken(cm.token);
+            client.setDeviceAuthToken(cm.token);
         }
     }.cb;
 
@@ -356,7 +357,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
 
         if (payload) |text| {
             defer allocator.free(text);
-            handleNodeMessage(allocator, &conn.ws_client, &node_ctx, &router, config_path, &cfg, text) catch |err| {
+            handleNodeMessage(allocator, &conn.ws_client, &conn, &node_ctx, &router, config_path, &cfg, text) catch |err| {
                 logger.err("Node message handling failed: {s}", .{@errorName(err)});
             };
         } else {
@@ -423,6 +424,7 @@ fn sendNodeConnectRequest(
 fn handleNodeMessage(
     allocator: std.mem.Allocator,
     ws_client: anytype,
+    conn: ?*SingleThreadConnectionManager,
     node_ctx: *NodeContext,
     router: *CommandRouter,
     cfg_path: []const u8,
@@ -482,9 +484,17 @@ fn handleNodeMessage(
                                         logger.info("Device token received.", .{});
 
                                         // Persist device token to config.json (single source of truth).
+                                        // Also refresh the connection manager token so reconnects use the updated value.
                                         if (!std.mem.eql(u8, cfg.node.nodeToken, token.string)) {
                                             allocator.free(cfg.node.nodeToken);
                                             cfg.node.nodeToken = try allocator.dupe(u8, token.string);
+
+                                            if (conn) |cm| {
+                                                cm.setToken(cfg.node.nodeToken) catch |err| {
+                                                    logger.warn("Failed to update connection token: {s}", .{@errorName(err)});
+                                                };
+                                            }
+
                                             saveUpdatedNodeToken(allocator, cfg_path, token.string) catch |err| {
                                                 logger.warn("Failed to persist node token to config: {s}", .{@errorName(err)});
                                             };
