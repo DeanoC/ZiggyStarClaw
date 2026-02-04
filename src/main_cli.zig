@@ -16,6 +16,7 @@ const build_options = @import("build_options");
 // Node mode support is cross-platform (Windows included).
 const main_node = @import("main_node.zig");
 const win_service = @import("windows/service.zig");
+const linux_service = @import("linux/systemd_service.zig");
 const node_register = @import("node_register.zig");
 const unified_config = @import("unified_config.zig");
 
@@ -23,6 +24,35 @@ pub const std_options = std.Options{
     .logFn = cliLogFn,
     .log_level = .debug,
 };
+
+fn linuxHomeDirForUser(allocator: std.mem.Allocator, username: []const u8) ![]u8 {
+    // Minimal /etc/passwd parser to find a user's home directory.
+    // Format: name:passwd:uid:gid:gecos:home:shell
+    const f = std.fs.cwd().openFile("/etc/passwd", .{}) catch |err| return err;
+    defer f.close();
+
+    const data = try f.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(data);
+
+    var it = std.mem.splitScalar(u8, data, '\n');
+    while (it.next()) |line| {
+        if (line.len == 0 or line[0] == '#') continue;
+        // Fast check for "username:"
+        if (line.len <= username.len or line[username.len] != ':' or !std.mem.startsWith(u8, line, username)) continue;
+
+        var fields = std.mem.splitScalar(u8, line, ':');
+        _ = fields.next(); // name
+        _ = fields.next(); // passwd
+        _ = fields.next(); // uid
+        _ = fields.next(); // gid
+        _ = fields.next(); // gecos
+        const home = fields.next() orelse return error.InvalidArguments;
+        if (home.len == 0) return error.InvalidArguments;
+        return allocator.dupe(u8, home);
+    }
+
+    return error.FileNotFound;
+}
 
 var cli_log_level: std.log.Level = .warn;
 
@@ -74,14 +104,14 @@ const usage =
     \\  --wait-for-approval      With --node-register: keep retrying until approved
     \\  --operator-mode          Run as an operator client (pair/approve, list nodes, invoke)
     \\
-    \\Windows "always-on" (Task Scheduler)
-    \\  --node-service-install    Install a scheduled task to run node-mode automatically
-    \\  --node-service-uninstall  Uninstall the scheduled task
-    \\  --node-service-start      Start the scheduled task now
-    \\  --node-service-stop       Stop the running task
-    \\  --node-service-status     Show task status
+    \\Node service helpers (Windows Task Scheduler / Linux systemd)
+    \\  --node-service-install    Install and enable node-mode background service
+    \\  --node-service-uninstall  Uninstall the background service
+    \\  --node-service-start      Start the service now
+    \\  --node-service-stop       Stop the service
+    \\  --node-service-status     Show service status
     \\  --node-service-mode <m>   onlogon|onstart (default: onlogon)
-    \\  --node-service-name <n>   Override task name (default: ZiggyStarClaw Node)
+    \\  --node-service-name <n>   Override service name (default: ZiggyStarClaw Node)
     \\
     \\  --save-config            Save --url, --token, --update-url, --use-session, --use-node to config file
     \\  -h, --help               Show help
@@ -126,6 +156,7 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     var config_path: []const u8 = "ziggystarclaw_config.json";
+    var config_path_set = false;
     var override_url: ?[]const u8 = null;
     var override_token: ?[]const u8 = null;
     var override_update_url: ?[]const u8 = null;
@@ -192,6 +223,7 @@ pub fn main() !void {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             config_path = args[i];
+            config_path_set = true;
         } else if (std.mem.eql(u8, arg, "--url")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
@@ -371,15 +403,103 @@ pub fn main() !void {
         return;
     }
 
-    // Windows node service helpers (Task Scheduler)
+    // Node service helpers (Windows Task Scheduler, Linux systemd)
     if (node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status) {
-        if (builtin.os.tag != .windows) {
-            logger.err("node service helpers are only supported on Windows", .{});
-            return error.InvalidArguments;
+        // For node services, prefer the explicit --config path if provided; otherwise
+        // use the unified node config default path.
+        //
+        // IMPORTANT (Linux/system scope): when invoked via sudo with --node-service-mode onstart,
+        // HOME typically points at /root. But the generated systemd unit runs as SUDO_USER.
+        // In that case we must derive the default config path from the target user's home,
+        // not root's, otherwise the service will fail to read its config.
+        const node_cfg_path = if (config_path_set) blk: {
+            break :blk try allocator.dupe(u8, config_path);
+        } else if (builtin.os.tag == .linux and node_service_mode == .onstart and std.posix.geteuid() == 0) blk: {
+            const sudo_user = std.process.getEnvVarOwned(allocator, "SUDO_USER") catch null;
+            if (sudo_user) |u| {
+                defer allocator.free(u);
+                if (linuxHomeDirForUser(allocator, u)) |home| {
+                    defer allocator.free(home);
+                    break :blk try std.fs.path.join(allocator, &.{ home, ".config", "ziggystarclaw", "config.json" });
+                } else |_| {}
+            }
+            break :blk try unified_config.defaultConfigPath(allocator);
+        } else blk: {
+            break :blk try unified_config.defaultConfigPath(allocator);
+        };
+        defer allocator.free(node_cfg_path);
+
+        // If the config doesn't exist yet and the user provided --url/--token, bootstrap it
+        // non-interactively so service install can be scripted.
+        const cfg_exists = blk: {
+            std.fs.cwd().access(node_cfg_path, .{}) catch |err| switch (err) {
+                error.FileNotFound => break :blk false,
+                else => return err,
+            };
+            break :blk true;
+        };
+        if (!cfg_exists) {
+            if (override_url != null and override_token != null) {
+                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token.?);
+            }
         }
 
-        const node_cfg_path = try unified_config.defaultConfigPath(allocator);
-        defer allocator.free(node_cfg_path);
+        if (builtin.os.tag == .linux) {
+            if (node_service_install) {
+                // Ensure config has a valid node token/id before enabling the service.
+                try node_register.run(allocator, node_cfg_path, override_insecure orelse false, true, null);
+
+                const unit = linux_service.installService(allocator, node_cfg_path, node_service_mode, node_service_name) catch |err| {
+                    if (err == linux_service.ServiceError.AccessDenied) {
+                        logger.err("systemd install failed: access denied. If using --node-service-mode onstart, re-run with sudo.", .{});
+                        return;
+                    }
+                    return err;
+                };
+                defer allocator.free(unit);
+
+                _ = std.fs.File.stdout().write("Installed systemd service for node-mode.\n") catch {};
+                if (node_service_mode == .onlogon) {
+                    _ = std.fs.File.stdout().write("Logs: journalctl --user -u ") catch {};
+                } else {
+                    _ = std.fs.File.stdout().write("Logs: sudo journalctl -u ") catch {};
+                }
+                _ = std.fs.File.stdout().write(unit) catch {};
+                _ = std.fs.File.stdout().write("\n") catch {};
+                return;
+            }
+            if (node_service_uninstall) {
+                const unit = linux_service.uninstallService(allocator, node_service_mode, node_service_name) catch |err| {
+                    if (err == linux_service.ServiceError.AccessDenied) {
+                        logger.err("systemd uninstall failed: access denied. If using --node-service-mode onstart, re-run with sudo.", .{});
+                        return;
+                    }
+                    return err;
+                };
+                defer allocator.free(unit);
+                _ = std.fs.File.stdout().write("Uninstalled systemd service for node-mode.\n") catch {};
+                return;
+            }
+            if (node_service_start) {
+                try linux_service.startService(allocator, node_service_mode, node_service_name);
+                _ = std.fs.File.stdout().write("Started systemd service.\n") catch {};
+                return;
+            }
+            if (node_service_stop) {
+                try linux_service.stopService(allocator, node_service_mode, node_service_name);
+                _ = std.fs.File.stdout().write("Stopped systemd service.\n") catch {};
+                return;
+            }
+            if (node_service_status) {
+                try linux_service.statusService(allocator, node_service_mode, node_service_name);
+                return;
+            }
+        }
+
+        if (builtin.os.tag != .windows) {
+            logger.err("node service helpers are only supported on Windows and Linux", .{});
+            return error.InvalidArguments;
+        }
 
         if (node_service_install) {
             // Ensure the node is registered/persisted in the SAME config.json the service will use.
