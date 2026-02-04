@@ -59,7 +59,7 @@ pub const ConnectionManager = struct {
     
     // State
     state: ConnectionState = .disconnected,
-    ws_client: ?websocket_client.WebSocketClient = null,
+    ws_client: ?*websocket_client.WebSocketClient = null,
     reconnect_attempt: u32 = 0,
     
     // Strategy
@@ -147,12 +147,14 @@ pub const ConnectionManager = struct {
         logger.info("Connecting to {s}...", .{self.ws_url});
         
         // Create new client
-        if (self.ws_client) |*client| {
+        if (self.ws_client) |client| {
             client.deinit();
+            self.allocator.destroy(client);
             self.ws_client = null;
         }
-        
-        var client = websocket_client.WebSocketClient.init(
+
+        const client = try self.allocator.create(websocket_client.WebSocketClient);
+        client.* = websocket_client.WebSocketClient.init(
             self.allocator,
             self.ws_url,
             self.device_token,
@@ -160,14 +162,16 @@ pub const ConnectionManager = struct {
             null,
         );
         client.setReadTimeout(15000);
-        
+
         client.connect() catch |err| {
             logger.err("Connection failed: {s}", .{@errorName(err)});
+            client.deinit();
+            self.allocator.destroy(client);
             self.state = .disconnected;
             self.scheduleReconnect();
             return;
         };
-        
+
         self.ws_client = client;
         self.state = .connected;
         self.reconnect_attempt = 0;
@@ -184,8 +188,9 @@ pub const ConnectionManager = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         
-        if (self.ws_client) |*client| {
+        if (self.ws_client) |client| {
             client.deinit();
+            self.allocator.destroy(client);
             self.ws_client = null;
         }
         
@@ -255,21 +260,25 @@ pub const ConnectionManager = struct {
     fn receiveLoop(self: *ConnectionManager) void {
         while (self.running) {
             self.mutex.lock();
-            const client_opt = self.ws_client;
             const connected = self.state == .connected or self.state == .authenticated;
-            self.mutex.unlock();
-            
+            const client_opt = self.ws_client;
             if (!connected or client_opt == null) {
+                self.mutex.unlock();
                 std.Thread.sleep(100 * std.time.ns_per_ms);
                 continue;
             }
-            
-            var client = client_opt.?;
+
+            // Hold the mutex while receiving to prevent the client from being deinit'd concurrently.
+            // The read timeout bounds how long we can block here.
+            const client = client_opt.?;
+            client.poll() catch {};
             const payload = client.receive() catch |err| {
+                self.mutex.unlock();
                 logger.err("Receive error: {s}", .{@errorName(err)});
                 self.handleDisconnect();
                 continue;
             };
+            self.mutex.unlock();
             
             if (payload) |text| {
                 defer self.allocator.free(text);
@@ -295,7 +304,7 @@ pub const ConnectionManager = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         
-        if (self.ws_client) |*client| {
+        if (self.ws_client) |client| {
             try client.send(payload);
         } else {
             return error.NotConnected;
