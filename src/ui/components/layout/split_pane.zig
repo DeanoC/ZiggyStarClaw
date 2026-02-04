@@ -82,6 +82,9 @@ pub fn handleSplitter(args: Args, state: *SplitState) void {
         .vertical => .{ thickness, avail[1] },
         .horizontal => .{ avail[0], thickness },
     };
+    if (splitter_size[0] <= 0.0 or splitter_size[1] <= 0.0) {
+        return;
+    }
     const draw_list = zgui.getWindowDrawList();
     draw_list.addRectFilled(.{
         .pmin = cursor,

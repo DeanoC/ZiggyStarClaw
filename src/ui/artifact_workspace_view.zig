@@ -2,7 +2,11 @@ const std = @import("std");
 const zgui = @import("zgui");
 const theme = @import("theme.zig");
 const colors = @import("theme/colors.zig");
-const components = @import("components/components.zig");
+const draw_context = @import("draw_context.zig");
+const input_router = @import("input/input_router.zig");
+const input_state = @import("input/input_state.zig");
+const widgets = @import("widgets/widgets.zig");
+const text_editor = @import("widgets/text_editor.zig");
 const ui_systems = @import("ui_systems.zig");
 const undo_redo = @import("systems/undo_redo.zig");
 const systems = @import("systems/systems.zig");
@@ -13,9 +17,11 @@ const ArtifactTab = enum {
 };
 
 var active_tab: ArtifactTab = .preview;
+var preview_scroll_y: f32 = 0.0;
+var preview_scroll_max: f32 = 0.0;
+
+var editor_state: ?text_editor.TextEditor = null;
 var edit_initialized = false;
-var edit_buf: [4096:0]u8 = [_:0]u8{0} ** 4096;
-var edit_len: usize = 0;
 var undo_stack: ?undo_redo.UndoRedoStack(EditState) = null;
 
 const EditState = struct {
@@ -30,127 +36,138 @@ const ToolbarIcon = enum {
     expand,
 };
 
+const Line = struct {
+    start: usize,
+    end: usize,
+};
+
 pub fn draw() void {
-    const opened = zgui.beginChild("ArtifactWorkspaceView", .{ .h = 0.0, .child_flags = .{ .border = true } });
-    if (opened) {
-        const t = theme.activeTheme();
-        _ = components.layout.header_bar.begin(.{ .title = "Artifact Workspace", .subtitle = "Preview & Edit" });
-        components.layout.header_bar.end();
-
-        zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
-        if (drawTabToggle("Preview", active_tab == .preview)) {
-            active_tab = .preview;
-        }
-        zgui.sameLine(.{ .spacing = t.spacing.sm });
-        if (drawTabToggle("Edit", active_tab == .edit)) {
-            active_tab = .edit;
-        }
-
-        zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
-
-        if (components.layout.scroll_area.begin(.{ .id = "ArtifactWorkspaceContent", .border = false })) {
-            switch (active_tab) {
-                .preview => drawPreview(t),
-                .edit => drawEditor(),
-            }
-        }
-        components.layout.scroll_area.end();
-
-        zgui.separator();
-        zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
-        _ = drawToolbarIcon("toolbar_copy", .copy, t);
-        zgui.sameLine(.{ .spacing = t.spacing.sm });
-        if (drawToolbarIcon("toolbar_undo", .undo, t)) {
-            applyUndo();
-        }
-        zgui.sameLine(.{ .spacing = t.spacing.sm });
-        if (drawToolbarIcon("toolbar_redo", .redo, t)) {
-            applyRedo();
-        }
-        zgui.sameLine(.{ .spacing = t.spacing.sm });
-        _ = drawToolbarIcon("toolbar_expand", .expand, t);
+    const t = theme.activeTheme();
+    const panel_pos = zgui.getCursorScreenPos();
+    const panel_avail = zgui.getContentRegionAvail();
+    if (panel_avail[0] <= 0.0 or panel_avail[1] <= 0.0) {
+        return;
     }
-    zgui.endChild();
+    _ = zgui.invisibleButton("##artifact_workspace_canvas", .{ .w = panel_avail[0], .h = panel_avail[1] });
+
+    const panel_rect = draw_context.Rect.fromMinSize(panel_pos, .{ panel_avail[0], panel_avail[1] });
+    var dc = draw_context.DrawContext.init(std.heap.page_allocator, .{ .imgui = .{} }, t, panel_rect);
+    defer dc.deinit();
+
+    dc.drawRect(panel_rect, .{ .fill = t.colors.background });
+
+    const queue = input_router.getQueue();
+    const header = drawHeader(&dc, panel_rect);
+    const tabs_height = drawTabs(&dc, panel_rect, header.height, queue);
+
+    const toolbar_height = toolbarHeight(t);
+    const toolbar_rect = draw_context.Rect.fromMinSize(
+        .{ panel_rect.min[0], panel_rect.max[1] - toolbar_height },
+        .{ panel_rect.size()[0], toolbar_height },
+    );
+
+    const content_top = panel_rect.min[1] + header.height + tabs_height + t.spacing.sm;
+    const content_bottom = toolbar_rect.min[1] - t.spacing.sm;
+    const content_height = content_bottom - content_top;
+    if (content_height <= 0.0) {
+        drawToolbar(&dc, toolbar_rect, queue);
+        return;
+    }
+
+    const content_rect = draw_context.Rect.fromMinSize(
+        .{ panel_rect.min[0], content_top },
+        .{ panel_rect.size()[0], content_height },
+    );
+
+    switch (active_tab) {
+        .preview => drawPreview(&dc, content_rect, queue),
+        .edit => drawEditor(&dc, content_rect, queue),
+    }
+
+    drawToolbar(&dc, toolbar_rect, queue);
 }
 
-fn drawPreview(t: *const theme.Theme) void {
-    if (components.layout.card.begin(.{ .title = "Report Summary", .id = "artifact_summary" })) {
-        theme.push(.heading);
-        zgui.text("Quarterly Performance Overview", .{});
-        theme.pop();
-        zgui.textWrapped(
-            "This report summarizes sales performance, highlights key insights, and links supporting artifacts collected during the run.",
-            .{},
-        );
-    }
-    components.layout.card.end();
+fn drawHeader(dc: *draw_context.DrawContext, rect: draw_context.Rect) struct { height: f32 } {
+    const t = theme.activeTheme();
+    const top_pad = t.spacing.sm;
+    const gap = t.spacing.xs;
+    const left = rect.min[0] + t.spacing.md;
+    var cursor_y = rect.min[1] + top_pad;
 
-    zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
+    theme.push(.title);
+    const title_height = zgui.getTextLineHeightWithSpacing();
+    dc.drawText("Artifact Workspace", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
+    theme.pop();
 
-    if (components.layout.card.begin(.{ .title = "Key Insights", .id = "artifact_insights" })) {
-        zgui.bulletText("North America revenue is trending up 12% month-over-month.", .{});
-        zgui.bulletText("Top competitor share declined after feature launch.", .{});
-        zgui.bulletText("Pipeline risk concentrated in two enterprise accounts.", .{});
-    }
-    components.layout.card.end();
+    cursor_y += title_height + gap;
+    const subtitle_height = zgui.getTextLineHeightWithSpacing();
+    dc.drawText("Preview & Edit", .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
 
-    zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
-
-    if (components.layout.card.begin(.{ .title = "Sales Performance (Chart)", .id = "artifact_chart" })) {
-        zgui.textWrapped("Weekly sales performance", .{});
-        const draw_list = zgui.getWindowDrawList();
-        const cursor = zgui.getCursorScreenPos();
-        const size = zgui.getContentRegionAvail();
-        const height = @min(140.0, size[1]);
-        const width = size[0];
-        const bar_width = 18.0;
-        const gap = 10.0;
-        const base_y = cursor[1] + height;
-        const bar_color = zgui.colorConvertFloat4ToU32(theme.activeTheme().colors.primary);
-        var x = cursor[0];
-        const bars = [_]f32{ 0.4, 0.6, 0.3, 0.8, 0.5, 0.7 };
-        for (bars) |ratio| {
-            const bar_h = height * ratio;
-            draw_list.addRectFilled(.{
-                .pmin = .{ x, base_y - bar_h },
-                .pmax = .{ x + bar_width, base_y },
-                .col = bar_color,
-                .rounding = 3.0,
-            });
-            x += bar_width + gap;
-        }
-        const axis_color = zgui.colorConvertFloat4ToU32(theme.activeTheme().colors.border);
-        draw_list.addLine(.{
-            .p1 = .{ cursor[0], base_y },
-            .p2 = .{ cursor[0] + width, base_y },
-            .col = axis_color,
-            .thickness = 1.0,
-        });
-        draw_list.addLine(.{
-            .p1 = .{ cursor[0], cursor[1] },
-            .p2 = .{ cursor[0], base_y },
-            .col = axis_color,
-            .thickness = 1.0,
-        });
-        draw_list.addText(.{ cursor[0] + width - 36.0, base_y + 4.0 }, axis_color, "Week", .{});
-        draw_list.addText(.{ cursor[0] + 4.0, cursor[1] - 16.0 }, axis_color, "Sales", .{});
-        zgui.dummy(.{ .w = width, .h = height + 12.0 });
-
-        zgui.separator();
-        zgui.text("Competitor Analysis", .{});
-        zgui.sameLine(.{ .spacing = t.spacing.sm });
-        _ = drawTabToggle("Sales", true);
-        zgui.sameLine(.{ .spacing = t.spacing.sm });
-        _ = drawTabToggle("Dow", false);
-        zgui.sameLine(.{ .spacing = t.spacing.sm });
-        _ = drawTabToggle("Proclues", false);
-        zgui.sameLine(.{ .spacing = t.spacing.sm });
-        _ = drawTabToggle("Pemble", false);
-    }
-    components.layout.card.end();
+    const height = top_pad + title_height + gap + subtitle_height + top_pad;
+    return .{ .height = height };
 }
 
-fn drawEditor() void {
+fn drawTabs(
+    dc: *draw_context.DrawContext,
+    rect: draw_context.Rect,
+    header_height: f32,
+    queue: *input_state.InputQueue,
+) f32 {
+    const t = theme.activeTheme();
+    const line_height = zgui.getTextLineHeightWithSpacing();
+    const tab_height = line_height + t.spacing.xs * 2.0;
+
+    const y = rect.min[1] + header_height + t.spacing.sm;
+    var cursor_x = rect.min[0] + t.spacing.md;
+
+    const preview_label = "Preview";
+    const preview_width = tabWidth(dc, preview_label, t);
+    const preview_rect = draw_context.Rect.fromMinSize(.{ cursor_x, y }, .{ preview_width, tab_height });
+    if (drawTab(dc, preview_rect, preview_label, active_tab == .preview, queue)) {
+        active_tab = .preview;
+    }
+    cursor_x += preview_width + t.spacing.sm;
+
+    const edit_label = "Edit";
+    const edit_width = tabWidth(dc, edit_label, t);
+    const edit_rect = draw_context.Rect.fromMinSize(.{ cursor_x, y }, .{ edit_width, tab_height });
+    if (drawTab(dc, edit_rect, edit_label, active_tab == .edit, queue)) {
+        active_tab = .edit;
+    }
+
+    return tab_height;
+}
+
+fn drawPreview(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *input_state.InputQueue) void {
+    const t = theme.activeTheme();
+    handleWheelScroll(queue, rect, &preview_scroll_y, preview_scroll_max, 36.0);
+
+    dc.pushClip(rect);
+    var y = rect.min[1] + t.spacing.md - preview_scroll_y;
+    const x = rect.min[0] + t.spacing.md;
+    const width = rect.size()[0] - t.spacing.md * 2.0;
+
+    y += drawSummaryCard(dc, .{ x, y }, width) + t.spacing.md;
+    y += drawInsightsCard(dc, .{ x, y }, width) + t.spacing.md;
+    y += drawChartCard(dc, .{ x, y }, width) + t.spacing.md;
+
+    dc.popClip();
+
+    const content_height = (y + preview_scroll_y) - rect.min[1];
+    preview_scroll_max = @max(0.0, content_height - rect.size()[1]);
+    if (preview_scroll_y > preview_scroll_max) preview_scroll_y = preview_scroll_max;
+    if (preview_scroll_y < 0.0) preview_scroll_y = 0.0;
+}
+
+fn drawEditor(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *input_state.InputQueue) void {
+    const t = theme.activeTheme();
+
+    if (editor_state == null) {
+        editor_state = text_editor.TextEditor.init(std.heap.page_allocator) catch null;
+    }
+    if (editor_state == null) return;
+    const editor = &editor_state.?;
+
     if (!edit_initialized) {
         const seed =
             "## Report Summary\n\n" ++
@@ -160,46 +177,339 @@ fn drawEditor() void {
             "- Insight 2\n\n" ++
             "## Action Items\n\n" ++
             "- Follow up with sales leadership\n";
-        fillBuffer(edit_buf[0..], seed);
-        edit_len = bufferLen();
+        editor.setText(std.heap.page_allocator, seed);
         ensureUndoStack();
         edit_initialized = true;
     }
 
-    const before = captureState();
-    const changed = zgui.inputTextMultiline("##ArtifactEditor", .{
-        .buf = edit_buf[0.. :0],
-        .h = 340.0,
-        .flags = .{ .allow_tab_input = true },
-    });
-    if (zgui.isItemActive()) {
+    const editor_rect = draw_context.Rect.fromMinSize(
+        .{ rect.min[0] + t.spacing.md, rect.min[1] + t.spacing.md },
+        .{ rect.size()[0] - t.spacing.md * 2.0, rect.size()[1] - t.spacing.md * 2.0 },
+    );
+
+    const before = captureState(editor);
+    _ = editor.draw(std.heap.page_allocator, dc, editor_rect, queue, .{ .submit_on_enter = false });
+
+    if (editor.focused) {
         const sys = ui_systems.get();
         sys.keyboard.setFocus("artifact_editor");
         registerShortcuts(sys);
     }
-    if (changed) {
-        edit_len = bufferLen();
-        const after = captureState();
-        if (!statesEqual(before, after)) {
-            ensureUndoStack();
-            if (undo_stack) |*stack| {
-                _ = stack.execute(.{
-                    .name = "edit",
-                    .state_before = before,
-                    .state_after = after,
-                }) catch {};
-            }
+
+    const after = captureState(editor);
+    if (!statesEqual(before, after)) {
+        ensureUndoStack();
+        if (undo_stack) |*stack| {
+            _ = stack.execute(.{
+                .name = "edit",
+                .state_before = before,
+                .state_after = after,
+            }) catch {};
         }
+    }
+
+    if (!editor.focused and editor.isEmpty()) {
+        const style = zgui.getStyle();
+        const pos = .{ editor_rect.min[0] + style.frame_padding[0], editor_rect.min[1] + style.frame_padding[1] };
+        dc.drawText("Start typing...", pos, .{ .color = t.colors.text_secondary });
     }
 }
 
-fn fillBuffer(buf: []u8, text: []const u8) void {
-    const len = @min(text.len, buf.len - 1);
-    std.mem.copyForwards(u8, buf[0..len], text[0..len]);
-    buf[len] = 0;
-    if (len + 1 < buf.len) {
-        @memset(buf[len + 1 ..], 0);
+fn drawToolbar(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *input_state.InputQueue) void {
+    const t = theme.activeTheme();
+    const padding = t.spacing.md;
+    const icon_size = toolbarIconSize(t);
+
+    dc.drawRect(rect, .{ .fill = t.colors.background });
+    dc.drawRect(draw_context.Rect.fromMinSize(.{ rect.min[0], rect.min[1] }, .{ rect.size()[0], 1.0 }), .{ .fill = t.colors.divider });
+
+    var cursor_x = rect.min[0] + padding;
+    const y = rect.min[1] + (rect.size()[1] - icon_size) * 0.5;
+
+    if (drawToolbarIcon(dc, .{ cursor_x, y }, icon_size, .copy, queue)) {
+        if (editor_state) |editor| {
+            if (editor.slice().len > 0) {
+                if (std.heap.page_allocator.dupeZ(u8, editor.slice()) catch null) |ztext| {
+                    defer std.heap.page_allocator.free(ztext);
+                    zgui.setClipboardText(ztext);
+                }
+            }
+        }
     }
+    cursor_x += icon_size + t.spacing.sm;
+
+    if (drawToolbarIcon(dc, .{ cursor_x, y }, icon_size, .undo, queue)) {
+        applyUndo();
+    }
+    cursor_x += icon_size + t.spacing.sm;
+
+    if (drawToolbarIcon(dc, .{ cursor_x, y }, icon_size, .redo, queue)) {
+        applyRedo();
+    }
+    cursor_x += icon_size + t.spacing.sm;
+
+    _ = drawToolbarIcon(dc, .{ cursor_x, y }, icon_size, .expand, queue);
+}
+
+fn drawSummaryCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
+    const t = theme.activeTheme();
+    const padding = t.spacing.md;
+    const title_height = zgui.getTextLineHeightWithSpacing();
+    const text = "This report summarizes sales performance, highlights key insights, and links supporting artifacts collected during the run.";
+    const body_height = measureWrappedTextHeight(std.heap.page_allocator, text, width - padding * 2.0);
+    const card_height = padding * 2.0 + title_height + t.spacing.sm + body_height;
+
+    const rect = draw_context.Rect.fromMinSize(pos, .{ width, card_height });
+    dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+
+    var cursor_y = rect.min[1] + padding;
+    theme.push(.heading);
+    dc.drawText("Report Summary", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
+    theme.pop();
+    cursor_y += title_height + t.spacing.sm;
+
+    _ = drawWrappedText(std.heap.page_allocator, dc, text, .{ rect.min[0] + padding, cursor_y }, width - padding * 2.0, t.colors.text_secondary);
+
+    return card_height;
+}
+
+fn drawInsightsCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
+    const t = theme.activeTheme();
+    const padding = t.spacing.md;
+    const title_height = zgui.getTextLineHeightWithSpacing();
+    const bullet_height = zgui.getTextLineHeightWithSpacing();
+    const bullets = [_][]const u8{
+        "North America revenue is trending up 12% month-over-month.",
+        "Top competitor share declined after feature launch.",
+        "Pipeline risk concentrated in two enterprise accounts.",
+    };
+    const body_height = @as(f32, @floatFromInt(bullets.len)) * (bullet_height + t.spacing.xs);
+    const card_height = padding * 2.0 + title_height + t.spacing.sm + body_height;
+
+    const rect = draw_context.Rect.fromMinSize(pos, .{ width, card_height });
+    dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+
+    var cursor_y = rect.min[1] + padding;
+    theme.push(.heading);
+    dc.drawText("Key Insights", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
+    theme.pop();
+    cursor_y += title_height + t.spacing.sm;
+
+    for (bullets) |item| {
+        drawBullet(dc, .{ rect.min[0] + padding, cursor_y }, item);
+        cursor_y += bullet_height + t.spacing.xs;
+    }
+
+    return card_height;
+}
+
+fn drawChartCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
+    const t = theme.activeTheme();
+    const padding = t.spacing.md;
+    const title_height = zgui.getTextLineHeightWithSpacing();
+    const chart_height: f32 = 160.0;
+    const tabs_height = zgui.getTextLineHeightWithSpacing() + t.spacing.xs * 2.0;
+    const card_height = padding * 2.0 + title_height + t.spacing.sm + chart_height + t.spacing.md + tabs_height;
+
+    const rect = draw_context.Rect.fromMinSize(pos, .{ width, card_height });
+    dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+
+    var cursor_y = rect.min[1] + padding;
+    theme.push(.heading);
+    dc.drawText("Sales Performance (Chart)", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
+    theme.pop();
+    cursor_y += title_height + t.spacing.sm;
+
+    const chart_rect = draw_context.Rect.fromMinSize(
+        .{ rect.min[0] + padding, cursor_y },
+        .{ width - padding * 2.0, chart_height },
+    );
+    drawChart(dc, chart_rect);
+    cursor_y += chart_height + t.spacing.md;
+
+    dc.drawText("Competitor Analysis", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
+    const tab_y = cursor_y + t.spacing.xs;
+    var x = rect.min[0] + padding + dc.measureText("Competitor Analysis", 0.0)[0] + t.spacing.md;
+    const tab_h = tabs_height;
+
+    const tabs = [_][]const u8{ "Sales", "Dow", "Proclues", "Pemble" };
+    for (tabs, 0..) |label, idx| {
+        const tab_w = tabWidth(dc, label, t);
+        const tab_rect = draw_context.Rect.fromMinSize(.{ x, tab_y }, .{ tab_w, tab_h });
+        _ = drawTab(dc, tab_rect, label, idx == 0, input_router.getQueue());
+        x += tab_w + t.spacing.xs;
+    }
+
+    return card_height;
+}
+
+fn drawChart(dc: *draw_context.DrawContext, rect: draw_context.Rect) void {
+    const t = theme.activeTheme();
+    const bars = [_]f32{ 0.4, 0.6, 0.3, 0.8, 0.5, 0.7 };
+    const bar_width: f32 = 18.0;
+    const gap: f32 = 10.0;
+    const base_y = rect.max[1];
+    var x = rect.min[0];
+
+    for (bars) |ratio| {
+        const bar_h = rect.size()[1] * ratio;
+        const bar_rect = draw_context.Rect.fromMinSize(.{ x, base_y - bar_h }, .{ bar_width, bar_h });
+        dc.drawRoundedRect(bar_rect, 3.0, .{ .fill = t.colors.primary });
+        x += bar_width + gap;
+    }
+
+    dc.drawLine(.{ rect.min[0], base_y }, .{ rect.max[0], base_y }, 1.0, t.colors.border);
+    dc.drawLine(.{ rect.min[0], rect.min[1] }, .{ rect.min[0], base_y }, 1.0, t.colors.border);
+    dc.drawText("Week", .{ rect.max[0] - 36.0, base_y + 4.0 }, .{ .color = t.colors.text_secondary });
+    dc.drawText("Sales", .{ rect.min[0] + 4.0, rect.min[1] - 16.0 }, .{ .color = t.colors.text_secondary });
+}
+
+fn drawBullet(dc: *draw_context.DrawContext, pos: [2]f32, text: []const u8) void {
+    const t = theme.activeTheme();
+    const radius: f32 = 3.0;
+    const bullet_center = .{ pos[0] + radius, pos[1] + radius + 3.0 };
+    dc.drawRoundedRect(
+        draw_context.Rect.fromMinSize(.{ bullet_center[0] - radius, bullet_center[1] - radius }, .{ radius * 2.0, radius * 2.0 }),
+        radius,
+        .{ .fill = t.colors.text_secondary },
+    );
+    dc.drawText(text, .{ pos[0] + radius * 2.0 + t.spacing.xs, pos[1] }, .{ .color = t.colors.text_secondary });
+}
+
+fn drawTab(
+    dc: *draw_context.DrawContext,
+    rect: draw_context.Rect,
+    label: []const u8,
+    active: bool,
+    queue: *input_state.InputQueue,
+) bool {
+    const t = theme.activeTheme();
+    const hovered = rect.contains(queue.state.mouse_pos);
+    var clicked = false;
+    for (queue.events.items) |evt| {
+        switch (evt) {
+            .mouse_up => |mu| {
+                if (mu.button == .left and rect.contains(mu.pos)) {
+                    clicked = true;
+                }
+            },
+            else => {},
+        }
+    }
+
+    const base = if (active) t.colors.primary else t.colors.surface;
+    const alpha: f32 = if (active) 0.18 else if (hovered) 0.1 else 0.0;
+    dc.drawRoundedRect(rect, t.radius.lg, .{ .fill = colors.withAlpha(base, alpha), .stroke = colors.withAlpha(t.colors.border, 0.3), .thickness = 1.0 });
+
+    const text_color = if (active) t.colors.primary else t.colors.text_secondary;
+    const text_size = dc.measureText(label, 0.0);
+    dc.drawText(label, .{ rect.min[0] + (rect.size()[0] - text_size[0]) * 0.5, rect.min[1] + (rect.size()[1] - text_size[1]) * 0.5 }, .{ .color = text_color });
+
+    return clicked;
+}
+
+fn drawToolbarIcon(
+    dc: *draw_context.DrawContext,
+    pos: [2]f32,
+    size: f32,
+    icon: ToolbarIcon,
+    queue: *input_state.InputQueue,
+) bool {
+    const t = theme.activeTheme();
+    const rect = draw_context.Rect.fromMinSize(pos, .{ size, size });
+    const hovered = rect.contains(queue.state.mouse_pos);
+    var clicked = false;
+    for (queue.events.items) |evt| {
+        switch (evt) {
+            .mouse_up => |mu| {
+                if (mu.button == .left and rect.contains(mu.pos)) {
+                    clicked = true;
+                }
+            },
+            else => {},
+        }
+    }
+
+    const bg = if (hovered) colors.withAlpha(t.colors.primary, 0.12) else t.colors.surface;
+    dc.drawRoundedRect(rect, t.radius.sm, .{ .fill = bg, .stroke = colors.withAlpha(t.colors.border, 0.7), .thickness = 1.0 });
+
+    const center = .{ pos[0] + size * 0.5, pos[1] + size * 0.5 };
+    const icon_color = t.colors.text_primary;
+    switch (icon) {
+        .copy => {
+            const rect_size: f32 = size * 0.35;
+            dc.drawRoundedRect(
+                draw_context.Rect.fromMinSize(
+                    .{ center[0] - rect_size, center[1] - rect_size },
+                    .{ rect_size * 1.4, rect_size * 1.4 },
+                ),
+                2.0,
+                .{ .stroke = icon_color, .thickness = 1.5 },
+            );
+        },
+        .undo => {
+            const left = center[0] - size * 0.18;
+            const right = center[0] + size * 0.18;
+            dc.drawLine(.{ right, center[1] }, .{ left, center[1] }, 2.0, icon_color);
+            dc.drawLine(.{ left, center[1] }, .{ left + size * 0.1, center[1] - size * 0.1 }, 2.0, icon_color);
+            dc.drawLine(.{ left, center[1] }, .{ left + size * 0.1, center[1] + size * 0.1 }, 2.0, icon_color);
+        },
+        .redo => {
+            const left = center[0] - size * 0.18;
+            const right = center[0] + size * 0.18;
+            dc.drawLine(.{ left, center[1] }, .{ right, center[1] }, 2.0, icon_color);
+            dc.drawLine(.{ right, center[1] }, .{ right - size * 0.1, center[1] - size * 0.1 }, 2.0, icon_color);
+            dc.drawLine(.{ right, center[1] }, .{ right - size * 0.1, center[1] + size * 0.1 }, 2.0, icon_color);
+        },
+        .expand => {
+            const offset = size * 0.18;
+            dc.drawLine(.{ center[0] - offset, center[1] - offset }, .{ center[0] - offset, center[1] - size * 0.3 }, 2.0, icon_color);
+            dc.drawLine(.{ center[0] - offset, center[1] - offset }, .{ center[0] - size * 0.3, center[1] - offset }, 2.0, icon_color);
+            dc.drawLine(.{ center[0] + offset, center[1] + offset }, .{ center[0] + offset, center[1] + size * 0.3 }, 2.0, icon_color);
+            dc.drawLine(.{ center[0] + offset, center[1] + offset }, .{ center[0] + size * 0.3, center[1] + offset }, 2.0, icon_color);
+        },
+    }
+
+    return clicked;
+}
+
+fn toolbarIconSize(t: *const theme.Theme) f32 {
+    return t.spacing.lg + t.spacing.sm;
+}
+
+fn toolbarHeight(t: *const theme.Theme) f32 {
+    const icon = toolbarIconSize(t);
+    return icon + t.spacing.md;
+}
+
+fn tabWidth(dc: *draw_context.DrawContext, label: []const u8, t: *const theme.Theme) f32 {
+    return dc.measureText(label, 0.0)[0] + t.spacing.sm * 2.0;
+}
+
+fn buttonWidth(dc: *draw_context.DrawContext, label: []const u8, t: *const theme.Theme) f32 {
+    return dc.measureText(label, 0.0)[0] + t.spacing.sm * 2.0;
+}
+
+fn handleWheelScroll(
+    queue: *input_state.InputQueue,
+    rect: draw_context.Rect,
+    scroll_y: *f32,
+    max_scroll: f32,
+    step: f32,
+) void {
+    if (max_scroll <= 0.0) {
+        scroll_y.* = 0.0;
+        return;
+    }
+    if (!rect.contains(queue.state.mouse_pos)) return;
+    for (queue.events.items) |evt| {
+        if (evt == .mouse_wheel) {
+            const delta = evt.mouse_wheel.delta[1];
+            scroll_y.* -= delta * step;
+        }
+    }
+    if (scroll_y.* < 0.0) scroll_y.* = 0.0;
+    if (scroll_y.* > max_scroll) scroll_y.* = max_scroll;
 }
 
 fn ensureUndoStack() void {
@@ -208,32 +518,24 @@ fn ensureUndoStack() void {
     }
 }
 
-fn captureState() EditState {
-    var state = EditState{
-        .len = edit_len,
-        .buf = [_]u8{0} ** 4096,
-    };
-    const slice = edit_buf[0..edit_len];
-    std.mem.copyForwards(u8, state.buf[0..edit_len], slice);
+fn captureState(editor: *text_editor.TextEditor) EditState {
+    var state = EditState{ .len = 0, .buf = [_]u8{0} ** 4096 };
+    const text = editor.slice();
+    const len = @min(text.len, state.buf.len);
+    state.len = len;
+    std.mem.copyForwards(u8, state.buf[0..len], text[0..len]);
     return state;
 }
 
 fn applyState(state: EditState) void {
-    edit_len = @min(state.len, edit_buf.len - 1);
-    std.mem.copyForwards(u8, edit_buf[0..edit_len], state.buf[0..edit_len]);
-    edit_buf[edit_len] = 0;
-    if (edit_len + 1 < edit_buf.len) {
-        @memset(edit_buf[edit_len + 1 ..], 0);
+    if (editor_state) |*editor| {
+        editor.setText(std.heap.page_allocator, state.buf[0..state.len]);
     }
 }
 
 fn statesEqual(a: EditState, b: EditState) bool {
     if (a.len != b.len) return false;
     return std.mem.eql(u8, a.buf[0..a.len], b.buf[0..b.len]);
-}
-
-fn bufferLen() usize {
-    return std.mem.sliceTo(&edit_buf, 0).len;
 }
 
 fn applyUndo() void {
@@ -288,129 +590,97 @@ fn onRedoShortcut(_: ?*anyopaque) void {
     applyRedo();
 }
 
-fn drawTabToggle(label: []const u8, active: bool) bool {
-    return components.core.button.draw(label, .{
-        .variant = if (active) .primary else .secondary,
-        .size = .small,
-    });
+fn drawWrappedText(
+    allocator: std.mem.Allocator,
+    dc: *draw_context.DrawContext,
+    text: []const u8,
+    pos: [2]f32,
+    wrap_width: f32,
+    color: colors.Color,
+) f32 {
+    var lines = std.ArrayList(Line).empty;
+    defer lines.deinit(allocator);
+    buildLinesInto(allocator, text, wrap_width, &lines);
+
+    var y = pos[1];
+    const line_height = zgui.getTextLineHeightWithSpacing();
+    for (lines.items) |line| {
+        const slice = text[line.start..line.end];
+        if (slice.len > 0) {
+            dc.drawText(slice, .{ pos[0], y }, .{ .color = color });
+        }
+        y += line_height;
+    }
+    return y - pos[1];
 }
 
-fn drawToolbarIcon(id: []const u8, icon: ToolbarIcon, t: *const theme.Theme) bool {
-    const size = t.spacing.lg + t.spacing.sm;
-    const cursor = zgui.getCursorScreenPos();
-    const id_z = zgui.formatZ("##{s}", .{id});
-    _ = zgui.invisibleButton(id_z, .{ .w = size, .h = size });
-    const hovered = zgui.isItemHovered(.{});
-    const clicked = zgui.isItemClicked(.left);
+fn measureWrappedTextHeight(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    wrap_width: f32,
+) f32 {
+    var lines = std.ArrayList(Line).empty;
+    defer lines.deinit(allocator);
+    buildLinesInto(allocator, text, wrap_width, &lines);
+    return @as(f32, @floatFromInt(lines.items.len)) * zgui.getTextLineHeightWithSpacing();
+}
 
-    const draw_list = zgui.getWindowDrawList();
-    const bg = if (hovered)
-        colors.withAlpha(t.colors.primary, 0.12)
-    else
-        t.colors.surface;
-    draw_list.addRectFilled(.{
-        .pmin = cursor,
-        .pmax = .{ cursor[0] + size, cursor[1] + size },
-        .col = zgui.colorConvertFloat4ToU32(bg),
-        .rounding = t.radius.sm,
-    });
-    draw_list.addRect(.{
-        .pmin = cursor,
-        .pmax = .{ cursor[0] + size, cursor[1] + size },
-        .col = zgui.colorConvertFloat4ToU32(colors.withAlpha(t.colors.border, 0.7)),
-        .rounding = t.radius.sm,
-    });
+fn buildLinesInto(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    wrap_width: f32,
+    lines: *std.ArrayList(Line),
+) void {
+    lines.clearRetainingCapacity();
+    const effective_wrap = if (wrap_width <= 1.0) 10_000.0 else wrap_width;
+    var line_start: usize = 0;
+    var line_width: f32 = 0.0;
+    var last_space: ?usize = null;
+    var index: usize = 0;
 
-    const center = .{ cursor[0] + size * 0.5, cursor[1] + size * 0.5 };
-    const icon_color = zgui.colorConvertFloat4ToU32(t.colors.text_primary);
-    switch (icon) {
-        .copy => {
-            const rect_size: f32 = size * 0.35;
-            draw_list.addRect(.{
-                .pmin = .{ center[0] - rect_size, center[1] - rect_size },
-                .pmax = .{ center[0] + rect_size * 0.4, center[1] + rect_size * 0.4 },
-                .col = icon_color,
-                .rounding = 2.0,
-            });
-            draw_list.addRect(.{
-                .pmin = .{ center[0] - rect_size * 0.4, center[1] - rect_size * 0.4 },
-                .pmax = .{ center[0] + rect_size, center[1] + rect_size },
-                .col = icon_color,
-                .rounding = 2.0,
-            });
-        },
-        .undo => {
-            const left = center[0] - size * 0.18;
-            const right = center[0] + size * 0.18;
-            draw_list.addLine(.{
-                .p1 = .{ right, center[1] },
-                .p2 = .{ left, center[1] },
-                .col = icon_color,
-                .thickness = 2.0,
-            });
-            draw_list.addLine(.{
-                .p1 = .{ left, center[1] },
-                .p2 = .{ left + size * 0.1, center[1] - size * 0.1 },
-                .col = icon_color,
-                .thickness = 2.0,
-            });
-            draw_list.addLine(.{
-                .p1 = .{ left, center[1] },
-                .p2 = .{ left + size * 0.1, center[1] + size * 0.1 },
-                .col = icon_color,
-                .thickness = 2.0,
-            });
-        },
-        .redo => {
-            const left = center[0] - size * 0.18;
-            const right = center[0] + size * 0.18;
-            draw_list.addLine(.{
-                .p1 = .{ left, center[1] },
-                .p2 = .{ right, center[1] },
-                .col = icon_color,
-                .thickness = 2.0,
-            });
-            draw_list.addLine(.{
-                .p1 = .{ right, center[1] },
-                .p2 = .{ right - size * 0.1, center[1] - size * 0.1 },
-                .col = icon_color,
-                .thickness = 2.0,
-            });
-            draw_list.addLine(.{
-                .p1 = .{ right, center[1] },
-                .p2 = .{ right - size * 0.1, center[1] + size * 0.1 },
-                .col = icon_color,
-                .thickness = 2.0,
-            });
-        },
-        .expand => {
-            const offset = size * 0.18;
-            draw_list.addLine(.{
-                .p1 = .{ center[0] - offset, center[1] - offset },
-                .p2 = .{ center[0] - offset, center[1] - size * 0.3 },
-                .col = icon_color,
-                .thickness = 2.0,
-            });
-            draw_list.addLine(.{
-                .p1 = .{ center[0] - offset, center[1] - offset },
-                .p2 = .{ center[0] - size * 0.3, center[1] - offset },
-                .col = icon_color,
-                .thickness = 2.0,
-            });
-            draw_list.addLine(.{
-                .p1 = .{ center[0] + offset, center[1] + offset },
-                .p2 = .{ center[0] + offset, center[1] + size * 0.3 },
-                .col = icon_color,
-                .thickness = 2.0,
-            });
-            draw_list.addLine(.{
-                .p1 = .{ center[0] + offset, center[1] + offset },
-                .p2 = .{ center[0] + size * 0.3, center[1] + offset },
-                .col = icon_color,
-                .thickness = 2.0,
-            });
-        },
+    while (index < text.len) {
+        const ch = text[index];
+        if (ch == '\n') {
+            _ = lines.append(allocator, .{ .start = line_start, .end = index }) catch {};
+            index += 1;
+            line_start = index;
+            line_width = 0.0;
+            last_space = null;
+            continue;
+        }
+
+        const next = nextCharIndex(text, index);
+        const slice = text[index..next];
+        const char_w = zgui.calcTextSize(slice, .{ .wrap_width = 0.0 })[0];
+
+        if (ch == ' ' or ch == '\t') {
+            last_space = next;
+        }
+
+        if (line_width + char_w > effective_wrap and line_width > 0.0) {
+            if (last_space != null and last_space.? > line_start) {
+                _ = lines.append(allocator, .{ .start = line_start, .end = last_space.? - 1 }) catch {};
+                index = last_space.?;
+            } else {
+                _ = lines.append(allocator, .{ .start = line_start, .end = index }) catch {};
+            }
+            line_start = index;
+            line_width = 0.0;
+            last_space = null;
+            continue;
+        }
+
+        line_width += char_w;
+        index = next;
     }
 
-    return clicked;
+    _ = lines.append(allocator, .{ .start = line_start, .end = text.len }) catch {};
+}
+
+fn nextCharIndex(text: []const u8, index: usize) usize {
+    if (index >= text.len) return text.len;
+    const first = text[index];
+    const len = std.unicode.utf8ByteSequenceLength(first) catch 1;
+    const next = index + @as(usize, len);
+    return if (next > text.len) text.len else next;
 }
