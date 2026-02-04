@@ -11,6 +11,7 @@ pub const HealthReporter = struct {
     // allocator from the main thread here.
     node_ctx: *NodeContext,
     ws_client: *websocket_client.WebSocketClient,
+    ws_mutex: ?*std.Thread.Mutex = null,
     running: bool = false,
     thread: ?std.Thread = null,
     interval_ms: i64 = 30000, // 30 seconds
@@ -26,6 +27,10 @@ pub const HealthReporter = struct {
             .ws_client = ws_client,
             .interval_ms = 30000,
         };
+    }
+
+    pub fn setMutex(self: *HealthReporter, m: ?*std.Thread.Mutex) void {
+        self.ws_mutex = m;
     }
     
     pub fn start(self: *HealthReporter) !void {
@@ -108,6 +113,10 @@ pub const HealthReporter = struct {
         };
         
         const payload = try messages.serializeMessage(a, frame);
+
+        if (self.ws_mutex) |m| m.lock();
+        defer if (self.ws_mutex) |m| m.unlock();
+
         try self.ws_client.send(payload);
         logger.debug("Heartbeat sent", .{});
     }
