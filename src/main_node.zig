@@ -310,7 +310,10 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
                 logger.err("Max reconnection attempts reached", .{});
                 return error.ConnectionFailed;
             }
-            var delay_ms: u64 = base_delay_ms * std.math.pow(u64, 2, reconnect_attempt);
+            // Exponential backoff, but cap the exponent to avoid overflow/panics
+            // when retries are unlimited.
+            const exp: u32 = @min(reconnect_attempt, 15); // 2^15 * 1s = 32768s, but we clamp to 30s anyway
+            var delay_ms: u64 = base_delay_ms * std.math.pow(u64, 2, exp);
             delay_ms = @min(delay_ms, 30000);
             // Add a bit of jitter so fleets don't thundering-herd.
             const jitter: u64 = @intFromFloat(std.crypto.random.float(f64) * 250.0);
@@ -362,7 +365,8 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
             logger.err("Max reconnection attempts reached", .{});
             return error.ConnectionFailed;
         }
-        var delay_ms: u64 = base_delay_ms * std.math.pow(u64, 2, reconnect_attempt);
+        const exp: u32 = @min(reconnect_attempt, 15);
+        var delay_ms: u64 = base_delay_ms * std.math.pow(u64, 2, exp);
         delay_ms = @min(delay_ms, 30000);
         const jitter: u64 = @intFromFloat(std.crypto.random.float(f64) * 250.0);
         delay_ms += jitter;
