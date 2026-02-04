@@ -89,10 +89,15 @@ Get-Content (Join-Path $env:APPDATA 'ZiggyStarClaw\node-service.log') -Tail 200
 ```
 
 ## Common options
-- `--config <path>`: config.json path (default: `%APPDATA%\ZiggyStarClaw\config.json` on Windows)
+- `--config <path>`: config.json path (default: `~/.config/ziggystarclaw/config.json` on Linux/macOS, `%APPDATA%\ZiggyStarClaw\config.json` on Windows)
+- `node.healthReporterIntervalMs` (config): heartbeat interval in ms (default: 10000). If too high, the gateway may mark the node stale.
 - `--as-node / --no-node`: enable/disable node connection
 - `--as-operator / --no-operator`: enable/disable operator connection
 - `--log-level <level>`: debug|info|warn|error
+
+## Auth notes
+- Node mode prefers `node.nodeToken` for auth (the gateway may rotate/issue a `deviceToken` in `hello-ok`). ZiggyStarClaw will persist it back to config and use the updated token on reconnect.
+- `gateway.authToken` is still used for operator-mode and can be used as a fallback for legacy node configs.
 
 ## Security notes
 - Keep allowlists tight; prefer scripts over arbitrary shells.
