@@ -25,6 +25,35 @@ pub const std_options = std.Options{
     .log_level = .debug,
 };
 
+fn linuxHomeDirForUser(allocator: std.mem.Allocator, username: []const u8) ![]u8 {
+    // Minimal /etc/passwd parser to find a user's home directory.
+    // Format: name:passwd:uid:gid:gecos:home:shell
+    const f = std.fs.cwd().openFile("/etc/passwd", .{}) catch |err| return err;
+    defer f.close();
+
+    const data = try f.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(data);
+
+    var it = std.mem.splitScalar(u8, data, '\n');
+    while (it.next()) |line| {
+        if (line.len == 0 or line[0] == '#') continue;
+        // Fast check for "username:"
+        if (line.len <= username.len or line[username.len] != ':' or !std.mem.startsWith(u8, line, username)) continue;
+
+        var fields = std.mem.splitScalar(u8, line, ':');
+        _ = fields.next(); // name
+        _ = fields.next(); // passwd
+        _ = fields.next(); // uid
+        _ = fields.next(); // gid
+        _ = fields.next(); // gecos
+        const home = fields.next() orelse return error.InvalidArguments;
+        if (home.len == 0) return error.InvalidArguments;
+        return allocator.dupe(u8, home);
+    }
+
+    return error.FileNotFound;
+}
+
 var cli_log_level: std.log.Level = .warn;
 
 const usage =
@@ -378,10 +407,26 @@ pub fn main() !void {
     if (node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status) {
         // For node services, prefer the explicit --config path if provided; otherwise
         // use the unified node config default path.
-        const node_cfg_path = if (config_path_set)
-            try allocator.dupe(u8, config_path)
-        else
-            try unified_config.defaultConfigPath(allocator);
+        //
+        // IMPORTANT (Linux/system scope): when invoked via sudo with --node-service-mode onstart,
+        // HOME typically points at /root. But the generated systemd unit runs as SUDO_USER.
+        // In that case we must derive the default config path from the target user's home,
+        // not root's, otherwise the service will fail to read its config.
+        const node_cfg_path = if (config_path_set) blk: {
+            break :blk try allocator.dupe(u8, config_path);
+        } else if (builtin.os.tag == .linux and node_service_mode == .onstart and std.posix.geteuid() == 0) blk: {
+            const sudo_user = std.process.getEnvVarOwned(allocator, "SUDO_USER") catch null;
+            if (sudo_user) |u| {
+                defer allocator.free(u);
+                if (linuxHomeDirForUser(allocator, u)) |home| {
+                    defer allocator.free(home);
+                    break :blk try std.fs.path.join(allocator, &.{ home, ".config", "ziggystarclaw", "config.json" });
+                } else |_| {}
+            }
+            break :blk try unified_config.defaultConfigPath(allocator);
+        } else blk: {
+            break :blk try unified_config.defaultConfigPath(allocator);
+        };
         defer allocator.free(node_cfg_path);
 
         // If the config doesn't exist yet and the user provided --url/--token, bootstrap it
