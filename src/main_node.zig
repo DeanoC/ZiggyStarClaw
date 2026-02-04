@@ -7,6 +7,7 @@ const command_router = @import("node/command_router.zig");
 const CommandRouter = command_router.CommandRouter;
 const canvas = @import("node/canvas.zig");
 const websocket_client = @import("client/websocket_client.zig");
+const SingleThreadConnectionManager = @import("node/connection_manager_singlethread.zig").SingleThreadConnectionManager;
 const event_handler = @import("client/event_handler.zig");
 const requests = @import("protocol/requests.zig");
 const messages = @import("protocol/messages.zig");
@@ -247,11 +248,15 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     var router = try command_router.initStandardRouter(allocator);
     defer router.deinit();
 
-    // Connection retry loop
-    // max_reconnect_attempts = 0 means unlimited retries.
-    var reconnect_attempt: u32 = 0;
-    const max_reconnect_attempts: u32 = 0;
-    const base_delay_ms: u64 = 1000;
+    if (cfg.operator.enabled) {
+        logger.err("operator.enabled=true is not supported in node-mode yet (clean-break config refactor in progress).", .{});
+        return error.NotImplemented;
+    }
+
+    if (!cfg.node.enabled) {
+        logger.err("Node connection is disabled.", .{});
+        return error.InvalidArguments;
+    }
 
     // Precompute advertised caps/commands once.
     const caps = try node_ctx.getCapabilitiesArray();
@@ -259,122 +264,83 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     const commands = try node_ctx.getCommandsArray();
     defer node_context.freeStringArray(allocator, commands);
 
-    while (max_reconnect_attempts == 0 or reconnect_attempt < max_reconnect_attempts) {
-        logger.info(
-            "Connecting to gateway at {s} (attempt {d}/{d})...",
-            .{ ws_url, reconnect_attempt + 1, max_reconnect_attempts },
-        );
+    // Single-thread connection manager (no background threads).
+    var conn = try SingleThreadConnectionManager.init(allocator, ws_url, cfg.gateway.authToken, false);
+    defer conn.deinit();
 
-        if (cfg.operator.enabled) {
-            logger.err("operator.enabled=true is not supported in node-mode yet (clean-break config refactor in progress).", .{});
-            return error.NotImplemented;
+    const Ctx = struct {
+        cfg: *UnifiedConfig,
+        node_ctx: *NodeContext,
+        caps: []const []const u8,
+        commands: []const []const u8,
+    };
+    var cb_ctx = Ctx{ .cfg = &cfg, .node_ctx = &node_ctx, .caps = caps, .commands = commands };
+    conn.user_ctx = @ptrCast(&cb_ctx);
+
+    conn.onConfigureClient = struct {
+        fn cb(cm: *SingleThreadConnectionManager, client: *websocket_client.WebSocketClient) void {
+            const ctx: *Ctx = @ptrCast(@alignCast(cm.user_ctx.?));
+            client.setConnectProfile(.{
+                .role = "node",
+                .scopes = &.{},
+                .client_id = "node-host",
+                .client_mode = "node",
+                .display_name = ctx.cfg.node.displayName orelse "ZiggyStarClaw",
+            });
+            client.setConnectNodeMetadata(.{ .caps = ctx.caps, .commands = ctx.commands });
+            client.setDeviceIdentityPath(ctx.cfg.node.deviceIdentityPath);
+            client.setConnectAuthToken(ctx.cfg.gateway.authToken);
+            client.setDeviceAuthToken(ctx.cfg.gateway.authToken);
+        }
+    }.cb;
+
+    conn.onConnected = struct {
+        fn cb(cm: *SingleThreadConnectionManager) void {
+            const ctx: *Ctx = @ptrCast(@alignCast(cm.user_ctx.?));
+            ctx.node_ctx.state = .connecting;
+            logger.info("Connected.", .{});
+        }
+    }.cb;
+
+    conn.onDisconnected = struct {
+        fn cb(cm: *SingleThreadConnectionManager) void {
+            const ctx: *Ctx = @ptrCast(@alignCast(cm.user_ctx.?));
+            ctx.node_ctx.state = .disconnected;
+            logger.err("Disconnected from gateway.", .{});
+        }
+    }.cb;
+
+    // Start health reporter (threaded, but uses per-heartbeat arena + page allocator).
+    var reporter = HealthReporter.init(allocator, &node_ctx, &conn.ws_client);
+    reporter.start() catch |err| {
+        logger.warn("Failed to start health reporter: {s}", .{@errorName(err)});
+    };
+    defer reporter.stop();
+
+    // Main event loop
+    while (true) {
+        conn.step();
+
+        if (!conn.is_connected) {
+            std.Thread.sleep(100 * std.time.ns_per_ms);
+            continue;
         }
 
-        if (!cfg.node.enabled) {
-            logger.err("Node connection is disabled.", .{});
-            return error.InvalidArguments;
-        }
-
-        var ws_client_val = websocket_client.WebSocketClient.init(
-            allocator,
-            ws_url,
-            cfg.gateway.authToken,
-            false,
-            null,
-        );
-        defer ws_client_val.deinit();
-
-        ws_client_val.setConnectProfile(.{
-            .role = "node",
-            .scopes = &.{},
-            .client_id = "node-host",
-            .client_mode = "node",
-            .display_name = cfg.node.displayName orelse "ZiggyStarClaw",
-        });
-        ws_client_val.setConnectNodeMetadata(.{
-            .caps = caps,
-            .commands = commands,
-        });
-        // Critical: ensure node-mode uses the SAME device identity file as node-register/config.
-        // Otherwise it will generate a new device id and trigger pairing again.
-        ws_client_val.setDeviceIdentityPath(cfg.node.deviceIdentityPath);
-
-        // Use the gateway token for connect auth and the signed device payload (matches OpenClaw node-host).
-        ws_client_val.setConnectAuthToken(cfg.gateway.authToken);
-        ws_client_val.setDeviceAuthToken(cfg.gateway.authToken);
-
-        ws_client_val.connect() catch |err| {
-            logger.err("Gateway connection failed: {s}", .{@errorName(err)});
-            reconnect_attempt += 1;
-            if (max_reconnect_attempts != 0 and reconnect_attempt >= max_reconnect_attempts) {
-                logger.err("Max reconnection attempts reached", .{});
-                return error.ConnectionFailed;
-            }
-            // Exponential backoff, but cap the exponent to avoid overflow/panics
-            // when retries are unlimited.
-            const exp: u32 = @min(reconnect_attempt, 15); // 2^15 * 1s = 32768s, but we clamp to 30s anyway
-            var delay_ms: u64 = base_delay_ms * std.math.pow(u64, 2, exp);
-            delay_ms = @min(delay_ms, 30000);
-            // Add a bit of jitter so fleets don't thundering-herd.
-            const jitter: u64 = @intFromFloat(std.crypto.random.float(f64) * 250.0);
-            delay_ms += jitter;
-            logger.info("Retrying in {d}ms...", .{delay_ms});
-            std.Thread.sleep(delay_ms * std.time.ns_per_ms);
+        const payload = conn.ws_client.receive() catch |err| {
+            logger.err("WebSocket receive failed: {s}", .{@errorName(err)});
+            conn.disconnect();
             continue;
         };
 
-        node_ctx.state = .connecting;
-        reconnect_attempt = 0; // Reset on successful connection
-
-        logger.info("Connected.", .{});
-
-        // Start the health reporter. It will only emit heartbeats once hello-ok was received
-        // and NodeContext transitions into idle/executing.
-        var reporter = HealthReporter.init(allocator, &node_ctx, &ws_client_val);
-        reporter.start() catch |err| {
-            logger.warn("Failed to start health reporter: {s}", .{@errorName(err)});
-        };
-        defer reporter.stop();
-
-        // Main event loop
-        const running = true;
-        while (running) {
-            if (!ws_client_val.is_connected) {
-                logger.err("Disconnected from gateway.", .{});
-                break;
-            }
-
-            ws_client_val.poll() catch {};
-
-            const payload = ws_client_val.receive() catch |err| {
-                logger.err("WebSocket receive failed: {s}", .{@errorName(err)});
-                break;
+        if (payload) |text| {
+            defer allocator.free(text);
+            handleNodeMessage(allocator, &conn.ws_client, &node_ctx, &router, config_path, &cfg, text) catch |err| {
+                logger.err("Node message handling failed: {s}", .{@errorName(err)});
             };
-
-            if (payload) |text| {
-                defer allocator.free(text);
-                try handleNodeMessage(allocator, &ws_client_val, &node_ctx, &router, config_path, &cfg, text);
-            } else {
-                std.Thread.sleep(50 * std.time.ns_per_ms);
-            }
+        } else {
+            std.Thread.sleep(50 * std.time.ns_per_ms);
         }
-
-        // If we got here due to disconnect, retry
-        reconnect_attempt += 1;
-        if (max_reconnect_attempts != 0 and reconnect_attempt >= max_reconnect_attempts) {
-            logger.err("Max reconnection attempts reached", .{});
-            return error.ConnectionFailed;
-        }
-        const exp: u32 = @min(reconnect_attempt, 15);
-        var delay_ms: u64 = base_delay_ms * std.math.pow(u64, 2, exp);
-        delay_ms = @min(delay_ms, 30000);
-        const jitter: u64 = @intFromFloat(std.crypto.random.float(f64) * 250.0);
-        delay_ms += jitter;
-        logger.info("Reconnecting in {d}ms...", .{delay_ms});
-        std.Thread.sleep(delay_ms * std.time.ns_per_ms);
     }
-
-    // Clean break: no save-config behavior in node-mode.
 }
 
 fn sendNodeConnectRequest(

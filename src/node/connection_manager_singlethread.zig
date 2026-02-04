@@ -25,6 +25,9 @@ pub const SingleThreadConnectionManager = struct {
     base_delay_ms: u64 = 1000,
     max_delay_ms: u64 = 30_000,
 
+    // Optional user context for callbacks
+    user_ctx: ?*anyopaque = null,
+
     // Callbacks (run on caller thread)
     onConfigureClient: ?*const fn (*SingleThreadConnectionManager, *websocket_client.WebSocketClient) void = null,
     onConnected: ?*const fn (*SingleThreadConnectionManager) void = null,
