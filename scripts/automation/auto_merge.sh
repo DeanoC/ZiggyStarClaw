@@ -11,6 +11,10 @@ set -euo pipefail
 
 REPO="DeanoC/ZiggyStarClaw"
 
+# Safety: only auto-merge PRs created by allowlisted authors.
+# (Today this is just DeanoC; later we can add a dedicated Ziggy bot account.)
+ALLOWED_AUTHORS=("DeanoC")
+
 # Ensure we always run from the ZiggyStarClaw worktree root even if invoked from elsewhere.
 repo_root=$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null || true)
 if [[ -z "${repo_root}" ]]; then
@@ -32,6 +36,19 @@ if [[ -z "${prs}" ]]; then
 fi
 
 for pr in $prs; do
+  author=$(gh pr view "$pr" --repo "$REPO" --json author --jq '.author.login')
+  allowed=false
+  for a in "${ALLOWED_AUTHORS[@]}"; do
+    if [[ "$author" == "$a" ]]; then
+      allowed=true
+      break
+    fi
+  done
+  if [[ "$allowed" != "true" ]]; then
+    log "PR #$pr author=$author not allowlisted; skipping"
+    continue
+  fi
+
   # Skip draft
   isDraft=$(gh pr view "$pr" --repo "$REPO" --json isDraft --jq '.isDraft')
   if [[ "$isDraft" == "true" ]]; then
