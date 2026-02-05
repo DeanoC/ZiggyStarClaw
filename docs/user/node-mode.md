@@ -27,6 +27,29 @@ $cfg = Join-Path $env:APPDATA 'ZiggyStarClaw\config.json'
 ziggystarclaw-cli --node-mode --config ~/.config/ziggystarclaw/config.json
 ```
 
+## Docker sandbox (Linux host)
+
+For a disposable, isolated build + run that can still connect to a local OpenClaw gateway, use the Docker sandbox. It is Linux-host focused (e.g., wizball) and requires `--network=host` (the script sets this).
+
+Basic usage (repo mounted read-only by default):
+
+```bash
+scripts/dev/node_sandbox.sh -- --config /repo/config/dev.json --auto-approve-pairing
+```
+
+Allow write access (writes `zig-out/` + `.zig-cache/` in the repo):
+
+```bash
+scripts/dev/node_sandbox.sh --rw -- --config /repo/config/dev.json
+```
+
+Use your host config by mounting it into the container:
+
+```bash
+NODE_SANDBOX_DOCKER_ARGS="-v $HOME/.config/ziggystarclaw:/config:ro" \
+  scripts/dev/node_sandbox.sh -- --config /config/config.json
+```
+
 ## Pairing (node-mode)
 
 If the gateway requires device pairing, node-mode can handle it in one of three ways:
