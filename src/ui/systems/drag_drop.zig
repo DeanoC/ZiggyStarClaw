@@ -1,6 +1,5 @@
 const std = @import("std");
-const zgui = @import("zgui");
-
+const draw_context = @import("../draw_context.zig");
 pub const Rect = struct {
     min: [2]f32,
     max: [2]f32,
@@ -14,7 +13,7 @@ pub const DragPayload = struct {
     source_id: []const u8,
     data_type: []const u8,
     data: ?*anyopaque = null,
-    preview_fn: ?*const fn ([2]f32) void = null,
+    preview_fn: ?*const fn (*draw_context.DrawContext, [2]f32) void = null,
 };
 
 pub const DropTarget = struct {
@@ -57,11 +56,10 @@ pub const DragDropManager = struct {
         try self.drop_targets.append(self.allocator, target);
     }
 
-    pub fn endDrag(self: *DragDropManager) ?DropTarget {
+    pub fn endDrag(self: *DragDropManager, mouse_pos: [2]f32) ?DropTarget {
         const payload = self.active_drag orelse return null;
-        const mouse = zgui.getMousePos();
         for (self.drop_targets.items) |target| {
-            if (!target.bounds.contains(mouse)) continue;
+            if (!target.bounds.contains(mouse_pos)) continue;
             if (!acceptsType(target.accepts, payload.data_type)) continue;
             if (target.on_drop) |handler| {
                 handler(payload);
@@ -73,10 +71,10 @@ pub const DragDropManager = struct {
         return null;
     }
 
-    pub fn drawPreview(self: *DragDropManager) void {
+    pub fn drawPreview(self: *DragDropManager, dc: *draw_context.DrawContext, mouse_pos: [2]f32) void {
         if (self.active_drag) |payload| {
             if (payload.preview_fn) |preview| {
-                preview(zgui.getMousePos());
+                preview(dc, mouse_pos);
             }
         }
     }

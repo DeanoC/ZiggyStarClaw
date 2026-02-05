@@ -1,5 +1,4 @@
 const std = @import("std");
-const zgui = @import("zgui");
 const state = @import("../../client/state.zig");
 const chat_view = @import("../chat_view.zig");
 const input_panel = @import("../input_panel.zig");
@@ -33,6 +32,7 @@ pub fn draw(
     agent_name: []const u8,
     session_label: ?[]const u8,
     inbox: ?*const ui_command_inbox.UiCommandInbox,
+    rect_override: ?draw_context.Rect,
 ) ChatPanelAction {
     var action = ChatPanelAction{};
     const t = theme.activeTheme();
@@ -53,14 +53,8 @@ pub fn draw(
     const has_selection_select = chat_view.hasSelectCopySelection(&panel_state.view);
     const has_selection_custom = chat_view.hasSelection(&panel_state.view);
 
-    const panel_pos = zgui.getCursorScreenPos();
-    const panel_avail = zgui.getContentRegionAvail();
-    if (panel_avail[0] <= 0.0 or panel_avail[1] <= 0.0) {
-        return action;
-    }
-    _ = zgui.invisibleButton("##chat_panel_canvas", .{ .w = panel_avail[0], .h = panel_avail[1] });
-    const panel_rect = draw_context.Rect.fromMinSize(panel_pos, .{ panel_avail[0], panel_avail[1] });
-    var panel_ctx = draw_context.DrawContext.init(allocator, .{ .imgui = .{} }, t, panel_rect);
+    const panel_rect = rect_override orelse return action;
+    var panel_ctx = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer panel_ctx.deinit();
     panel_ctx.drawRect(panel_rect, .{ .fill = t.colors.background });
 
@@ -69,9 +63,9 @@ pub fn draw(
     const header_width = panel_rect.size()[0];
     const title = "Chat";
     theme.push(.title);
-    const title_height = zgui.getTextLineHeightWithSpacing();
+    const title_height = panel_ctx.lineHeight();
     theme.pop();
-    const subtitle_height = zgui.getTextLineHeightWithSpacing();
+    const subtitle_height = panel_ctx.lineHeight();
     const control_height = @max(subtitle_height, 20.0);
     const top_pad = t.spacing.xs;
     const title_gap = t.spacing.xs * 0.5;
@@ -190,17 +184,17 @@ fn drawHeader(
     const start_y = rect.min[1] + top_pad;
 
     theme.push(.title);
-    const title_height = zgui.getTextLineHeightWithSpacing();
+    const title_height = ctx.lineHeight();
     ctx.drawText(title, .{ start_x, start_y }, .{ .color = t.colors.text_primary });
     theme.pop();
+    const body_height = ctx.lineHeight();
 
     const subtitle_y = start_y + title_height + title_gap;
     ctx.drawText(subtitle, .{ start_x, subtitle_y }, .{ .color = t.colors.text_secondary });
 
-    const controls_y = subtitle_y + zgui.getTextLineHeightWithSpacing() + controls_gap;
+    const controls_y = subtitle_y + body_height + controls_gap;
     var cursor_x = start_x;
-    const line_h = zgui.getTextLineHeightWithSpacing();
-    const box_size = @min(control_height, line_h);
+    const box_size = @min(control_height, body_height);
     const checkbox_spacing = t.spacing.xs;
     const item_spacing = t.spacing.xs;
 

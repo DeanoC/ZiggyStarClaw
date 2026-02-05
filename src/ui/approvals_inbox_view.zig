@@ -1,5 +1,4 @@
 const std = @import("std");
-const zgui = @import("zgui");
 const state = @import("../client/state.zig");
 const types = @import("../protocol/types.zig");
 const theme = @import("theme.zig");
@@ -41,19 +40,15 @@ var payload_scroll_ids: [max_payload_scrolls]u64 = [_]u64{0} ** max_payload_scro
 var payload_scroll_vals: [max_payload_scrolls]f32 = [_]f32{0.0} ** max_payload_scrolls;
 var payload_scroll_len: usize = 0;
 
-pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ApprovalsInboxAction {
+pub fn draw(
+    allocator: std.mem.Allocator,
+    ctx: *state.ClientContext,
+    rect_override: ?draw_context.Rect,
+) ApprovalsInboxAction {
     var action = ApprovalsInboxAction{};
     const t = theme.activeTheme();
-
-    const panel_pos = zgui.getCursorScreenPos();
-    const panel_avail = zgui.getContentRegionAvail();
-    if (panel_avail[0] <= 0.0 or panel_avail[1] <= 0.0) {
-        return action;
-    }
-    _ = zgui.invisibleButton("##approvals_view_canvas", .{ .w = panel_avail[0], .h = panel_avail[1] });
-
-    const panel_rect = draw_context.Rect.fromMinSize(panel_pos, .{ panel_avail[0], panel_avail[1] });
-    var dc = draw_context.DrawContext.init(allocator, .{ .imgui = .{} }, t, panel_rect);
+    const panel_rect = rect_override orelse return action;
+    var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer dc.deinit();
 
     dc.drawRect(panel_rect, .{ .fill = t.colors.background });
@@ -108,12 +103,12 @@ fn drawHeader(
     var cursor_y = rect.min[1] + top_pad;
 
     theme.push(.title);
-    const title_height = zgui.getTextLineHeightWithSpacing();
+    const title_height = dc.lineHeight();
     dc.drawText("Approvals Needed", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
 
     cursor_y += title_height + gap;
-    const subtitle_height = zgui.getTextLineHeightWithSpacing();
+    const subtitle_height = dc.lineHeight();
     dc.drawText("Human-in-the-loop", .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
 
     var count_buf: [32]u8 = undefined;
@@ -138,7 +133,7 @@ fn drawFilters(
 ) f32 {
     const t = theme.activeTheme();
     const padding = t.spacing.md;
-    const line_height = zgui.getTextLineHeightWithSpacing();
+    const line_height = dc.lineHeight();
     const pill_height = line_height + t.spacing.xs * 2.0;
 
     var all_buf: [24]u8 = undefined;
@@ -259,12 +254,12 @@ fn drawApprovalCard(
     theme.push(.heading);
     dc.drawText("Approval Needed", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
-    cursor_y += zgui.getTextLineHeightWithSpacing();
+    cursor_y += dc.lineHeight();
 
     if (approval.summary) |summary| {
         cursor_y += t.spacing.xs;
         _ = drawWrappedText(allocator, dc, summary, .{ rect.min[0] + padding, cursor_y }, rect.size()[0] - padding * 2.0, t.colors.text_primary);
-        cursor_y += measureWrappedTextHeight(allocator, summary, rect.size()[0] - padding * 2.0);
+        cursor_y += measureWrappedTextHeight(allocator, dc, summary, rect.size()[0] - padding * 2.0);
     }
 
     if (approval.requested_at_ms) |ts| {
@@ -272,7 +267,7 @@ fn drawApprovalCard(
         const label = formatRelativeTime(std.time.milliTimestamp(), ts, &time_buf);
         cursor_y += t.spacing.xs;
         dc.drawText(label, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
-        cursor_y += zgui.getTextLineHeightWithSpacing();
+        cursor_y += dc.lineHeight();
     }
 
     cursor_y += t.spacing.xs;
@@ -288,7 +283,7 @@ fn drawApprovalCard(
 
     var decision: ApprovalDecision = .none;
     if (approval.can_resolve) {
-        const button_height = zgui.getTextLineHeightWithSpacing() + t.spacing.xs * 2.0;
+        const button_height = dc.lineHeight() + t.spacing.xs * 2.0;
         const approve_w = buttonWidth(dc, "Approve", t);
         const decline_w = buttonWidth(dc, "Decline", t);
         const allow_w = buttonWidth(dc, "Allow Always", t);
@@ -330,9 +325,9 @@ fn drawPayloadBox(
 
     var lines = std.ArrayList(Line).empty;
     defer lines.deinit(allocator);
-    buildLinesInto(allocator, text, rect.size()[0] - t.spacing.sm * 2.0, &lines);
+    buildLinesInto(allocator, dc, text, rect.size()[0] - t.spacing.sm * 2.0, &lines);
 
-    const line_height = zgui.getTextLineHeightWithSpacing();
+    const line_height = dc.lineHeight();
     const content_height = @as(f32, @floatFromInt(lines.items.len)) * line_height;
     const scroll_ptr = payloadScrollFor(id);
     const max_scroll = @max(0.0, content_height - rect.size()[1]);
@@ -474,25 +469,24 @@ fn approvalCardHeight(
     can_resolve: bool,
 ) f32 {
     _ = payload;
-    _ = dc;
     const t = theme.activeTheme();
     const padding = t.spacing.md;
     var height: f32 = padding * 2.0;
-    height += zgui.getTextLineHeightWithSpacing();
+    height += dc.lineHeight();
 
     if (summary) |text| {
         height += t.spacing.xs;
-        height += measureWrappedTextHeight(allocator, text, width - padding * 2.0);
+        height += measureWrappedTextHeight(allocator, dc, text, width - padding * 2.0);
     }
 
-    height += t.spacing.xs + zgui.getTextLineHeightWithSpacing();
+    height += t.spacing.xs + dc.lineHeight();
     height += t.spacing.xs + 1.0 + t.spacing.xs;
     height += 120.0 + t.spacing.sm;
 
     if (can_resolve) {
-        height += zgui.getTextLineHeightWithSpacing() + t.spacing.xs * 2.0;
+        height += dc.lineHeight() + t.spacing.xs * 2.0;
     } else {
-        height += zgui.getTextLineHeightWithSpacing();
+        height += dc.lineHeight();
     }
 
     return height;
@@ -508,10 +502,10 @@ fn drawWrappedText(
 ) f32 {
     var lines = std.ArrayList(Line).empty;
     defer lines.deinit(allocator);
-    buildLinesInto(allocator, text, wrap_width, &lines);
+    buildLinesInto(allocator, dc, text, wrap_width, &lines);
 
     var y = pos[1];
-    const line_height = zgui.getTextLineHeightWithSpacing();
+    const line_height = dc.lineHeight();
     for (lines.items) |line| {
         const slice = text[line.start..line.end];
         if (slice.len > 0) {
@@ -524,17 +518,19 @@ fn drawWrappedText(
 
 fn measureWrappedTextHeight(
     allocator: std.mem.Allocator,
+    dc: *draw_context.DrawContext,
     text: []const u8,
     wrap_width: f32,
 ) f32 {
     var lines = std.ArrayList(Line).empty;
     defer lines.deinit(allocator);
-    buildLinesInto(allocator, text, wrap_width, &lines);
-    return @as(f32, @floatFromInt(lines.items.len)) * zgui.getTextLineHeightWithSpacing();
+    buildLinesInto(allocator, dc, text, wrap_width, &lines);
+    return @as(f32, @floatFromInt(lines.items.len)) * dc.lineHeight();
 }
 
 fn buildLinesInto(
     allocator: std.mem.Allocator,
+    dc: *draw_context.DrawContext,
     text: []const u8,
     wrap_width: f32,
     lines: *std.ArrayList(Line),
@@ -559,7 +555,7 @@ fn buildLinesInto(
 
         const next = nextCharIndex(text, index);
         const slice = text[index..next];
-        const char_w = zgui.calcTextSize(slice, .{ .wrap_width = 0.0 })[0];
+        const char_w = dc.measureText(slice, 0.0)[0];
 
         if (ch == ' ' or ch == '\t') {
             last_space = next;

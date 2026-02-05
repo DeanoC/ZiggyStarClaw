@@ -1,16 +1,15 @@
 const std = @import("std");
-const zgui = @import("zgui");
 const state = @import("../client/state.zig");
 const types = @import("../protocol/types.zig");
 const theme = @import("theme.zig");
 const colors = @import("theme/colors.zig");
-const components = @import("components/components.zig");
 const draw_context = @import("draw_context.zig");
 const input_router = @import("input/input_router.zig");
 const input_state = @import("input/input_state.zig");
 const widgets = @import("widgets/widgets.zig");
+const cursor = @import("input/cursor.zig");
 
-var split_state = components.layout.split_pane.SplitState{ .size = 520.0 };
+var split_width: f32 = 520.0;
 var split_dragging = false;
 var show_logs = false;
 var left_scroll_y: f32 = 0.0;
@@ -20,7 +19,14 @@ var right_scroll_max: f32 = 0.0;
 
 const Step = struct {
     label: []const u8,
-    state: components.data.progress_step.State,
+    state: StepState,
+};
+
+const StepState = enum {
+    pending,
+    active,
+    complete,
+    failed,
 };
 
 const BadgeVariant = enum {
@@ -30,17 +36,10 @@ const BadgeVariant = enum {
     neutral,
 };
 
-pub fn draw(ctx: *state.ClientContext) void {
+pub fn draw(ctx: *state.ClientContext, rect_override: ?draw_context.Rect) void {
     const t = theme.activeTheme();
-    const panel_pos = zgui.getCursorScreenPos();
-    const panel_avail = zgui.getContentRegionAvail();
-    if (panel_avail[0] <= 0.0 or panel_avail[1] <= 0.0) {
-        return;
-    }
-    _ = zgui.invisibleButton("##run_inspector_view_canvas", .{ .w = panel_avail[0], .h = panel_avail[1] });
-
-    const panel_rect = draw_context.Rect.fromMinSize(panel_pos, .{ panel_avail[0], panel_avail[1] });
-    var dc = draw_context.DrawContext.init(std.heap.page_allocator, .{ .imgui = .{} }, t, panel_rect);
+    const panel_rect = rect_override orelse return;
+    var dc = draw_context.DrawContext.init(std.heap.page_allocator, .{ .direct = .{} }, t, panel_rect);
     defer dc.deinit();
 
     dc.drawRect(panel_rect, .{ .fill = t.colors.background });
@@ -63,13 +62,13 @@ pub fn draw(ctx: *state.ClientContext) void {
     const gap = t.spacing.md;
     const min_left: f32 = 360.0;
     const min_right: f32 = 240.0;
-    if (split_state.size <= 0.0) split_state.size = 520.0;
+    if (split_width <= 0.0) split_width = 520.0;
     const max_left = @max(min_left, panel_rect.size()[0] - min_right - gap);
-    split_state.size = std.math.clamp(split_state.size, min_left, max_left);
+    split_width = std.math.clamp(split_width, min_left, max_left);
 
     const left_rect = draw_context.Rect.fromMinSize(
         .{ panel_rect.min[0], content_top },
-        .{ split_state.size, remaining },
+        .{ split_width, remaining },
     );
     const right_rect = draw_context.Rect.fromMinSize(
         .{ left_rect.max[0] + gap, content_top },
@@ -95,12 +94,12 @@ fn drawHeader(
     var cursor_y = rect.min[1] + top_pad;
 
     theme.push(.title);
-    const title_height = zgui.getTextLineHeightWithSpacing();
+    const title_height = dc.lineHeight();
     dc.drawText("Task Progress", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
 
     cursor_y += title_height + gap;
-    const subtitle_height = zgui.getTextLineHeightWithSpacing();
+    const subtitle_height = dc.lineHeight();
     dc.drawText("Run Inspector", .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
 
     const height = top_pad + title_height + gap + subtitle_height + top_pad;
@@ -132,7 +131,7 @@ fn drawLeftPanel(
     theme.push(.heading);
     dc.drawText("Task Progress", .{ inner_rect.min[0], cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
-    cursor_y += zgui.getTextLineHeightWithSpacing();
+    cursor_y += dc.lineHeight();
     dc.drawRect(draw_context.Rect.fromMinSize(.{ inner_rect.min[0], cursor_y + t.spacing.xs }, .{ inner_rect.size()[0], 1.0 }), .{ .fill = t.colors.divider });
     cursor_y += t.spacing.sm;
 
@@ -147,7 +146,7 @@ fn drawLeftPanel(
         cursor_y += row_h + t.spacing.md;
     }
 
-    const button_height = zgui.getTextLineHeightWithSpacing() + t.spacing.xs * 2.0;
+    const button_height = dc.lineHeight() + t.spacing.xs * 2.0;
     const button_width = buttonWidth(dc, "View Logs", t);
     const button_rect = draw_context.Rect.fromMinSize(
         .{ inner_rect.min[0], cursor_y },
@@ -198,14 +197,14 @@ fn drawRightPanel(
     theme.push(.heading);
     dc.drawText("Agent Notifications", .{ inner_rect.min[0], cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
-    cursor_y += zgui.getTextLineHeightWithSpacing() + t.spacing.sm;
+    cursor_y += dc.lineHeight() + t.spacing.sm;
 
     var refs_buf: [3][]const u8 = undefined;
     const refs = collectReferenceNames(ctx, &refs_buf);
 
     if (ctx.nodes.items.len == 0) {
         dc.drawText("No active agents yet.", .{ inner_rect.min[0], cursor_y }, .{ .color = t.colors.text_secondary });
-        cursor_y += zgui.getTextLineHeightWithSpacing();
+        cursor_y += dc.lineHeight();
     } else {
         for (ctx.nodes.items, 0..) |node, idx| {
             const label = node.display_name orelse node.id;
@@ -239,7 +238,7 @@ fn drawStepRow(
 ) f32 {
     _ = queue;
     const t = theme.activeTheme();
-    const row_height = zgui.getTextLineHeightWithSpacing() + t.spacing.sm;
+    const row_height = dc.lineHeight() + t.spacing.sm;
     const row_rect = draw_context.Rect.fromMinSize(.{ rect.min[0], y }, .{ rect.size()[0], row_height });
 
     const circle_size: f32 = row_height - t.spacing.xs;
@@ -286,8 +285,8 @@ fn drawStepRow(
 fn drawDetailsCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
     const t = theme.activeTheme();
     const padding = t.spacing.md;
-    const title_height = zgui.getTextLineHeightWithSpacing();
-    const line_height = zgui.getTextLineHeightWithSpacing();
+    const title_height = dc.lineHeight();
+    const line_height = dc.lineHeight();
     const badge_height = badgeSize(dc, "In Progress", t)[1];
     const body_height = line_height * 3.0 + badge_height + t.spacing.xs * 3.0;
     const card_height = padding * 2.0 + title_height + t.spacing.sm + body_height;
@@ -321,8 +320,8 @@ fn drawDetailsCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
 fn drawLogsCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
     const t = theme.activeTheme();
     const padding = t.spacing.md;
-    const title_height = zgui.getTextLineHeightWithSpacing();
-    const line_height = zgui.getTextLineHeightWithSpacing();
+    const title_height = dc.lineHeight();
+    const line_height = dc.lineHeight();
     const body_height = line_height * 4.0 + t.spacing.xs * 3.0;
     const card_height = padding * 2.0 + title_height + t.spacing.sm + body_height;
 
@@ -357,7 +356,7 @@ fn drawAgentBlock(
     refs: [][]const u8,
 ) f32 {
     const t = theme.activeTheme();
-    const line_height = zgui.getTextLineHeightWithSpacing();
+    const line_height = dc.lineHeight();
     const badge_h = badgeSize(dc, "connected", t)[1];
 
     var cursor_y = y;
@@ -455,7 +454,7 @@ fn handleSplitResize(
 
     const hover = divider_rect.contains(queue.state.mouse_pos);
     if (hover) {
-        zgui.setMouseCursor(.resize_ew);
+        cursor.set(.resize_ew);
     }
 
     for (queue.events.items) |evt| {
@@ -476,7 +475,7 @@ fn handleSplitResize(
 
     if (split_dragging) {
         const target = queue.state.mouse_pos[0] - rect.min[0];
-        split_state.size = std.math.clamp(target, min_left, max_left);
+        split_width = std.math.clamp(target, min_left, max_left);
     }
 
     const divider = draw_context.Rect.fromMinSize(
@@ -510,7 +509,7 @@ fn handleWheelScroll(
     if (scroll_y.* > max_scroll) scroll_y.* = max_scroll;
 }
 
-fn statusVariant(step_state: components.data.progress_step.State) BadgeVariant {
+fn statusVariant(step_state: StepState) BadgeVariant {
     return switch (step_state) {
         .pending => .neutral,
         .active => .primary,
@@ -519,7 +518,7 @@ fn statusVariant(step_state: components.data.progress_step.State) BadgeVariant {
     };
 }
 
-fn statusLabel(step_state: components.data.progress_step.State) []const u8 {
+fn statusLabel(step_state: StepState) []const u8 {
     return switch (step_state) {
         .pending => "Pending",
         .active => "In Progress",

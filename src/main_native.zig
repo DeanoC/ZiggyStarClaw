@@ -4,12 +4,10 @@ const ui = @import("ui/main_window.zig");
 const input_router = @import("ui/input/input_router.zig");
 const operator_view = @import("ui/operator_view.zig");
 const theme = @import("ui/theme.zig");
-const imgui_bridge = @import("ui/imgui_bridge.zig");
 const panel_manager = @import("ui/panel_manager.zig");
 const workspace_store = @import("ui/workspace_store.zig");
 const workspace = @import("ui/workspace.zig");
 const ui_command_inbox = @import("ui/ui_command_inbox.zig");
-const dock_layout = @import("ui/dock_layout.zig");
 const image_cache = @import("ui/image_cache.zig");
 const attachment_cache = @import("ui/attachment_cache.zig");
 const client_state = @import("client/state.zig");
@@ -31,9 +29,10 @@ const types = @import("protocol/types.zig");
 const sdl = @import("platform/sdl3.zig").c;
 const input_backend = @import("ui/input/input_backend.zig");
 const sdl_input_backend = @import("ui/input/sdl_input_backend.zig");
+const text_input_backend = @import("ui/input/text_input_backend.zig");
 
 const webgpu_renderer = @import("client/renderer.zig");
-const imgui_wgpu = @import("ui/imgui_wrapper_wgpu.zig");
+const font_system = @import("ui/font_system.zig");
 
 const icon = @cImport({
     @cInclude("icon_loader.h");
@@ -245,10 +244,86 @@ const ReadLoop = struct {
     last_payload_len: usize = 0,
 };
 
+const ConnectJob = struct {
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    mutex: std.Thread.Mutex = .{},
+    thread: ?std.Thread = null,
+    status: std.atomic.Value(u8) = std.atomic.Value(u8).init(0),
+    cancel_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    error_msg: ?[]u8 = null,
+
+    const Status = enum(u8) { idle = 0, running = 1, success = 2, failed = 3 };
+
+    fn start(self: *ConnectJob) !bool {
+        if (self.status.load(.monotonic) == @intFromEnum(Status.running)) return false;
+        if (self.thread != null) return false;
+        self.cancel_requested.store(false, .monotonic);
+        self.clearError();
+        self.status.store(@intFromEnum(Status.running), .monotonic);
+        self.thread = try std.Thread.spawn(.{}, connectThreadMain, .{self});
+        return true;
+    }
+
+    fn requestCancel(self: *ConnectJob) void {
+        self.cancel_requested.store(true, .monotonic);
+    }
+
+    fn isRunning(self: *ConnectJob) bool {
+        return self.status.load(.monotonic) == @intFromEnum(Status.running);
+    }
+
+    fn takeResult(self: *ConnectJob) ?struct { ok: bool, err: ?[]u8, canceled: bool } {
+        const status = self.status.load(.monotonic);
+        if (status == @intFromEnum(Status.idle) or status == @intFromEnum(Status.running)) return null;
+        if (self.thread) |handle| {
+            handle.join();
+            self.thread = null;
+        }
+        const ok = status == @intFromEnum(Status.success);
+        self.status.store(@intFromEnum(Status.idle), .monotonic);
+        const canceled = self.cancel_requested.load(.monotonic);
+        self.cancel_requested.store(false, .monotonic);
+        self.mutex.lock();
+        const err_msg = self.error_msg;
+        self.error_msg = null;
+        self.mutex.unlock();
+        return .{ .ok = ok, .err = err_msg, .canceled = canceled };
+    }
+
+    fn setError(self: *ConnectJob, message: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.error_msg) |msg| {
+            self.allocator.free(msg);
+        }
+        self.error_msg = self.allocator.dupe(u8, message) catch null;
+    }
+
+    fn clearError(self: *ConnectJob) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.error_msg) |msg| {
+            self.allocator.free(msg);
+            self.error_msg = null;
+        }
+    }
+};
+
+fn connectThreadMain(job: *ConnectJob) void {
+    const result = job.ws_client.connect();
+    if (result) |_| {
+        job.status.store(@intFromEnum(ConnectJob.Status.success), .monotonic);
+    } else |err| {
+        job.setError(@errorName(err));
+        job.status.store(@intFromEnum(ConnectJob.Status.failed), .monotonic);
+    }
+}
+
 fn readLoopMain(loop: *ReadLoop) void {
     loop.running.store(true, .monotonic);
     defer loop.running.store(false, .monotonic);
-    loop.ws_client.setReadTimeout(0);
+    loop.ws_client.setReadTimeout(250);
     while (!loop.stop.load(.monotonic)) {
         const payload = loop.ws_client.receive() catch |err| {
             if (err == error.NotConnected or err == error.Closed) {
@@ -292,7 +367,6 @@ fn startReadThread(loop: *ReadLoop, thread: *?std.Thread) !void {
 fn stopReadThread(loop: *ReadLoop, thread: *?std.Thread) void {
     if (thread.*) |handle| {
         loop.stop.store(true, .monotonic);
-        loop.ws_client.signalClose();
         handle.join();
         thread.* = null;
         loop.ws_client.disconnect();
@@ -828,6 +902,10 @@ pub fn main() !void {
         cfg.insecure_tls,
         cfg.connect_host_override,
     );
+    var connect_job = ConnectJob{
+        .allocator = allocator,
+        .ws_client = &ws_client,
+    };
     ws_client.setReadTimeout(15_000);
     defer ws_client.deinit();
 
@@ -859,6 +937,8 @@ pub fn main() !void {
         return error.SdlWindowCreateFailed;
     };
     defer sdl.SDL_DestroyWindow(window);
+    text_input_backend.init(window);
+    defer text_input_backend.deinit();
     setWindowIcon(window);
     if (app_state_state.window_maximized) {
         _ = sdl.SDL_MaximizeWindow(window);
@@ -873,25 +953,17 @@ pub fn main() !void {
     var renderer = try webgpu_renderer.Renderer.init(allocator, window);
     logSurfaceBackend(window);
 
-    imgui_wgpu.init(
-        allocator,
-        window,
-        @ptrCast(renderer.gctx.device),
-        @intFromEnum(renderer.gctx.swapchain_descriptor.format),
-        webgpu_renderer.depth_format_undefined,
-    );
-    const dpi_scale: f32 = sdl.SDL_GetWindowDisplayScale(window);
-    if (dpi_scale > 0.0) {
-        imgui_wgpu.applyDpiScale(dpi_scale);
+    const dpi_scale_raw: f32 = sdl.SDL_GetWindowDisplayScale(window);
+    const dpi_scale: f32 = if (dpi_scale_raw > 0.0) dpi_scale_raw else 1.0;
+    if (!font_system.isInitialized()) {
+        font_system.init(std.heap.page_allocator);
     }
+    theme.applyTypography(dpi_scale);
     image_cache.init(allocator);
     attachment_cache.init(allocator);
-    image_cache.setEnabled(false);
+    image_cache.setEnabled(true);
     defer image_cache.deinit();
     defer attachment_cache.deinit();
-    defer {
-        imgui_wgpu.deinit();
-    }
     defer renderer.deinit();
 
     var ctx = try client_state.ClientContext.init(allocator);
@@ -908,8 +980,6 @@ pub fn main() !void {
     defer ui.deinit(allocator);
     var command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);
     defer command_inbox.deinit(allocator);
-    var dock_state = dock_layout.DockState{};
-    imgui_bridge.loadIniFromMemory(manager.workspace.layout.imgui_ini);
 
     var message_queue = MessageQueue{};
     defer message_queue.deinit(allocator);
@@ -959,16 +1029,16 @@ pub fn main() !void {
         should_reconnect = true;
         reconnect_backoff_ms = 500;
         next_reconnect_at_ms = 0;
-        ws_client.connect() catch |err| {
-            logger.err("WebSocket auto-connect failed: {}", .{err});
-            ctx.state = .error_state;
-        };
-        if (ws_client.is_connected) {
-            ctx.state = .authenticating;
-            next_ping_at_ms = 0;
-            startReadThread(&read_loop, &read_thread) catch |err| {
-                logger.err("Failed to start read thread: {}", .{err});
+        if (!connect_job.isRunning()) {
+            const started = connect_job.start() catch |err| blk: {
+                logger.err("Failed to start connect thread: {}", .{err});
+                ctx.state = .error_state;
+                ctx.setError(@errorName(err)) catch {};
+                break :blk false;
             };
+            if (!started) {
+                logger.warn("Connect attempt already in progress", .{});
+            }
         }
         auto_connect_pending = false;
     }
@@ -977,7 +1047,6 @@ pub fn main() !void {
     while (!should_close) {
         var event: sdl.SDL_Event = undefined;
         while (sdl.SDL_PollEvent(&event)) {
-            _ = imgui_wgpu.processEvent(&event);
             sdl_input_backend.pushEvent(&event);
             switch (event.type) {
                 sdl.SDL_EVENT_QUIT,
@@ -1066,9 +1135,11 @@ pub fn main() !void {
             &agents,
             ws_client.is_connected,
             build_options.app_version,
+            fb_width,
+            fb_height,
+            true,
             &manager,
             &command_inbox,
-            &dock_state,
         );
 
         if (ui_action.config_updated) {
@@ -1088,9 +1159,6 @@ pub fn main() !void {
         }
 
         if (ui_action.save_workspace) {
-            dock_layout.captureIni(allocator, &manager.workspace) catch |err| {
-                logger.warn("Failed to capture workspace layout: {}", .{err});
-            };
             workspace_store.save(allocator, "ziggystarclaw_workspace.json", &manager.workspace) catch |err| {
                 logger.err("Failed to save workspace: {}", .{err});
             };
@@ -1170,22 +1238,23 @@ pub fn main() !void {
             should_reconnect = true;
             reconnect_backoff_ms = 500;
             next_reconnect_at_ms = 0;
-            ws_client.connect() catch |err| {
-                logger.err("WebSocket connect failed: {}", .{err});
+            const started = connect_job.start() catch |err| blk: {
+                logger.err("Failed to start connect thread: {}", .{err});
                 ctx.state = .error_state;
+                ctx.setError(@errorName(err)) catch {};
+                break :blk false;
             };
-            if (ws_client.is_connected) {
-                ctx.state = .authenticating;
-                next_ping_at_ms = 0;
-                startReadThread(&read_loop, &read_thread) catch |err| {
-                    logger.err("Failed to start read thread: {}", .{err});
-                };
+            if (!started) {
+                logger.warn("Connect attempt already in progress", .{});
             }
         }
 
         if (ui_action.disconnect) {
+            connect_job.requestCancel();
             stopReadThread(&read_loop, &read_thread);
-            ws_client.disconnect();
+            if (!connect_job.isRunning()) {
+                ws_client.disconnect();
+            }
             should_reconnect = false;
             auto_connect_enabled = false;
             next_reconnect_at_ms = 0;
@@ -1399,6 +1468,37 @@ pub fn main() !void {
             ctx.clearOperatorNotice();
         }
 
+        if (connect_job.takeResult()) |result| {
+            if (result.canceled) {
+                if (result.err) |err_msg| {
+                    allocator.free(err_msg);
+                }
+                ws_client.disconnect();
+                ctx.state = .disconnected;
+                ctx.clearError();
+                next_ping_at_ms = 0;
+            } else if (result.ok) {
+                ctx.clearError();
+                ctx.state = .authenticating;
+                next_ping_at_ms = 0;
+                startReadThread(&read_loop, &read_thread) catch |err| {
+                    logger.err("Failed to start read thread: {}", .{err});
+                };
+            } else {
+                ctx.state = .error_state;
+                if (result.err) |err_msg| {
+                    ctx.setError(err_msg) catch {};
+                    allocator.free(err_msg);
+                }
+                if (should_reconnect) {
+                    const now_ms = std.time.milliTimestamp();
+                    next_reconnect_at_ms = now_ms + reconnect_backoff_ms;
+                    const grown = reconnect_backoff_ms + reconnect_backoff_ms / 2;
+                    reconnect_backoff_ms = if (grown > 15_000) 15_000 else grown;
+                }
+            }
+        }
+
         if (should_reconnect and !ws_client.is_connected and read_thread == null) {
             const now_ms = std.time.milliTimestamp();
             if (next_reconnect_at_ms == 0 or now_ms >= next_reconnect_at_ms) {
@@ -1406,24 +1506,17 @@ pub fn main() !void {
                 ws_client.url = cfg.server_url;
                 ws_client.token = cfg.token;
                 ws_client.insecure_tls = cfg.insecure_tls;
-                ws_client.connect() catch |err| {
-                    logger.err("WebSocket reconnect failed: {}", .{err});
-                    ctx.state = .error_state;
-                };
-                if (ws_client.is_connected) {
-                    ctx.clearError();
-                    ctx.state = .authenticating;
-                    reconnect_backoff_ms = 500;
-                    next_reconnect_at_ms = 0;
-                    next_ping_at_ms = 0;
-                    startReadThread(&read_loop, &read_thread) catch |err| {
-                        logger.err("Failed to start read thread: {}", .{err});
+                ws_client.connect_host_override = cfg.connect_host_override;
+                if (!connect_job.isRunning()) {
+                    const started = connect_job.start() catch blk: {
+                        break :blk false;
                     };
-                } else {
-                    next_reconnect_at_ms = now_ms + reconnect_backoff_ms;
-                    const grown = reconnect_backoff_ms + reconnect_backoff_ms / 2;
-                    reconnect_backoff_ms = if (grown > 15_000) 15_000 else grown;
-                    logger.info("Reconnect scheduled in {d}ms", .{reconnect_backoff_ms});
+                    if (!started) {
+                        next_reconnect_at_ms = now_ms + reconnect_backoff_ms;
+                        const grown = reconnect_backoff_ms + reconnect_backoff_ms / 2;
+                        reconnect_backoff_ms = if (grown > 15_000) 15_000 else grown;
+                        logger.info("Reconnect scheduled in {d}ms", .{reconnect_backoff_ms});
+                    }
                 }
             }
         }
@@ -1466,6 +1559,9 @@ fn initLogging(allocator: std.mem.Allocator) !void {
             logger.warn("Failed to open startup log: {}", .{err});
         };
     }
+    logger.initAsync(allocator) catch |err| {
+        logger.warn("Failed to start async logger: {}", .{err});
+    };
 }
 
 fn parseLogLevel(value: []const u8) ?logger.Level {

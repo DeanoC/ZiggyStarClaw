@@ -4,12 +4,10 @@ const builtin = @import("builtin");
 const ui = @import("ui/main_window.zig");
 const theme = @import("ui/theme.zig");
 const operator_view = @import("ui/operator_view.zig");
-const imgui_bridge = @import("ui/imgui_bridge.zig");
 const panel_manager = @import("ui/panel_manager.zig");
 const workspace_store = @import("ui/workspace_store.zig");
 const workspace = @import("ui/workspace.zig");
 const ui_command_inbox = @import("ui/ui_command_inbox.zig");
-const dock_layout = @import("ui/dock_layout.zig");
 const input_router = @import("ui/input/input_router.zig");
 const image_cache = @import("ui/image_cache.zig");
 const client_state = @import("client/state.zig");
@@ -175,7 +173,7 @@ fn connectThreadMain(job: *ConnectJob) void {
 fn readLoopMain(loop: *ReadLoop) void {
     loop.running.store(true, .monotonic);
     defer loop.running.store(false, .monotonic);
-    loop.ws_client.setReadTimeout(0);
+    loop.ws_client.setReadTimeout(250);
     while (!loop.stop.load(.monotonic)) {
         const payload = loop.ws_client.receive() catch |err| {
             if (err == error.NotConnected or err == error.Closed) {
@@ -219,7 +217,6 @@ fn startReadThread(loop: *ReadLoop, thread: *?std.Thread) !void {
 fn stopReadThread(loop: *ReadLoop, thread: *?std.Thread) void {
     if (thread.*) |handle| {
         loop.stop.store(true, .monotonic);
-        loop.ws_client.signalClose();
         handle.join();
         thread.* = null;
         loop.ws_client.disconnect();
@@ -901,7 +898,6 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
     var command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);
     defer command_inbox.deinit(allocator);
     defer input_router.deinit(allocator);
-    var dock_state = dock_layout.DockState{};
     var cfg = config.loadOrDefault(allocator, "ziggystarclaw_config.json") catch |err| blk: {
         logger.warn("Failed to load config: {}", .{err});
         break :blk config.initDefault(allocator) catch return 1;
@@ -944,7 +940,6 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
     ImGui_ImplOpenGL3_Init("#version 100");
     ui_scale = guessDpiScale(window);
     applyDpiScale(ui_scale);
-    imgui_bridge.loadIniFromMemory(manager.workspace.layout.imgui_ini);
 
     var message_queue = MessageQueue{};
     defer message_queue.deinit(allocator);
@@ -1067,6 +1062,12 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
             next_ping_at_ms = 0;
         }
 
+        var fb_w: c_int = 0;
+        var fb_h: c_int = 0;
+        c.SDL_GL_GetDrawableSize(window, &fb_w, &fb_h);
+        const fb_width: u32 = if (fb_w > 0) @intCast(fb_w) else 1;
+        const fb_height: u32 = if (fb_h > 0) @intCast(fb_h) else 1;
+
         beginFrame(window);
         const ui_action = ui.draw(
             allocator,
@@ -1075,9 +1076,11 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
             &agents,
             ws_client.is_connected,
             build_options.app_version,
+            fb_width,
+            fb_height,
+            false,
             &manager,
             &command_inbox,
-            &dock_state,
         );
         const want_text = zgui.io.getWantTextInput();
         if (want_text and !text_input_active) {
@@ -1102,9 +1105,6 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
         }
 
         if (ui_action.save_workspace) {
-            dock_layout.captureIni(allocator, &manager.workspace) catch |err| {
-                logger.warn("Failed to capture workspace layout: {}", .{err});
-            };
             workspace_store.save(allocator, "ziggystarclaw_workspace.json", &manager.workspace) catch |err| {
                 logger.err("Failed to save workspace: {}", .{err});
             };
@@ -1453,9 +1453,6 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
 
         zgui.render();
 
-        var fb_w: c_int = 0;
-        var fb_h: c_int = 0;
-        c.SDL_GL_GetDrawableSize(window, &fb_w, &fb_h);
         c.glViewport(0, 0, fb_w, fb_h);
         c.glClearColor(0.08, 0.08, 0.1, 1.0);
         c.glClear(c.GL_COLOR_BUFFER_BIT);

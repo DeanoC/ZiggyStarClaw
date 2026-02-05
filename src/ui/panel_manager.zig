@@ -220,7 +220,7 @@ pub const PanelManager = struct {
             },
             .Control => {
                 const data = workspace.PanelData{ .Control = .{} };
-                return try self.openPanel(.Control, "Control", data);
+                return try self.openPanel(.Control, "Workspace", data);
             },
             .CodeEditor => {
                 const file_id = "untitled.zig";
@@ -424,5 +424,5 @@ fn parseControlTab(label: []const u8) workspace.ControlTab {
     if (std.mem.eql(u8, label, "Settings")) return .Settings;
     if (std.mem.eql(u8, label, "Operator")) return .Operator;
     if (std.mem.eql(u8, label, "Showcase")) return .Showcase;
-    return .Sessions;
+    return .Agents;
 }

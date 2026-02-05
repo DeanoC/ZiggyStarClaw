@@ -1,4 +1,3 @@
-const zgui = @import("zgui");
 const draw_context = @import("../draw_context.zig");
 const input_state = @import("../input/input_state.zig");
 const theme = @import("../theme.zig");
@@ -89,7 +88,7 @@ pub fn draw(
     });
 
     const text_w = ctx.measureText(label, 0.0)[0];
-    const text_h = zgui.getTextLineHeightWithSpacing();
+    const text_h = ctx.lineHeight();
     const pos = .{
         rect.min[0] + (rect.size()[0] - text_w) * 0.5,
         rect.min[1] + (rect.size()[1] - text_h) * 0.5,

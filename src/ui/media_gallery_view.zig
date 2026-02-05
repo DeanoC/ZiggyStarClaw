@@ -1,10 +1,13 @@
 const std = @import("std");
-const zgui = @import("zgui");
 const state = @import("../client/state.zig");
 const types = @import("../protocol/types.zig");
 const theme = @import("theme.zig");
 const colors = @import("theme/colors.zig");
-const components = @import("components/components.zig");
+const draw_context = @import("draw_context.zig");
+const input_router = @import("input/input_router.zig");
+const input_state = @import("input/input_state.zig");
+const widgets = @import("widgets/widgets.zig");
+const cursor = @import("input/cursor.zig");
 const image_cache = @import("image_cache.zig");
 const ui_systems = @import("ui_systems.zig");
 const drag_drop = @import("systems/drag_drop.zig");
@@ -14,177 +17,282 @@ const MediaItem = struct {
     url: []const u8,
 };
 
+const FitMode = enum { fit, fill, actual, custom };
+
 var selected_index: ?usize = null;
-var split_state = components.layout.split_pane.SplitState{ .size = 260.0 };
-var stack_split_state = components.layout.split_pane.SplitState{ .size = 360.0 };
+var split_width: f32 = 260.0;
+var split_dragging = false;
+var stack_height: f32 = 360.0;
+var stack_dragging = false;
+var gallery_scroll_y: f32 = 0.0;
+var gallery_scroll_max: f32 = 0.0;
 var viewer_zoom: f32 = 1.0;
 var viewer_offset: [2]f32 = .{ 0.0, 0.0 };
 var viewer_fit_mode: FitMode = .fit;
 var pending_drop_url: ?[]const u8 = null;
 var drag_preview_label: ?[]const u8 = null;
+var thumb_drag_index: ?usize = null;
+var thumb_drag_origin: [2]f32 = .{ 0.0, 0.0 };
+var thumb_drag_started: bool = false;
+var viewer_dragging: bool = false;
+var viewer_drag_last: [2]f32 = .{ 0.0, 0.0 };
 
-const FitMode = enum { fit, fill, actual, custom };
+pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext, rect_override: ?draw_context.Rect) void {
+    const t = theme.activeTheme();
+    const panel_rect = rect_override orelse return;
+    var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
+    defer dc.deinit();
+    dc.drawRect(panel_rect, .{ .fill = t.colors.background });
 
-pub fn draw(ctx: *state.ClientContext) void {
-    const opened = zgui.beginChild("MediaGalleryView", .{ .h = 0.0, .child_flags = .{ .border = true } });
-    if (opened) {
-        const t = theme.activeTheme();
-        _ = components.layout.header_bar.begin(.{ .title = "Media Gallery", .subtitle = "Images & Previews" });
-        components.layout.header_bar.end();
+    const header = drawHeader(&dc, panel_rect);
+    const sep_gap = t.spacing.xs;
+    const content_top = panel_rect.min[1] + header.height + sep_gap;
+    const content_height = panel_rect.max[1] - content_top;
+    if (content_height <= 0.0) return;
+    const content_rect = draw_context.Rect.fromMinSize(
+        .{ panel_rect.min[0], content_top },
+        .{ panel_rect.size()[0], content_height },
+    );
 
-        zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
-
-        var items_buf: [64]MediaItem = undefined;
-        const messages = messagesForCurrentSession(ctx);
-        const items = collectImages(messages, &items_buf);
-        if (items.len == 0) {
-            zgui.textDisabled("No media available yet.", .{});
-            zgui.endChild();
-            return;
-        }
-
-        if (selected_index == null or selected_index.? >= items.len) {
-            selected_index = 0;
-        }
-        applyPendingDrop(items);
-
-        const avail = zgui.getContentRegionAvail();
-        const use_stack = avail[0] < 780.0;
-        if (use_stack) {
-            drawStackedLayout(items, t);
-        } else {
-            drawSplitLayout(items, t);
-        }
+    var items_buf: [64]MediaItem = undefined;
+    const messages = messagesForCurrentSession(ctx);
+    const items = collectImages(messages, &items_buf);
+    if (items.len == 0) {
+        dc.drawText("No media available yet.", .{ content_rect.min[0] + t.spacing.md, content_rect.min[1] + t.spacing.md }, .{ .color = t.colors.text_secondary });
+        return;
     }
-    zgui.endChild();
+
+    if (selected_index == null or selected_index.? >= items.len) {
+        selected_index = 0;
+    }
+    applyPendingDrop(items);
+
+    const use_stack = content_rect.size()[0] < 780.0;
+    const queue = input_router.getQueue();
+    if (use_stack) {
+        drawStackedLayout(&dc, allocator, items, content_rect, queue);
+    } else {
+        drawSplitLayout(&dc, allocator, items, content_rect, queue);
+    }
 }
 
-fn drawSplitLayout(items: []const MediaItem, t: *const theme.Theme) void {
-    const avail = zgui.getContentRegionAvail();
-    if (split_state.size == 0.0) {
-        split_state.size = @min(280.0, avail[0] * 0.3);
-    }
+fn drawHeader(dc: *draw_context.DrawContext, rect: draw_context.Rect) struct { height: f32 } {
+    const t = theme.activeTheme();
+    const top_pad = t.spacing.sm;
+    const gap = t.spacing.xs;
+    const left = rect.min[0] + t.spacing.md;
+    var cursor_y = rect.min[1] + top_pad;
 
-    const split_args = components.layout.split_pane.Args{
-        .id = "media_gallery_split",
-        .axis = .vertical,
-        .primary_size = split_state.size,
-        .min_primary = 220.0,
-        .min_secondary = 320.0,
-        .border = true,
-        .padded = true,
-    };
-
-    components.layout.split_pane.begin(split_args, &split_state);
-    if (components.layout.split_pane.beginPrimary(split_args, &split_state)) {
-        drawGallery(items, t);
-    }
-    components.layout.split_pane.endPrimary();
-    components.layout.split_pane.handleSplitter(split_args, &split_state);
-    if (components.layout.split_pane.beginSecondary(split_args, &split_state)) {
-        drawViewer(items, t);
-    }
-    components.layout.split_pane.endSecondary();
-    components.layout.split_pane.end();
-}
-
-fn drawStackedLayout(items: []const MediaItem, t: *const theme.Theme) void {
-    const avail = zgui.getContentRegionAvail();
-    if (stack_split_state.size == 0.0) {
-        stack_split_state.size = avail[1] * 0.6;
-    }
-    const split_args = components.layout.split_pane.Args{
-        .id = "media_gallery_stack",
-        .axis = .horizontal,
-        .primary_size = stack_split_state.size,
-        .min_primary = 200.0,
-        .min_secondary = 160.0,
-        .border = true,
-        .padded = true,
-    };
-    components.layout.split_pane.begin(split_args, &stack_split_state);
-    if (components.layout.split_pane.beginPrimary(split_args, &stack_split_state)) {
-        drawViewer(items, t);
-    }
-    components.layout.split_pane.endPrimary();
-    components.layout.split_pane.handleSplitter(split_args, &stack_split_state);
-    if (components.layout.split_pane.beginSecondary(split_args, &stack_split_state)) {
-        drawGallery(items, t);
-    }
-    components.layout.split_pane.endSecondary();
-    components.layout.split_pane.end();
-}
-
-fn drawGallery(items: []const MediaItem, t: *const theme.Theme) void {
-    theme.push(.heading);
-    zgui.text("Gallery", .{});
+    theme.push(.title);
+    const title_height = dc.lineHeight();
+    dc.drawText("Media Gallery", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
-    zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
 
-    if (components.layout.scroll_area.begin(.{ .id = "MediaGalleryList", .border = true })) {
-        const avail = zgui.getContentRegionAvail();
-        const thumb = 72.0;
-        const padding = t.spacing.sm;
-        const cell = thumb + padding * 2.0;
-        const columns = @max(1, @as(usize, @intFromFloat((avail[0] + padding) / (cell + padding))));
+    cursor_y += title_height + gap;
+    const subtitle_height = dc.lineHeight();
+    dc.drawText("Images & Previews", .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
 
-        for (items, 0..) |item, idx| {
-            if (idx % columns != 0) {
-                zgui.sameLine(.{ .spacing = padding });
-            }
-            drawThumb(item, idx, thumb, padding, t);
-        }
-    }
-    components.layout.scroll_area.end();
+    const height = top_pad + title_height + gap + subtitle_height + top_pad;
+    return .{ .height = height };
 }
 
-fn drawThumb(item: MediaItem, idx: usize, thumb: f32, padding: f32, t: *const theme.Theme) void {
-    const cursor = zgui.getCursorScreenPos();
-    const size = thumb + padding * 2.0;
-    const is_selected = selected_index != null and selected_index.? == idx;
+fn drawSplitLayout(
+    dc: *draw_context.DrawContext,
+    allocator: std.mem.Allocator,
+    items: []const MediaItem,
+    rect: draw_context.Rect,
+    queue: *input_state.InputQueue,
+) void {
+    const t = theme.activeTheme();
+    const gap = t.spacing.md;
+    const min_left: f32 = 220.0;
+    const min_right: f32 = 320.0;
+    if (split_width == 0.0) {
+        split_width = @min(280.0, rect.size()[0] * 0.3);
+    }
+    const max_left = @max(min_left, rect.size()[0] - min_right - gap);
+    split_width = std.math.clamp(split_width, min_left, max_left);
 
-    const id_z = zgui.formatZ("##media_thumb_{d}", .{idx});
-    _ = zgui.invisibleButton(id_z, .{ .w = size, .h = size });
-    if (zgui.isItemClicked(.left)) {
+    const left_rect = draw_context.Rect.fromMinSize(rect.min, .{ split_width, rect.size()[1] });
+    const right_rect = draw_context.Rect.fromMinSize(
+        .{ left_rect.max[0] + gap, rect.min[1] },
+        .{ rect.max[0] - left_rect.max[0] - gap, rect.size()[1] },
+    );
+
+    drawGallery(dc, allocator, items, left_rect, queue);
+    handleSplitResize(dc, rect, left_rect, queue, gap, min_left, max_left);
+    if (right_rect.size()[0] > 0.0) {
+        drawViewer(dc, items, right_rect, queue);
+    }
+}
+
+fn drawStackedLayout(
+    dc: *draw_context.DrawContext,
+    allocator: std.mem.Allocator,
+    items: []const MediaItem,
+    rect: draw_context.Rect,
+    queue: *input_state.InputQueue,
+) void {
+    const t = theme.activeTheme();
+    const gap = t.spacing.md;
+    const min_top: f32 = 200.0;
+    const min_bottom: f32 = 160.0;
+    if (stack_height == 0.0) {
+        stack_height = rect.size()[1] * 0.6;
+    }
+    const max_top = @max(min_top, rect.size()[1] - min_bottom - gap);
+    stack_height = std.math.clamp(stack_height, min_top, max_top);
+
+    const top_rect = draw_context.Rect.fromMinSize(rect.min, .{ rect.size()[0], stack_height });
+    const bottom_rect = draw_context.Rect.fromMinSize(
+        .{ rect.min[0], top_rect.max[1] + gap },
+        .{ rect.size()[0], rect.max[1] - top_rect.max[1] - gap },
+    );
+
+    drawViewer(dc, items, top_rect, queue);
+    handleStackResize(dc, rect, top_rect, queue, gap, min_top, max_top);
+    if (bottom_rect.size()[1] > 0.0) {
+        drawGallery(dc, allocator, items, bottom_rect, queue);
+    }
+}
+
+fn drawGallery(
+    dc: *draw_context.DrawContext,
+    allocator: std.mem.Allocator,
+    items: []const MediaItem,
+    rect: draw_context.Rect,
+    queue: *input_state.InputQueue,
+) void {
+    _ = allocator;
+    const t = theme.activeTheme();
+    drawContainer(dc, rect);
+
+    const padding = t.spacing.sm;
+    const left = rect.min[0] + padding;
+    var cursor_y = rect.min[1] + padding;
+
+    theme.push(.heading);
+    dc.drawText("Gallery", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
+    theme.pop();
+
+    const line_height = dc.lineHeight();
+    cursor_y += line_height + t.spacing.xs;
+
+    const list_rect = draw_context.Rect.fromMinSize(
+        .{ rect.min[0] + padding, cursor_y },
+        .{ rect.size()[0] - padding * 2.0, rect.max[1] - cursor_y - padding },
+    );
+    if (list_rect.size()[0] <= 0.0 or list_rect.size()[1] <= 0.0) return;
+
+    const thumb = 72.0;
+    const cell_padding = t.spacing.sm;
+    const cell = thumb + cell_padding * 2.0;
+    const columns = @max(1, @as(usize, @intFromFloat((list_rect.size()[0] + cell_padding) / (cell + cell_padding))));
+    const rows = (items.len + columns - 1) / columns;
+    const total_height = @as(f32, @floatFromInt(rows)) * (cell + cell_padding);
+    gallery_scroll_max = @max(0.0, total_height - list_rect.size()[1]);
+    handleWheelScroll(queue, list_rect, &gallery_scroll_y, gallery_scroll_max, 32.0);
+
+    if (!queue.state.mouse_down_left) {
+        thumb_drag_index = null;
+        thumb_drag_started = false;
+    }
+    for (queue.events.items) |evt| {
+        if (evt == .mouse_up) {
+            thumb_drag_index = null;
+            thumb_drag_started = false;
+        }
+    }
+
+    dc.pushClip(list_rect);
+    var idx: usize = 0;
+    var row: usize = 0;
+    while (row < rows) : (row += 1) {
+        var col: usize = 0;
+        while (col < columns) : (col += 1) {
+            if (idx >= items.len) break;
+            const x = list_rect.min[0] + @as(f32, @floatFromInt(col)) * (cell + cell_padding);
+            const y = list_rect.min[1] + @as(f32, @floatFromInt(row)) * (cell + cell_padding) - gallery_scroll_y;
+            const cell_rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ cell, cell });
+            if (cell_rect.max[1] >= list_rect.min[1] and cell_rect.min[1] <= list_rect.max[1]) {
+                drawThumb(dc, items[idx], idx, cell_rect, thumb, cell_padding, queue);
+            }
+            idx += 1;
+        }
+    }
+    dc.popClip();
+}
+
+fn drawThumb(
+    dc: *draw_context.DrawContext,
+    item: MediaItem,
+    idx: usize,
+    rect: draw_context.Rect,
+    thumb: f32,
+    padding: f32,
+    queue: *input_state.InputQueue,
+) void {
+    const t = theme.activeTheme();
+    const selected = selected_index != null and selected_index.? == idx;
+
+    var clicked = false;
+    for (queue.events.items) |evt| {
+        switch (evt) {
+            .mouse_down => |md| {
+                if (md.button == .left and rect.contains(md.pos)) {
+                    thumb_drag_index = idx;
+                    thumb_drag_origin = md.pos;
+                    thumb_drag_started = false;
+                }
+            },
+            .mouse_up => |mu| {
+                if (mu.button == .left and rect.contains(mu.pos) and !(thumb_drag_index == idx and thumb_drag_started)) {
+                    clicked = true;
+                }
+            },
+            else => {},
+        }
+    }
+
+    if (clicked) {
         selected_index = idx;
         viewer_fit_mode = .fit;
         viewer_zoom = 1.0;
         viewer_offset = .{ 0.0, 0.0 };
     }
-    if (zgui.isItemActive() and zgui.isMouseDragging(.left, 2.0)) {
-        const sys = ui_systems.get();
-        if (sys.drag_drop.active_drag == null) {
-            drag_preview_label = item.name;
-            sys.drag_drop.beginDrag(.{
-                .source_id = item.url,
-                .data_type = "image",
-                .preview_fn = drawDragPreview,
-            });
+
+    if (thumb_drag_index == idx and queue.state.mouse_down_left) {
+        const dx = queue.state.mouse_pos[0] - thumb_drag_origin[0];
+        const dy = queue.state.mouse_pos[1] - thumb_drag_origin[1];
+        if (!thumb_drag_started and (dx * dx + dy * dy) > 9.0) {
+            const sys = ui_systems.get();
+            if (sys.drag_drop.active_drag == null) {
+                drag_preview_label = item.name;
+                sys.drag_drop.beginDrag(.{
+                    .source_id = item.url,
+                    .data_type = "image",
+                    .preview_fn = drawDragPreview,
+                });
+                thumb_drag_started = true;
+            }
         }
     }
 
-    const draw_list = zgui.getWindowDrawList();
-    const base = if (is_selected) t.colors.primary else t.colors.surface;
-    const bg = colors.withAlpha(base, if (is_selected) 0.18 else 0.08);
-    draw_list.addRectFilled(.{
-        .pmin = cursor,
-        .pmax = .{ cursor[0] + size, cursor[1] + size },
-        .col = zgui.colorConvertFloat4ToU32(bg),
-        .rounding = t.radius.sm,
-    });
-    draw_list.addRect(.{
-        .pmin = cursor,
-        .pmax = .{ cursor[0] + size, cursor[1] + size },
-        .col = zgui.colorConvertFloat4ToU32(colors.withAlpha(t.colors.border, if (is_selected) 0.8 else 0.4)),
-        .rounding = t.radius.sm,
+    const hovered = rect.contains(queue.state.mouse_pos);
+    const base = if (selected) t.colors.primary else t.colors.surface;
+    const bg = colors.withAlpha(base, if (selected) 0.18 else if (hovered) 0.12 else 0.08);
+    const border_alpha: f32 = if (selected) 0.8 else if (hovered) 0.6 else 0.4;
+    dc.drawRoundedRect(rect, t.radius.sm, .{
+        .fill = bg,
+        .stroke = colors.withAlpha(t.colors.border, border_alpha),
+        .thickness = 1.0,
     });
 
+    const inner = .{ rect.min[0] + padding, rect.min[1] + padding };
     image_cache.request(item.url);
-    const inner = .{ cursor[0] + padding, cursor[1] + padding };
     if (image_cache.get(item.url)) |entry| {
         if (entry.state == .ready) {
-            const tex_id: zgui.TextureIdent = @enumFromInt(@as(u64, entry.texture_id));
-            const tex_ref = zgui.TextureRef{ .tex_data = null, .tex_id = tex_id };
+            const tex_ref = draw_context.DrawContext.textureFromId(@as(u64, entry.texture_id));
             const w = @as(f32, @floatFromInt(entry.width));
             const h = @as(f32, @floatFromInt(entry.height));
             const aspect = if (h > 0) w / h else 1.0;
@@ -199,131 +307,173 @@ fn drawThumb(item: MediaItem, idx: usize, thumb: f32, padding: f32, t: *const th
                 inner[0] + (thumb - draw_w) * 0.5,
                 inner[1] + (thumb - draw_h) * 0.5,
             };
-            const draw_list2 = zgui.getWindowDrawList();
-            draw_list2.addImage(tex_ref, .{
-                .pmin = centered,
-                .pmax = .{ centered[0] + draw_w, centered[1] + draw_h },
-            });
+            dc.drawImage(tex_ref, draw_context.Rect.fromMinSize(centered, .{ draw_w, draw_h }));
         } else {
-            draw_list.addText(.{ inner[0], inner[1] + thumb * 0.4 }, zgui.colorConvertFloat4ToU32(t.colors.text_secondary), "Loading", .{});
+            dc.drawText("Loading", .{ inner[0], inner[1] + thumb * 0.4 }, .{ .color = t.colors.text_secondary });
         }
     } else {
-        draw_list.addText(.{ inner[0], inner[1] + thumb * 0.4 }, zgui.colorConvertFloat4ToU32(t.colors.text_secondary), "Loading", .{});
+        dc.drawText("Loading", .{ inner[0], inner[1] + thumb * 0.4 }, .{ .color = t.colors.text_secondary });
     }
-
-    zgui.dummy(.{ .w = 0.0, .h = 0.0 });
 }
 
-fn drawViewer(items: []const MediaItem, t: *const theme.Theme) void {
-    if (components.layout.card.begin(.{ .title = "Viewer", .id = "media_viewer" })) {
-        const selected = if (selected_index != null and selected_index.? < items.len)
-            items[selected_index.?]
-        else
-            items[0];
+fn drawViewer(dc: *draw_context.DrawContext, items: []const MediaItem, rect: draw_context.Rect, queue: *input_state.InputQueue) void {
+    const t = theme.activeTheme();
+    drawContainer(dc, rect);
 
-        drawViewerControls(t);
-        zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
+    const padding = t.spacing.sm;
+    const left = rect.min[0] + padding;
+    var cursor_y = rect.min[1] + padding;
 
-        const viewer_id = zgui.formatZ("##media_viewer_area", .{});
-        if (zgui.beginChild(viewer_id, .{ .h = 0.0, .child_flags = .{ .border = true } })) {
-            drawViewerArea(selected, t);
-        }
-        zgui.endChild();
-    }
-    components.layout.card.end();
+    theme.push(.heading);
+    dc.drawText("Viewer", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
+    theme.pop();
+
+    const line_height = dc.lineHeight();
+    cursor_y += line_height + t.spacing.xs;
+
+    const controls_height = drawViewerControls(dc, queue, .{ left, cursor_y });
+    cursor_y += controls_height + t.spacing.sm;
+
+    const viewer_rect = draw_context.Rect.fromMinSize(
+        .{ rect.min[0] + padding, cursor_y },
+        .{ rect.size()[0] - padding * 2.0, rect.max[1] - cursor_y - padding },
+    );
+    if (viewer_rect.size()[0] <= 0.0 or viewer_rect.size()[1] <= 0.0) return;
+
+    const selected = if (selected_index != null and selected_index.? < items.len)
+        items[selected_index.?]
+    else
+        items[0];
+
+    drawViewerArea(dc, selected, viewer_rect, queue);
 }
 
-fn drawViewerControls(t: *const theme.Theme) void {
-    if (components.core.button.draw("Fit", .{ .variant = .secondary, .size = .small })) {
+fn drawViewerControls(dc: *draw_context.DrawContext, queue: *input_state.InputQueue, pos: [2]f32) f32 {
+    const t = theme.activeTheme();
+    const line_height = dc.lineHeight();
+    const button_height = line_height + t.spacing.xs * 2.0;
+    var cursor_x = pos[0];
+    const cursor_y = pos[1];
+
+    const labels = [_][]const u8{ "Fit", "Fill", "1:1", "-", "+", "Reset" };
+    var widths: [labels.len]f32 = undefined;
+    var idx: usize = 0;
+    while (idx < labels.len) : (idx += 1) {
+        widths[idx] = buttonWidth(dc, labels[idx], t);
+    }
+
+    if (drawButton(dc, queue, .{ cursor_x, cursor_y }, widths[0], button_height, labels[0], .secondary)) {
         viewer_fit_mode = .fit;
         viewer_offset = .{ 0.0, 0.0 };
     }
-    zgui.sameLine(.{ .spacing = t.spacing.sm });
-    if (components.core.button.draw("Fill", .{ .variant = .secondary, .size = .small })) {
+    cursor_x += widths[0] + t.spacing.sm;
+    if (drawButton(dc, queue, .{ cursor_x, cursor_y }, widths[1], button_height, labels[1], .secondary)) {
         viewer_fit_mode = .fill;
         viewer_offset = .{ 0.0, 0.0 };
     }
-    zgui.sameLine(.{ .spacing = t.spacing.sm });
-    if (components.core.button.draw("1:1", .{ .variant = .secondary, .size = .small })) {
+    cursor_x += widths[1] + t.spacing.sm;
+    if (drawButton(dc, queue, .{ cursor_x, cursor_y }, widths[2], button_height, labels[2], .secondary)) {
         viewer_fit_mode = .actual;
         viewer_zoom = 1.0;
         viewer_offset = .{ 0.0, 0.0 };
     }
-    zgui.sameLine(.{ .spacing = t.spacing.sm });
-    if (components.core.button.draw("-", .{ .variant = .ghost, .size = .small })) {
+    cursor_x += widths[2] + t.spacing.sm;
+    if (drawButton(dc, queue, .{ cursor_x, cursor_y }, widths[3], button_height, labels[3], .ghost)) {
         viewer_zoom = std.math.clamp(viewer_zoom / 1.2, 0.2, 6.0);
         viewer_fit_mode = .custom;
     }
-    zgui.sameLine(.{ .spacing = t.spacing.xs });
-    if (components.core.button.draw("+", .{ .variant = .ghost, .size = .small })) {
+    cursor_x += widths[3] + t.spacing.xs;
+    if (drawButton(dc, queue, .{ cursor_x, cursor_y }, widths[4], button_height, labels[4], .ghost)) {
         viewer_zoom = std.math.clamp(viewer_zoom * 1.2, 0.2, 6.0);
         viewer_fit_mode = .custom;
     }
-    zgui.sameLine(.{ .spacing = t.spacing.sm });
-    if (components.core.button.draw("Reset", .{ .variant = .ghost, .size = .small })) {
+    cursor_x += widths[4] + t.spacing.sm;
+    if (drawButton(dc, queue, .{ cursor_x, cursor_y }, widths[5], button_height, labels[5], .ghost)) {
         viewer_fit_mode = .fit;
         viewer_zoom = 1.0;
         viewer_offset = .{ 0.0, 0.0 };
     }
+
+    return button_height;
 }
 
-fn drawViewerArea(item: MediaItem, t: *const theme.Theme) void {
-    const draw_list = zgui.getWindowDrawList();
-    const cursor = zgui.getCursorScreenPos();
-    const avail = zgui.getContentRegionAvail();
+fn drawButton(
+    dc: *draw_context.DrawContext,
+    queue: *input_state.InputQueue,
+    pos: [2]f32,
+    width: f32,
+    height: f32,
+    label: []const u8,
+    variant: widgets.button.Variant,
+) bool {
+    const rect = draw_context.Rect.fromMinSize(pos, .{ width, height });
+    return widgets.button.draw(dc, rect, label, queue, .{ .variant = variant });
+}
+
+fn drawViewerArea(dc: *draw_context.DrawContext, item: MediaItem, rect: draw_context.Rect, queue: *input_state.InputQueue) void {
+    const t = theme.activeTheme();
+
     const sys = ui_systems.get();
     sys.drag_drop.registerDropTarget(.{
         .id = "media_viewer",
-        .bounds = .{
-            .min = cursor,
-            .max = .{ cursor[0] + avail[0], cursor[1] + avail[1] },
-        },
+        .bounds = .{ .min = rect.min, .max = rect.max },
         .accepts = &[_][]const u8{ "image" },
         .on_drop = handleDrop,
     }) catch {};
 
-    draw_list.addRectFilled(.{
-        .pmin = cursor,
-        .pmax = .{ cursor[0] + avail[0], cursor[1] + avail[1] },
-        .col = zgui.colorConvertFloat4ToU32(colors.withAlpha(t.colors.surface, 0.4)),
-    });
+    dc.drawRect(rect, .{ .fill = colors.withAlpha(t.colors.surface, 0.4) });
 
-    _ = zgui.invisibleButton("##media_viewer_input", .{ .w = avail[0], .h = avail[1] });
-    if (zgui.isItemActive()) {
-        const drag = zgui.getMouseDragDelta(.left, .{ .lock_threshold = 0.0 });
-        viewer_offset[0] += drag[0];
-        viewer_offset[1] += drag[1];
-        zgui.resetMouseDragDelta(.left);
+    for (queue.events.items) |evt| {
+        switch (evt) {
+            .mouse_down => |md| {
+                if (md.button == .left and rect.contains(md.pos)) {
+                    viewer_dragging = true;
+                    viewer_drag_last = md.pos;
+                }
+            },
+            .mouse_up => |mu| {
+                if (mu.button == .left) {
+                    viewer_dragging = false;
+                }
+            },
+            else => {},
+        }
+    }
+
+    if (viewer_dragging and queue.state.mouse_down_left) {
+        const delta = .{
+            queue.state.mouse_pos[0] - viewer_drag_last[0],
+            queue.state.mouse_pos[1] - viewer_drag_last[1],
+        };
+        viewer_offset[0] += delta[0];
+        viewer_offset[1] += delta[1];
+        viewer_drag_last = queue.state.mouse_pos;
     }
 
     image_cache.request(item.url);
     if (image_cache.get(item.url)) |entry| {
         if (entry.state == .ready) {
-            const tex_id: zgui.TextureIdent = @enumFromInt(@as(u64, entry.texture_id));
-            const tex_ref = zgui.TextureRef{ .tex_data = null, .tex_id = tex_id };
+            const tex_ref = draw_context.DrawContext.textureFromId(@as(u64, entry.texture_id));
             const w = @as(f32, @floatFromInt(entry.width));
             const h = @as(f32, @floatFromInt(entry.height));
-            const size = computeDrawSize(.{ w, h }, avail);
+            const size = computeDrawSize(.{ w, h }, rect.size());
             const overflow = .{
-                @max(0.0, size[0] - avail[0]),
-                @max(0.0, size[1] - avail[1]),
+                @max(0.0, size[0] - rect.size()[0]),
+                @max(0.0, size[1] - rect.size()[1]),
             };
             viewer_offset[0] = std.math.clamp(viewer_offset[0], -overflow[0] * 0.5, overflow[0] * 0.5);
             viewer_offset[1] = std.math.clamp(viewer_offset[1], -overflow[1] * 0.5, overflow[1] * 0.5);
 
             const origin = .{
-                cursor[0] + (avail[0] - size[0]) * 0.5 + viewer_offset[0],
-                cursor[1] + (avail[1] - size[1]) * 0.5 + viewer_offset[1],
+                rect.min[0] + (rect.size()[0] - size[0]) * 0.5 + viewer_offset[0],
+                rect.min[1] + (rect.size()[1] - size[1]) * 0.5 + viewer_offset[1],
             };
-            draw_list.addImage(tex_ref, .{
-                .pmin = origin,
-                .pmax = .{ origin[0] + size[0], origin[1] + size[1] },
-            });
+            dc.drawImage(tex_ref, draw_context.Rect.fromMinSize(origin, size));
         } else {
-            draw_list.addText(.{ cursor[0] + 12.0, cursor[1] + 12.0 }, zgui.colorConvertFloat4ToU32(t.colors.text_secondary), "Loading image...", .{});
+            dc.drawText("Loading image...", .{ rect.min[0] + 12.0, rect.min[1] + 12.0 }, .{ .color = t.colors.text_secondary });
         }
     } else {
-        draw_list.addText(.{ cursor[0] + 12.0, cursor[1] + 12.0 }, zgui.colorConvertFloat4ToU32(t.colors.text_secondary), "Loading image...", .{});
+        dc.drawText("Loading image...", .{ rect.min[0] + 12.0, rect.min[1] + 12.0 }, .{ .color = t.colors.text_secondary });
     }
 }
 
@@ -364,34 +514,143 @@ fn applyPendingDrop(items: []const MediaItem) void {
     }
 }
 
-fn drawDragPreview(pos: [2]f32) void {
+fn drawDragPreview(dc: *draw_context.DrawContext, pos: [2]f32) void {
     const label = drag_preview_label orelse "Media";
+    draw_context.drawOverlayLabel(dc, label, pos);
+}
+
+fn handleSplitResize(
+    dc: *draw_context.DrawContext,
+    rect: draw_context.Rect,
+    left_rect: draw_context.Rect,
+    queue: *input_state.InputQueue,
+    gap: f32,
+    min_left: f32,
+    max_left: f32,
+) void {
     const t = theme.activeTheme();
-    const draw_list = zgui.getForegroundDrawList();
-    const padding = t.spacing.xs;
-    const text_size = zgui.calcTextSize(label, .{});
-    const rect = .{
-        .min = .{ pos[0] + 12.0, pos[1] + 12.0 },
-        .max = .{ pos[0] + 12.0 + text_size[0] + padding * 2.0, pos[1] + 12.0 + text_size[1] + padding * 2.0 },
-    };
-    draw_list.addRectFilled(.{
-        .pmin = rect.min,
-        .pmax = rect.max,
-        .col = zgui.colorConvertFloat4ToU32(colors.withAlpha(t.colors.surface, 0.95)),
-        .rounding = t.radius.sm,
-    });
-    draw_list.addRect(.{
-        .pmin = rect.min,
-        .pmax = rect.max,
-        .col = zgui.colorConvertFloat4ToU32(colors.withAlpha(t.colors.border, 0.8)),
-        .rounding = t.radius.sm,
-    });
-    draw_list.addText(
-        .{ rect.min[0] + padding, rect.min[1] + padding },
-        zgui.colorConvertFloat4ToU32(t.colors.text_primary),
-        "{s}",
-        .{label},
+    const divider_w: f32 = 6.0;
+    const divider_rect = draw_context.Rect.fromMinSize(
+        .{ left_rect.max[0] + gap * 0.5 - divider_w * 0.5, rect.min[1] },
+        .{ divider_w, rect.size()[1] },
     );
+
+    const hover = divider_rect.contains(queue.state.mouse_pos);
+    if (hover) {
+        cursor.set(.resize_ew);
+    }
+
+    for (queue.events.items) |evt| {
+        switch (evt) {
+            .mouse_down => |md| {
+                if (md.button == .left and divider_rect.contains(md.pos)) {
+                    split_dragging = true;
+                }
+            },
+            .mouse_up => |mu| {
+                if (mu.button == .left) {
+                    split_dragging = false;
+                }
+            },
+            else => {},
+        }
+    }
+
+    if (split_dragging) {
+        const target = queue.state.mouse_pos[0] - rect.min[0];
+        split_width = std.math.clamp(target, min_left, max_left);
+    }
+
+    const divider = draw_context.Rect.fromMinSize(
+        .{ left_rect.max[0] + gap * 0.5 - 1.0, rect.min[1] },
+        .{ 2.0, rect.size()[1] },
+    );
+    const alpha: f32 = if (hover or split_dragging) 0.25 else 0.12;
+    const line_color = .{ t.colors.border[0], t.colors.border[1], t.colors.border[2], alpha };
+    dc.drawRect(divider, .{ .fill = line_color });
+}
+
+fn handleStackResize(
+    dc: *draw_context.DrawContext,
+    rect: draw_context.Rect,
+    top_rect: draw_context.Rect,
+    queue: *input_state.InputQueue,
+    gap: f32,
+    min_top: f32,
+    max_top: f32,
+) void {
+    const t = theme.activeTheme();
+    const divider_h: f32 = 6.0;
+    const divider_rect = draw_context.Rect.fromMinSize(
+        .{ rect.min[0], top_rect.max[1] + gap * 0.5 - divider_h * 0.5 },
+        .{ rect.size()[0], divider_h },
+    );
+    const hover = divider_rect.contains(queue.state.mouse_pos);
+    if (hover) {
+        cursor.set(.resize_ns);
+    }
+    for (queue.events.items) |evt| {
+        switch (evt) {
+            .mouse_down => |md| {
+                if (md.button == .left and divider_rect.contains(md.pos)) {
+                    stack_dragging = true;
+                }
+            },
+            .mouse_up => |mu| {
+                if (mu.button == .left) {
+                    stack_dragging = false;
+                }
+            },
+            else => {},
+        }
+    }
+    if (stack_dragging) {
+        const target = queue.state.mouse_pos[1] - rect.min[1];
+        stack_height = std.math.clamp(target, min_top, max_top);
+    }
+    const divider = draw_context.Rect.fromMinSize(
+        .{ rect.min[0], top_rect.max[1] + gap * 0.5 - 1.0 },
+        .{ rect.size()[0], 2.0 },
+    );
+    const alpha: f32 = if (hover or stack_dragging) 0.25 else 0.12;
+    const line_color = .{ t.colors.border[0], t.colors.border[1], t.colors.border[2], alpha };
+    dc.drawRect(divider, .{ .fill = line_color });
+}
+
+fn handleWheelScroll(
+    queue: *input_state.InputQueue,
+    rect: draw_context.Rect,
+    scroll_y: *f32,
+    max_scroll: f32,
+    step: f32,
+) void {
+    if (max_scroll <= 0.0) {
+        scroll_y.* = 0.0;
+        return;
+    }
+    if (!rect.contains(queue.state.mouse_pos)) return;
+    for (queue.events.items) |evt| {
+        if (evt == .mouse_wheel) {
+            const delta = evt.mouse_wheel.delta[1];
+            scroll_y.* -= delta * step;
+        }
+    }
+    if (scroll_y.* < 0.0) scroll_y.* = 0.0;
+    if (scroll_y.* > max_scroll) scroll_y.* = max_scroll;
+}
+
+fn drawContainer(dc: *draw_context.DrawContext, rect: draw_context.Rect) void {
+    const t = theme.activeTheme();
+    dc.drawRoundedRect(rect, t.radius.md, .{
+        .fill = t.colors.surface,
+        .stroke = t.colors.border,
+        .thickness = 1.0,
+    });
+}
+
+fn buttonWidth(dc: *draw_context.DrawContext, label: []const u8, t: *const theme.Theme) f32 {
+    const text_w = dc.measureText(label, 0.0)[0];
+    return text_w + t.spacing.sm * 2.0;
 }
 
 fn messagesForCurrentSession(ctx: *state.ClientContext) []const types.ChatMessage {

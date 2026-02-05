@@ -7,11 +7,17 @@ const FreetypeInfo = struct {
     include_path: std.Build.LazyPath,
 };
 
-fn addFreetype(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) FreetypeInfo {
+fn addFreetype(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    emsdk_sysroot_include: ?[]const u8,
+) FreetypeInfo {
     const freetype_dep = b.dependency("freetype", .{
         .target = target,
         .optimize = optimize,
         .enable_brotli = false,
+        .emsdk_sysroot_include = emsdk_sysroot_include,
     });
     return .{
         .lib = freetype_dep.artifact("freetype"),
@@ -72,7 +78,7 @@ pub fn build(b: *std.Build) void {
             .root_module = native_module,
         });
         native_exe.root_module.addOptions("build_options", build_options);
-        const freetype_native = addFreetype(b, target, optimize);
+        const freetype_native = addFreetype(b, target, optimize, null);
         const sdl3_pkg = b.dependency("sdl3", .{
             .target = target,
             .optimize = optimize,
@@ -327,7 +333,7 @@ pub fn build(b: *std.Build) void {
             .flags = imgui_backend_flags,
         });
         const zgui_wasm_imgui = zgui_wasm_pkg.artifact("imgui");
-        const freetype_wasm = addFreetype(b, wasm_target, optimize);
+        const freetype_wasm = addFreetype(b, wasm_target, optimize, emsdk_sysroot_include);
         freetype_wasm.lib.root_module.addSystemIncludePath(.{ .cwd_relative = emsdk_sysroot_include });
         zgui_wasm_imgui.root_module.addCMacro("IMGUI_ENABLE_FREETYPE", "");
         zgui_wasm_imgui.root_module.addCMacro("IMGUI_USE_WCHAR32", "");
@@ -468,7 +474,7 @@ pub fn build(b: *std.Build) void {
                 .backend = .no_backend,
                 .use_wchar32 = true,
             });
-            const freetype_android = addFreetype(b, android_target, optimize);
+            const freetype_android = addFreetype(b, android_target, optimize, null);
             android_module.addImport("websocket", ws_android);
             android_module.addImport("zgui", zgui_android_pkg.module("root"));
 

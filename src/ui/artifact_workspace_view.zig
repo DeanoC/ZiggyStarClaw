@@ -1,8 +1,8 @@
 const std = @import("std");
-const zgui = @import("zgui");
 const theme = @import("theme.zig");
 const colors = @import("theme/colors.zig");
 const draw_context = @import("draw_context.zig");
+const clipboard = @import("clipboard.zig");
 const input_router = @import("input/input_router.zig");
 const input_state = @import("input/input_state.zig");
 const widgets = @import("widgets/widgets.zig");
@@ -41,17 +41,21 @@ const Line = struct {
     end: usize,
 };
 
-pub fn draw() void {
-    const t = theme.activeTheme();
-    const panel_pos = zgui.getCursorScreenPos();
-    const panel_avail = zgui.getContentRegionAvail();
-    if (panel_avail[0] <= 0.0 or panel_avail[1] <= 0.0) {
-        return;
-    }
-    _ = zgui.invisibleButton("##artifact_workspace_canvas", .{ .w = panel_avail[0], .h = panel_avail[1] });
+pub fn deinit(allocator: std.mem.Allocator) void {
+    _ = allocator;
+    if (editor_state) |*editor| editor.deinit(std.heap.page_allocator);
+    editor_state = null;
+    edit_initialized = false;
+    if (undo_stack) |*stack| stack.deinit();
+    undo_stack = null;
+    preview_scroll_y = 0.0;
+    preview_scroll_max = 0.0;
+}
 
-    const panel_rect = draw_context.Rect.fromMinSize(panel_pos, .{ panel_avail[0], panel_avail[1] });
-    var dc = draw_context.DrawContext.init(std.heap.page_allocator, .{ .imgui = .{} }, t, panel_rect);
+pub fn draw(rect_override: ?draw_context.Rect) void {
+    const t = theme.activeTheme();
+    const panel_rect = rect_override orelse return;
+    var dc = draw_context.DrawContext.init(std.heap.page_allocator, .{ .direct = .{} }, t, panel_rect);
     defer dc.deinit();
 
     dc.drawRect(panel_rect, .{ .fill = t.colors.background });
@@ -95,12 +99,12 @@ fn drawHeader(dc: *draw_context.DrawContext, rect: draw_context.Rect) struct { h
     var cursor_y = rect.min[1] + top_pad;
 
     theme.push(.title);
-    const title_height = zgui.getTextLineHeightWithSpacing();
+    const title_height = dc.lineHeight();
     dc.drawText("Artifact Workspace", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
 
     cursor_y += title_height + gap;
-    const subtitle_height = zgui.getTextLineHeightWithSpacing();
+    const subtitle_height = dc.lineHeight();
     dc.drawText("Preview & Edit", .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
 
     const height = top_pad + title_height + gap + subtitle_height + top_pad;
@@ -114,7 +118,7 @@ fn drawTabs(
     queue: *input_state.InputQueue,
 ) f32 {
     const t = theme.activeTheme();
-    const line_height = zgui.getTextLineHeightWithSpacing();
+    const line_height = dc.lineHeight();
     const tab_height = line_height + t.spacing.xs * 2.0;
 
     const y = rect.min[1] + header_height + t.spacing.sm;
@@ -209,8 +213,8 @@ fn drawEditor(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *in
     }
 
     if (!editor.focused and editor.isEmpty()) {
-        const style = zgui.getStyle();
-        const pos = .{ editor_rect.min[0] + style.frame_padding[0], editor_rect.min[1] + style.frame_padding[1] };
+        const padding = .{ t.spacing.sm, t.spacing.xs };
+        const pos = .{ editor_rect.min[0] + padding[0], editor_rect.min[1] + padding[1] };
         dc.drawText("Start typing...", pos, .{ .color = t.colors.text_secondary });
     }
 }
@@ -228,14 +232,14 @@ fn drawToolbar(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *i
 
     if (drawToolbarIcon(dc, .{ cursor_x, y }, icon_size, .copy, queue)) {
         if (editor_state) |editor| {
-            if (editor.slice().len > 0) {
-                if (std.heap.page_allocator.dupeZ(u8, editor.slice()) catch null) |ztext| {
-                    defer std.heap.page_allocator.free(ztext);
-                    zgui.setClipboardText(ztext);
+                if (editor.slice().len > 0) {
+                    if (std.heap.page_allocator.dupeZ(u8, editor.slice()) catch null) |ztext| {
+                        defer std.heap.page_allocator.free(ztext);
+                        clipboard.setTextZ(ztext);
+                    }
                 }
             }
         }
-    }
     cursor_x += icon_size + t.spacing.sm;
 
     if (drawToolbarIcon(dc, .{ cursor_x, y }, icon_size, .undo, queue)) {
@@ -254,9 +258,11 @@ fn drawToolbar(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *i
 fn drawSummaryCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
     const t = theme.activeTheme();
     const padding = t.spacing.md;
-    const title_height = zgui.getTextLineHeightWithSpacing();
+    theme.push(.heading);
+    const title_height = dc.lineHeight();
+    theme.pop();
     const text = "This report summarizes sales performance, highlights key insights, and links supporting artifacts collected during the run.";
-    const body_height = measureWrappedTextHeight(std.heap.page_allocator, text, width - padding * 2.0);
+    const body_height = measureWrappedTextHeight(std.heap.page_allocator, dc, text, width - padding * 2.0);
     const card_height = padding * 2.0 + title_height + t.spacing.sm + body_height;
 
     const rect = draw_context.Rect.fromMinSize(pos, .{ width, card_height });
@@ -276,8 +282,10 @@ fn drawSummaryCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
 fn drawInsightsCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
     const t = theme.activeTheme();
     const padding = t.spacing.md;
-    const title_height = zgui.getTextLineHeightWithSpacing();
-    const bullet_height = zgui.getTextLineHeightWithSpacing();
+    theme.push(.heading);
+    const title_height = dc.lineHeight();
+    theme.pop();
+    const bullet_height = dc.lineHeight();
     const bullets = [_][]const u8{
         "North America revenue is trending up 12% month-over-month.",
         "Top competitor share declined after feature launch.",
@@ -306,9 +314,11 @@ fn drawInsightsCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 
 fn drawChartCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
     const t = theme.activeTheme();
     const padding = t.spacing.md;
-    const title_height = zgui.getTextLineHeightWithSpacing();
+    theme.push(.heading);
+    const title_height = dc.lineHeight();
+    theme.pop();
     const chart_height: f32 = 160.0;
-    const tabs_height = zgui.getTextLineHeightWithSpacing() + t.spacing.xs * 2.0;
+    const tabs_height = dc.lineHeight() + t.spacing.xs * 2.0;
     const card_height = padding * 2.0 + title_height + t.spacing.sm + chart_height + t.spacing.md + tabs_height;
 
     const rect = draw_context.Rect.fromMinSize(pos, .{ width, card_height });
@@ -600,10 +610,10 @@ fn drawWrappedText(
 ) f32 {
     var lines = std.ArrayList(Line).empty;
     defer lines.deinit(allocator);
-    buildLinesInto(allocator, text, wrap_width, &lines);
+    buildLinesInto(allocator, dc, text, wrap_width, &lines);
 
     var y = pos[1];
-    const line_height = zgui.getTextLineHeightWithSpacing();
+    const line_height = dc.lineHeight();
     for (lines.items) |line| {
         const slice = text[line.start..line.end];
         if (slice.len > 0) {
@@ -616,17 +626,19 @@ fn drawWrappedText(
 
 fn measureWrappedTextHeight(
     allocator: std.mem.Allocator,
+    dc: *draw_context.DrawContext,
     text: []const u8,
     wrap_width: f32,
 ) f32 {
     var lines = std.ArrayList(Line).empty;
     defer lines.deinit(allocator);
-    buildLinesInto(allocator, text, wrap_width, &lines);
-    return @as(f32, @floatFromInt(lines.items.len)) * zgui.getTextLineHeightWithSpacing();
+    buildLinesInto(allocator, dc, text, wrap_width, &lines);
+    return @as(f32, @floatFromInt(lines.items.len)) * dc.lineHeight();
 }
 
 fn buildLinesInto(
     allocator: std.mem.Allocator,
+    dc: *draw_context.DrawContext,
     text: []const u8,
     wrap_width: f32,
     lines: *std.ArrayList(Line),
@@ -651,7 +663,7 @@ fn buildLinesInto(
 
         const next = nextCharIndex(text, index);
         const slice = text[index..next];
-        const char_w = zgui.calcTextSize(slice, .{ .wrap_width = 0.0 })[0];
+        const char_w = dc.measureText(slice, 0.0)[0];
 
         if (ch == ' ' or ch == '\t') {
             last_space = next;

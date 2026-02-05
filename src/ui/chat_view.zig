@@ -1,11 +1,11 @@
 const std = @import("std");
-const zgui = @import("zgui");
 const types = @import("../protocol/types.zig");
 const ui_command_inbox = @import("ui_command_inbox.zig");
 const image_cache = @import("image_cache.zig");
 const components = @import("components/components.zig");
 const theme = @import("theme.zig");
 const draw_context = @import("draw_context.zig");
+const clipboard = @import("clipboard.zig");
 const input_state = @import("input/input_state.zig");
 const text_editor = @import("widgets/text_editor.zig");
 
@@ -31,6 +31,7 @@ pub const ViewState = struct {
     last_stream_len: usize = 0,
     last_show_tool_output: bool = false,
     select_copy_editor: ?text_editor.TextEditor = null,
+    message_cache: ?std.StringHashMap(MessageCache) = null,
 };
 
 const Line = struct {
@@ -77,11 +78,22 @@ const MessageLayout = struct {
     hover_index: ?usize,
 };
 
+const MessageCache = struct {
+    content_len: usize,
+    attachments_hash: u64,
+    bubble_width: f32,
+    line_height: f32,
+    padding: f32,
+    height: f32,
+    text_len: usize,
+};
+
 pub fn deinit(state: *ViewState, allocator: std.mem.Allocator) void {
     if (state.select_copy_editor) |*editor| {
         editor.deinit(allocator);
     }
     state.select_copy_editor = null;
+    clearMessageCache(state, allocator);
 }
 
 pub fn hasSelectCopySelection(state: *const ViewState) bool {
@@ -110,7 +122,7 @@ pub fn copyAllToClipboard(
 ) void {
     if (ensureChatBuffer(allocator, messages, stream_text, inbox, show_tool_output)) {
         const zbuf = bufferZ();
-        zgui.setClipboardText(zbuf);
+        clipboard.setTextZ(zbuf);
     }
 }
 
@@ -133,7 +145,7 @@ pub fn copySelectionToClipboard(
     defer allocator.free(out);
     @memcpy(out[0 .. end - start], buf[start..end]);
     out[end - start] = 0;
-    zgui.setClipboardText(out[0 .. end - start :0]);
+    clipboard.setTextZ(out[0 .. end - start :0]);
 }
 
 pub fn drawSelectCopy(
@@ -257,7 +269,7 @@ pub fn drawCustom(
     const padding = t.spacing.sm;
     const content_width = @max(1.0, rect.size()[0] - padding * 2.0);
     const bubble_width = components.composite.message_bubble.bubbleWidth(content_width);
-    const line_height = zgui.getTextLineHeightWithSpacing();
+    const line_height = ctx.lineHeight();
     const session_hash = if (session_key) |key| std.hash.Wyhash.hash(0, key) else 0;
     const session_changed = session_hash != state.last_session_hash;
     if (session_changed) {
@@ -268,6 +280,7 @@ pub fn drawCustom(
         state.last_stream_len = 0;
         state.follow_tail = true;
         state.scroll_y = 0.0;
+        clearMessageCache(state, allocator);
     }
 
     var content_changed = false;
@@ -319,31 +332,54 @@ pub fn drawCustom(
         const msg = messages[idx];
         if (shouldSkipMessage(msg, inbox, opts.show_tool_output)) continue;
         const align_right = std.mem.eql(u8, msg.role, "user");
-        const layout = drawMessage(
+        const cache = ensureMessageCache(
             allocator,
+            state,
             ctx,
-            rect,
-            msg.id,
-            msg.role,
-            msg.content,
-            msg.timestamp,
-            now_ms,
-            msg.attachments,
-            align_right,
+            msg,
             bubble_width,
             line_height,
             padding,
-            content_y,
-            state.scroll_y,
-            doc_base,
-            selection,
-            mouse_pos,
         );
-        if (hover_doc_index == null and layout.hover_index != null) {
-            hover_doc_index = layout.hover_index;
+        const view_top = state.scroll_y;
+        const view_bottom = state.scroll_y + rect.size()[1];
+        const bubble_top = content_y;
+        const bubble_bottom = content_y + cache.height;
+        const visible = !(bubble_bottom < view_top or bubble_top > view_bottom);
+
+        var layout_height = cache.height;
+        var layout_text_len = cache.text_len;
+        if (visible) {
+            const layout = drawMessage(
+                allocator,
+                ctx,
+                rect,
+                msg.id,
+                msg.role,
+                msg.content,
+                msg.timestamp,
+                now_ms,
+                msg.attachments,
+                align_right,
+                bubble_width,
+                line_height,
+                padding,
+                content_y,
+                state.scroll_y,
+                doc_base,
+                selection,
+                mouse_pos,
+            );
+            if (hover_doc_index == null and layout.hover_index != null) {
+                hover_doc_index = layout.hover_index;
+            }
+            layout_height = layout.height;
+            layout_text_len = layout.text_len;
+            updateMessageCache(state, msg.id, cache, layout_height, layout_text_len);
         }
-        content_y += layout.height + t.spacing.sm;
-        doc_base += layout.text_len;
+
+        content_y += layout_height + t.spacing.sm;
+        doc_base += layout_text_len;
         rendered += 1;
         if (item_index + 1 < total_items) {
             doc_base += separator_len;
@@ -540,76 +576,6 @@ fn countVisible(
     return count;
 }
 
-fn estimateMessageHeight() f32 {
-    const t = theme.activeTheme();
-    return zgui.getTextLineHeightWithSpacing() * 4.0 + t.spacing.sm * 2.0;
-}
-
-fn drawAttachments(attachments: []const types.ChatAttachment, align_right: bool) void {
-    const t = theme.activeTheme();
-    const avail = zgui.getContentRegionAvail()[0];
-    const bubble_width = components.composite.message_bubble.bubbleWidth(avail);
-    const cursor_start = zgui.getCursorPos();
-
-    if (align_right and avail > bubble_width) {
-        zgui.setCursorPosX(cursor_start[0] + (avail - bubble_width));
-    }
-
-    var has_non_image = false;
-    for (attachments) |attachment| {
-        if (isImageAttachment(attachment)) continue;
-        has_non_image = true;
-        const label = attachment.name orelse attachment.url;
-        components.core.badge.draw(label, .{ .variant = .neutral, .filled = false, .size = .small });
-        zgui.sameLine(.{ .spacing = t.spacing.xs });
-    }
-    if (has_non_image) {
-        zgui.newLine();
-    }
-
-    for (attachments) |attachment| {
-        if (!isImageAttachment(attachment)) continue;
-        image_cache.request(attachment.url);
-        const max_width = @max(120.0, @min(320.0, bubble_width));
-        const max_height: f32 = 240.0;
-        if (image_cache.get(attachment.url)) |entry| {
-            switch (entry.state) {
-                .ready => {
-                    const tex_id: zgui.TextureIdent = @enumFromInt(@as(u64, entry.texture_id));
-                    const tex_ref = zgui.TextureRef{ .tex_data = null, .tex_id = tex_id };
-                    const w = @as(f32, @floatFromInt(entry.width));
-                    const h = @as(f32, @floatFromInt(entry.height));
-                    const aspect = if (h > 0) w / h else 1.0;
-                    var draw_w = @min(max_width, w);
-                    var draw_h = draw_w / aspect;
-                    if (draw_h > max_height) {
-                        draw_h = max_height;
-                        draw_w = draw_h * aspect;
-                    }
-                    zgui.image(tex_ref, .{ .w = draw_w, .h = draw_h });
-                },
-                .loading => {
-                    zgui.textColored(.{ 0.6, 0.6, 0.6, 1.0 }, "Loading image...", .{});
-                    zgui.dummy(.{ .w = max_width, .h = 120.0 });
-                },
-                .failed => {
-                    zgui.textColored(.{ 0.9, 0.4, 0.4, 1.0 }, "Image failed to load", .{});
-                    if (entry.error_message) |err| {
-                        zgui.sameLine(.{});
-                        zgui.textDisabled("{s}", .{err});
-                    }
-                },
-            }
-        } else {
-            zgui.textColored(.{ 0.6, 0.6, 0.6, 1.0 }, "Loading image...", .{});
-            zgui.dummy(.{ .w = max_width, .h = 120.0 });
-        }
-        zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
-    }
-
-    zgui.setCursorPosX(cursor_start[0]);
-}
-
 fn drawMessage(
     allocator: std.mem.Allocator,
     ctx: *draw_context.DrawContext,
@@ -641,7 +607,7 @@ fn drawMessage(
     var display = buildDisplayText(allocator, content);
     defer display.deinit(allocator);
 
-    var lines = buildWrappedLines(allocator, display.text, &display.sources, bubble_width - padding * 2.0);
+    var lines = buildWrappedLines(allocator, ctx, display.text, &display.sources, bubble_width - padding * 2.0);
     defer lines.deinit(allocator);
 
     const header_height = line_height;
@@ -746,7 +712,7 @@ fn drawMessage(
             if (line_index > max_index) line_index = max_index;
             const line = lines.items[@intCast(line_index)];
             const local_x = mouse_pos[0] - (bubble_x + padding);
-            const idx = indexForLineX(display.text, line, local_x);
+            const idx = indexForLineX(ctx, display.text, line, local_x);
             hover_index = doc_base + idx;
         } else if (bubble_rect.contains(mouse_pos)) {
             if (mouse_pos[1] <= content_start_y) {
@@ -796,6 +762,7 @@ fn drawStyledLine(
     text: []const u8,
     t: *const theme.Theme,
 ) void {
+    const line_height = ctx.lineHeight();
     var color = t.colors.text_primary;
     switch (line.style) {
         .heading => {
@@ -806,7 +773,7 @@ fn drawStyledLine(
             color = t.colors.text_secondary;
             const bar = draw_context.Rect{
                 .min = .{ pos[0] - t.spacing.xs, pos[1] },
-                .max = .{ pos[0] - t.spacing.xs + 2.0, pos[1] + zgui.getTextLineHeightWithSpacing() },
+                .max = .{ pos[0] - t.spacing.xs + 2.0, pos[1] + line_height },
             };
             ctx.drawRect(bar, .{ .fill = .{ t.colors.border[0], t.colors.border[1], t.colors.border[2], 0.6 } });
         },
@@ -815,7 +782,7 @@ fn drawStyledLine(
             const text_w = ctx.measureText(text, 0.0)[0];
             const bg = draw_context.Rect{
                 .min = .{ pos[0] - 2.0, pos[1] - 1.0 },
-                .max = .{ pos[0] + text_w + 2.0, pos[1] + zgui.getTextLineHeightWithSpacing() + 1.0 },
+                .max = .{ pos[0] + text_w + 2.0, pos[1] + line_height + 1.0 },
             };
             ctx.drawRect(bg, .{ .fill = .{ t.colors.border[0], t.colors.border[1], t.colors.border[2], 0.18 } });
         },
@@ -828,13 +795,13 @@ fn textWidth(ctx: *draw_context.DrawContext, text: []const u8) f32 {
     return ctx.measureText(text, 0.0)[0];
 }
 
-fn indexForLineX(text: []const u8, line: WrappedLine, x: f32) usize {
+fn indexForLineX(ctx: *draw_context.DrawContext, text: []const u8, line: WrappedLine, x: f32) usize {
     var idx = line.start;
     var cur_x: f32 = 0.0;
     while (idx < line.end) {
         const next = nextCharIndex(text, idx);
         const slice = text[idx..next];
-        const char_w = zgui.calcTextSize(slice, .{ .wrap_width = 0.0 })[0];
+        const char_w = textWidth(ctx, slice);
         if (cur_x + char_w * 0.5 >= x) break;
         cur_x += char_w;
         idx = next;
@@ -850,6 +817,159 @@ fn measureAttachmentsHeight(
     padding: f32,
 ) f32 {
     return drawAttachmentsCustom(ctx, attachments, 0.0, 0.0, bubble_width, line_height, padding, false);
+}
+
+fn attachmentStateHash(attachments: ?[]const types.ChatAttachment) u64 {
+    if (attachments == null) return 0;
+    var hasher = std.hash.Wyhash.init(0);
+    for (attachments.?) |attachment| {
+        hasher.update(attachment.url);
+        hasher.update(attachment.kind);
+        if (attachment.name) |name| {
+            hasher.update(name);
+        }
+        if (isImageAttachment(attachment)) {
+            if (image_cache.get(attachment.url)) |entry| {
+                const state_byte: u8 = @intFromEnum(entry.state);
+                hasher.update(std.mem.asBytes(&state_byte));
+                hasher.update(std.mem.asBytes(&entry.width));
+                hasher.update(std.mem.asBytes(&entry.height));
+            } else {
+                const zero: u8 = 0;
+                hasher.update(std.mem.asBytes(&zero));
+            }
+        }
+    }
+    return hasher.final();
+}
+
+fn ensureMessageCache(
+    allocator: std.mem.Allocator,
+    state: *ViewState,
+    ctx: *draw_context.DrawContext,
+    msg: types.ChatMessage,
+    bubble_width: f32,
+    line_height: f32,
+    padding: f32,
+) MessageCache {
+    const cache_map = ensureMessageCacheMap(state, allocator);
+    const content_len = msg.content.len;
+    if (cache_map.getPtr(msg.id)) |cache| {
+        if (cache.content_len == content_len and cache.bubble_width == bubble_width and
+            cache.line_height == line_height and cache.padding == padding)
+        {
+            if (msg.attachments == null and cache.attachments_hash == 0) {
+                return cache.*;
+            }
+            const attachments_hash = attachmentStateHash(msg.attachments);
+            if (cache.attachments_hash == attachments_hash) {
+                return cache.*;
+            }
+        }
+    }
+
+    const attachments_hash = attachmentStateHash(msg.attachments);
+
+    const layout = measureMessageLayout(
+        allocator,
+        ctx,
+        msg.content,
+        msg.attachments,
+        bubble_width,
+        line_height,
+        padding,
+    );
+    const new_cache = MessageCache{
+        .content_len = content_len,
+        .attachments_hash = attachments_hash,
+        .bubble_width = bubble_width,
+        .line_height = line_height,
+        .padding = padding,
+        .height = layout.height,
+        .text_len = layout.text_len,
+    };
+    storeMessageCache(allocator, state, msg.id, new_cache);
+    return new_cache;
+}
+
+fn measureMessageLayout(
+    allocator: std.mem.Allocator,
+    ctx: *draw_context.DrawContext,
+    content: []const u8,
+    attachments: ?[]const types.ChatAttachment,
+    bubble_width: f32,
+    line_height: f32,
+    padding: f32,
+) MessageLayout {
+    var display = buildDisplayText(allocator, content);
+    defer display.deinit(allocator);
+
+    var lines = buildWrappedLines(allocator, ctx, display.text, &display.sources, bubble_width - padding * 2.0);
+    defer lines.deinit(allocator);
+
+    const header_height = line_height;
+    const content_height = @as(f32, @floatFromInt(lines.items.len)) * line_height;
+    const header_gap = theme.activeTheme().spacing.xs;
+    var attachments_height: f32 = 0.0;
+    if (attachments) |items| {
+        attachments_height = measureAttachmentsHeight(ctx, items, bubble_width, line_height, padding);
+    }
+    const total_height = padding * 2.0 + header_height + header_gap + content_height + attachments_height;
+    return .{
+        .height = total_height,
+        .text_len = display.text.len,
+        .hover_index = null,
+    };
+}
+
+fn storeMessageCache(
+    allocator: std.mem.Allocator,
+    state: *ViewState,
+    id: []const u8,
+    cache: MessageCache,
+) void {
+    const cache_map = ensureMessageCacheMap(state, allocator);
+    if (cache_map.getPtr(id)) |entry| {
+        entry.* = cache;
+        return;
+    }
+    const key = allocator.dupe(u8, id) catch return;
+    cache_map.put(key, cache) catch allocator.free(key);
+}
+
+fn updateMessageCache(
+    state: *ViewState,
+    id: []const u8,
+    cache: MessageCache,
+    height: f32,
+    text_len: usize,
+) void {
+    if (state.message_cache == null) return;
+    if (state.message_cache.?.getPtr(id)) |entry| {
+        entry.height = height;
+        entry.text_len = text_len;
+        return;
+    }
+    // If the cache was missing, ignore; it will be created next frame.
+    _ = cache;
+}
+
+fn clearMessageCache(state: *ViewState, allocator: std.mem.Allocator) void {
+    if (state.message_cache == null) return;
+    var cache_map = &state.message_cache.?;
+    var it = cache_map.iterator();
+    while (it.next()) |entry| {
+        allocator.free(entry.key_ptr.*);
+    }
+    cache_map.deinit();
+    state.message_cache = null;
+}
+
+fn ensureMessageCacheMap(state: *ViewState, allocator: std.mem.Allocator) *std.StringHashMap(MessageCache) {
+    if (state.message_cache == null) {
+        state.message_cache = std.StringHashMap(MessageCache).init(allocator);
+    }
+    return &state.message_cache.?;
 }
 
 fn drawAttachmentsCustom(
@@ -898,8 +1018,7 @@ fn drawAttachmentsCustom(
                         draw_w = draw_h * aspect;
                     }
                     if (visible) {
-                        const tex_id: zgui.TextureIdent = @enumFromInt(@as(u64, entry.texture_id));
-                        const tex_ref = zgui.TextureRef{ .tex_data = null, .tex_id = tex_id };
+                        const tex_ref = draw_context.DrawContext.textureFromId(@as(u64, entry.texture_id));
                         const rect = draw_context.Rect{
                             .min = .{ bubble_x + padding, y },
                             .max = .{ bubble_x + padding + draw_w, y + draw_h },
@@ -1041,17 +1160,19 @@ fn buildDisplayText(allocator: std.mem.Allocator, text: []const u8) DisplayText 
 
 fn buildWrappedLines(
     allocator: std.mem.Allocator,
+    ctx: *draw_context.DrawContext,
     text: []const u8,
     sources: *std.ArrayList(SourceLine),
     wrap_width: f32,
 ) std.ArrayList(WrappedLine) {
     var lines = std.ArrayList(WrappedLine).empty;
-    buildWrappedLinesInto(allocator, text, sources, wrap_width, &lines);
+    buildWrappedLinesInto(allocator, ctx, text, sources, wrap_width, &lines);
     return lines;
 }
 
 fn buildWrappedLinesInto(
     allocator: std.mem.Allocator,
+    ctx: *draw_context.DrawContext,
     text: []const u8,
     sources: *std.ArrayList(SourceLine),
     wrap_width: f32,
@@ -1078,7 +1199,7 @@ fn buildWrappedLinesInto(
             const ch = text[index];
             const next = nextCharIndex(text, index);
             const slice = text[index..next];
-            const char_w = zgui.calcTextSize(slice, .{ .wrap_width = 0.0 })[0];
+            const char_w = textWidth(ctx, slice);
 
             if (ch == ' ' or ch == '\t') {
                 last_space = next;

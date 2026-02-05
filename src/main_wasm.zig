@@ -5,11 +5,9 @@ const zgui = @import("zgui");
 const ui = @import("ui/main_window.zig");
 const theme = @import("ui/theme.zig");
 const operator_view = @import("ui/operator_view.zig");
-const imgui_bridge = @import("ui/imgui_bridge.zig");
 const panel_manager = @import("ui/panel_manager.zig");
 const workspace = @import("ui/workspace.zig");
 const ui_command_inbox = @import("ui/ui_command_inbox.zig");
-const dock_layout = @import("ui/dock_layout.zig");
 const image_cache = @import("ui/image_cache.zig");
 const input_router = @import("ui/input/input_router.zig");
 const client_state = @import("client/state.zig");
@@ -67,7 +65,6 @@ var cfg: config.Config = undefined;
 var agents: agent_registry.AgentRegistry = undefined;
 var manager: panel_manager.PanelManager = undefined;
 var command_inbox: ui_command_inbox.UiCommandInbox = undefined;
-var dock_state: dock_layout.DockState = .{};
 var message_queue = MessageQueue{};
 var ws_connected = false;
 var ws_connecting = false;
@@ -197,8 +194,6 @@ fn initApp() !void {
     const ws = try loadWorkspaceFromStorage();
     manager = panel_manager.PanelManager.init(allocator, ws);
     command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);
-    dock_state = .{};
-    imgui_bridge.loadIniFromMemory(manager.workspace.layout.imgui_ini);
     window = win;
     message_queue = MessageQueue{};
     initialized = true;
@@ -1240,9 +1235,11 @@ fn frame() callconv(.c) void {
         &agents,
         ws_connected,
         build_options.app_version,
+        fb_width,
+        fb_height,
+        false,
         &manager,
         &command_inbox,
-        &dock_state,
     );
 
     if (ui_action.config_updated) {
@@ -1254,9 +1251,6 @@ fn frame() callconv(.c) void {
         saveConfigToStorage();
     }
     if (ui_action.save_workspace) {
-        dock_layout.captureIni(allocator, &manager.workspace) catch |err| {
-            logger.warn("Failed to capture workspace layout: {}", .{err});
-        };
         saveWorkspaceToStorage(&manager.workspace);
         manager.workspace.markClean();
     }

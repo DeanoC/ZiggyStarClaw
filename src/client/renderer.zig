@@ -1,6 +1,7 @@
 const std = @import("std");
 const zgpu = @import("zgpu");
-const imgui = @import("../ui/imgui_wrapper_wgpu.zig");
+const command_queue = @import("../ui/render/command_queue.zig");
+const ui_wgpu_renderer = @import("../ui/render/wgpu_renderer.zig");
 const sdl = @import("../platform/sdl3.zig").c;
 
 pub const depth_format_undefined: u32 = @intFromEnum(zgpu.wgpu.TextureFormat.undef);
@@ -8,6 +9,9 @@ pub const depth_format_undefined: u32 = @intFromEnum(zgpu.wgpu.TextureFormat.und
 pub const Renderer = struct {
     allocator: std.mem.Allocator,
     gctx: *zgpu.GraphicsContext,
+    ui_renderer: ui_wgpu_renderer.Renderer,
+    framebuffer_width: u32 = 1,
+    framebuffer_height: u32 = 1,
 
     pub fn init(allocator: std.mem.Allocator, window: *sdl.SDL_Window) !Renderer {
         cachePlatformHandles(window);
@@ -24,18 +28,23 @@ pub const Renderer = struct {
         };
 
         const gctx = try zgpu.GraphicsContext.create(allocator, window_provider, .{});
+        const ui_renderer = try ui_wgpu_renderer.Renderer.init(allocator, gctx);
 
         return .{
             .allocator = allocator,
             .gctx = gctx,
+            .ui_renderer = ui_renderer,
         };
     }
 
     pub fn deinit(self: *Renderer) void {
+        self.ui_renderer.deinit();
         zgpu.GraphicsContext.destroy(self.gctx, self.allocator);
     }
 
     pub fn beginFrame(self: *Renderer, framebuffer_width: u32, framebuffer_height: u32) void {
+        self.framebuffer_width = framebuffer_width;
+        self.framebuffer_height = framebuffer_height;
         if (framebuffer_width > 0 and framebuffer_height > 0) {
             if (self.gctx.swapchain_descriptor.width != framebuffer_width or
                 self.gctx.swapchain_descriptor.height != framebuffer_height)
@@ -49,7 +58,7 @@ pub const Renderer = struct {
                 );
             }
         }
-        imgui.beginFrame(framebuffer_width, framebuffer_height);
+        self.ui_renderer.beginFrame(framebuffer_width, framebuffer_height);
     }
 
     pub fn render(self: *Renderer) void {
@@ -71,7 +80,10 @@ pub const Renderer = struct {
             .color_attachments = &color_attachments,
         });
 
-        imgui.render(@ptrCast(pass));
+        if (command_queue.get()) |list| {
+            self.ui_renderer.record(list);
+            self.ui_renderer.render(pass);
+        }
         pass.end();
 
         const cmd = encoder.finish(null);

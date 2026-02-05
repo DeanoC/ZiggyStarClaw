@@ -1,5 +1,4 @@
 const std = @import("std");
-const zgui = @import("zgui");
 const state = @import("../client/state.zig");
 const types = @import("../protocol/types.zig");
 const theme = @import("theme.zig");
@@ -9,6 +8,7 @@ const input_router = @import("input/input_router.zig");
 const input_state = @import("input/input_state.zig");
 const widgets = @import("widgets/widgets.zig");
 const sessions_panel = @import("panels/sessions_panel.zig");
+const cursor = @import("input/cursor.zig");
 
 pub const ProjectsViewAction = struct {
     refresh_sessions: bool = false,
@@ -55,19 +55,11 @@ var sidebar_scroll_max: f32 = 0.0;
 var main_scroll_y: f32 = 0.0;
 var main_scroll_max: f32 = 0.0;
 
-pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ProjectsViewAction {
+pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext, rect_override: ?draw_context.Rect) ProjectsViewAction {
     var action = ProjectsViewAction{};
     const t = theme.activeTheme();
-
-    const panel_pos = zgui.getCursorScreenPos();
-    const panel_avail = zgui.getContentRegionAvail();
-    if (panel_avail[0] <= 0.0 or panel_avail[1] <= 0.0) {
-        return action;
-    }
-    _ = zgui.invisibleButton("##projects_view_canvas", .{ .w = panel_avail[0], .h = panel_avail[1] });
-
-    const panel_rect = draw_context.Rect.fromMinSize(panel_pos, .{ panel_avail[0], panel_avail[1] });
-    var ctx_draw = draw_context.DrawContext.init(allocator, .{ .imgui = .{} }, t, panel_rect);
+    const panel_rect = rect_override orelse return action;
+    var ctx_draw = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer ctx_draw.deinit();
 
     ctx_draw.drawRect(panel_rect, .{ .fill = t.colors.background });
@@ -137,12 +129,12 @@ fn drawHeader(
     var cursor_y = rect.min[1] + top_pad;
 
     theme.push(.title);
-    const title_height = zgui.getTextLineHeightWithSpacing();
+    const title_height = ctx.lineHeight();
     ctx.drawText("Projects Overview", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
 
     cursor_y += title_height + gap;
-    const subtitle_height = zgui.getTextLineHeightWithSpacing();
+    const subtitle_height = ctx.lineHeight();
     ctx.drawText("ZiggyStarClaw", .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
 
     const button_height = subtitle_height + t.spacing.xs * 2.0;
@@ -193,7 +185,7 @@ fn drawSidebar(
     dc.drawRect(rect, .{ .fill = t.colors.surface, .stroke = t.colors.border });
 
     const padding = t.spacing.sm;
-    const line_height = zgui.getTextLineHeightWithSpacing();
+    const line_height = dc.lineHeight();
     const toggle_size = line_height + t.spacing.xs * 2.0;
 
     const toggle_rect = draw_context.Rect.fromMinSize(
@@ -269,7 +261,7 @@ fn handleSidebarResize(
 
     const hover = divider_rect.contains(queue.state.mouse_pos);
     if (hover) {
-        zgui.setMouseCursor(.resize_ew);
+        cursor.set(.resize_ew);
     }
 
     for (queue.events.items) |evt| {
@@ -314,7 +306,7 @@ fn drawProjectList(
     const t = theme.activeTheme();
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
 
-    const line_height = zgui.getTextLineHeightWithSpacing();
+    const line_height = dc.lineHeight();
     const row_height = line_height + t.spacing.xs * 2.0;
     const row_gap = t.spacing.xs;
     const content_height = @as(f32, @floatFromInt(ctx.sessions.items.len)) * (row_height + row_gap);
@@ -423,7 +415,7 @@ fn drawMainContent(
     const selected_index = resolveSelectedIndex(ctx);
     if (selected_index == null) {
         dc.drawText("Create or select a project to see details.", .{ start_x, cursor_y }, .{ .color = t.colors.text_secondary });
-        cursor_y += zgui.getTextLineHeightWithSpacing();
+        cursor_y += dc.lineHeight();
     } else {
         const session = ctx.sessions.items[selected_index.?];
         const messages = messagesForSession(ctx, session.key);
@@ -433,13 +425,13 @@ fn drawMainContent(
         const artifacts = previewsToArtifacts(previews, &artifacts_buf);
 
         theme.push(.title);
-        const title_height = zgui.getTextLineHeightWithSpacing();
+        const title_height = dc.lineHeight();
         dc.drawText("Welcome back!", .{ start_x, cursor_y }, .{ .color = t.colors.text_primary });
         theme.pop();
         cursor_y += title_height + t.spacing.xs;
 
         dc.drawText("Here's a snapshot of your active project workspace.", .{ start_x, cursor_y }, .{ .color = t.colors.text_secondary });
-        cursor_y += zgui.getTextLineHeightWithSpacing() + t.spacing.md;
+        cursor_y += dc.lineHeight() + t.spacing.md;
 
         var categories_buf: [3]Category = undefined;
         var categories_len: usize = 0;
@@ -503,15 +495,15 @@ fn drawProjectSummaryCard(
     const inner_width = @max(0.0, width - padding * 2.0);
 
     theme.push(.heading);
-    const title_height = zgui.getTextLineHeightWithSpacing();
+    const title_height = dc.lineHeight();
     theme.pop();
 
     var desc_height: f32 = 0.0;
     if (description) |desc| {
-        desc_height = measureWrappedTextHeight(allocator, desc, inner_width);
+        desc_height = measureWrappedTextHeight(allocator, dc, desc, inner_width);
     }
 
-    const badge_line_height = badgeLineHeight(t);
+    const badge_line_height = badgeLineHeight(dc, t);
 
     var card_height = padding * 2.0 + title_height;
     if (desc_height > 0.0) card_height += t.spacing.xs + desc_height;
@@ -547,7 +539,9 @@ fn drawCategoriesCard(
 ) f32 {
     const t = theme.activeTheme();
     const padding = t.spacing.md;
-    const title_height = zgui.getTextLineHeightWithSpacing();
+    theme.push(.heading);
+    const title_height = dc.lineHeight();
+    theme.pop();
     const mini_height: f32 = 86.0;
     const card_height = padding * 2.0 + title_height + t.spacing.sm + mini_height;
 
@@ -606,8 +600,10 @@ fn drawArtifactsCard(
 ) f32 {
     const t = theme.activeTheme();
     const padding = t.spacing.md;
-    const title_height = zgui.getTextLineHeightWithSpacing();
-    const line_height = zgui.getTextLineHeightWithSpacing();
+    theme.push(.heading);
+    const title_height = dc.lineHeight();
+    theme.pop();
+    const line_height = dc.lineHeight();
     const button_height = line_height + t.spacing.xs * 2.0;
     const row_spacing = t.spacing.sm;
 
@@ -692,8 +688,8 @@ fn buttonWidth(ctx: *draw_context.DrawContext, label: []const u8, t: *const them
     return ctx.measureText(label, 0.0)[0] + t.spacing.sm * 2.0;
 }
 
-fn badgeLineHeight(t: *const theme.Theme) f32 {
-    const line_height = zgui.getTextLineHeightWithSpacing();
+fn badgeLineHeight(dc: *draw_context.DrawContext, t: *const theme.Theme) f32 {
+    const line_height = dc.lineHeight();
     return line_height + t.spacing.xs;
 }
 
@@ -750,10 +746,10 @@ fn drawWrappedText(
 ) f32 {
     var lines = std.ArrayList(Line).empty;
     defer lines.deinit(allocator);
-    buildLinesInto(allocator, text, wrap_width, &lines);
+    buildLinesInto(allocator, dc, text, wrap_width, &lines);
 
     var y = pos[1];
-    const line_height = zgui.getTextLineHeightWithSpacing();
+    const line_height = dc.lineHeight();
     for (lines.items) |line| {
         const slice = text[line.start..line.end];
         if (slice.len > 0) {
@@ -766,17 +762,19 @@ fn drawWrappedText(
 
 fn measureWrappedTextHeight(
     allocator: std.mem.Allocator,
+    dc: *draw_context.DrawContext,
     text: []const u8,
     wrap_width: f32,
 ) f32 {
     var lines = std.ArrayList(Line).empty;
     defer lines.deinit(allocator);
-    buildLinesInto(allocator, text, wrap_width, &lines);
-    return @as(f32, @floatFromInt(lines.items.len)) * zgui.getTextLineHeightWithSpacing();
+    buildLinesInto(allocator, dc, text, wrap_width, &lines);
+    return @as(f32, @floatFromInt(lines.items.len)) * dc.lineHeight();
 }
 
 fn buildLinesInto(
     allocator: std.mem.Allocator,
+    dc: *draw_context.DrawContext,
     text: []const u8,
     wrap_width: f32,
     lines: *std.ArrayList(Line),
@@ -801,7 +799,7 @@ fn buildLinesInto(
 
         const next = nextCharIndex(text, index);
         const slice = text[index..next];
-        const char_w = zgui.calcTextSize(slice, .{ .wrap_width = 0.0 })[0];
+        const char_w = dc.measureText(slice, 0.0)[0];
 
         if (ch == ' ' or ch == '\t') {
             last_space = next;

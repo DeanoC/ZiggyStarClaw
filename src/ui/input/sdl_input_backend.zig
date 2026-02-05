@@ -1,5 +1,4 @@
 const std = @import("std");
-const zgui = @import("zgui");
 const sdl = @import("../../platform/sdl3.zig").c;
 const input_events = @import("input_events.zig");
 const input_state = @import("input_state.zig");
@@ -116,7 +115,7 @@ fn mapMouseButton(button: u8) ?input_events.MouseButton {
     };
 }
 
-fn mapKey(scancode: sdl.SDL_Scancode) ?zgui.Key {
+fn mapKey(scancode: sdl.SDL_Scancode) ?input_events.Key {
     return switch (scancode) {
         sdl.SDL_SCANCODE_RETURN => .enter,
         sdl.SDL_SCANCODE_KP_ENTER => .keypad_enter,

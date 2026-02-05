@@ -1,6 +1,7 @@
 const std = @import("std");
 const text_buffer = @import("text_buffer.zig");
 const chat_view = @import("chat_view.zig");
+const text_editor = @import("widgets/text_editor.zig");
 
 pub const PanelId = u64;
 pub const DockNodeId = u32;
@@ -39,6 +40,8 @@ pub const CodeEditorPanel = struct {
     content: text_buffer.TextBuffer,
     last_modified_by: EditorOwner = .ai,
     version: u32 = 1,
+    editor: ?text_editor.TextEditor = null,
+    editor_hash: u64 = 0,
 };
 
 pub const ToolOutputPanel = struct {
@@ -46,10 +49,14 @@ pub const ToolOutputPanel = struct {
     stdout: text_buffer.TextBuffer,
     stderr: text_buffer.TextBuffer,
     exit_code: i32 = 0,
+    stdout_editor: ?text_editor.TextEditor = null,
+    stderr_editor: ?text_editor.TextEditor = null,
+    stdout_hash: u64 = 0,
+    stderr_hash: u64 = 0,
 };
 
 pub const ControlPanel = struct {
-    active_tab: ControlTab = .Projects,
+    active_tab: ControlTab = .Agents,
     selected_agent_id: ?[]const u8 = null,
 };
 
@@ -85,11 +92,23 @@ pub const PanelData = union(enum) {
                 allocator.free(editor.file_id);
                 allocator.free(editor.language);
                 editor.content.deinit(allocator);
+                if (editor.editor) |*text_editor_state| {
+                    text_editor_state.deinit(allocator);
+                }
+                editor.editor = null;
             },
             .ToolOutput => |*out| {
                 allocator.free(out.tool_name);
                 out.stdout.deinit(allocator);
                 out.stderr.deinit(allocator);
+                if (out.stdout_editor) |*editor| {
+                    editor.deinit(allocator);
+                }
+                if (out.stderr_editor) |*editor| {
+                    editor.deinit(allocator);
+                }
+                out.stdout_editor = null;
+                out.stderr_editor = null;
             },
             .Control => |*ctrl| {
                 if (ctrl.selected_agent_id) |id| allocator.free(id);
@@ -111,22 +130,17 @@ pub const Panel = struct {
     }
 };
 
-pub const DockLayout = struct {
-    imgui_ini: []u8,
-};
-
 pub const Workspace = struct {
     panels: std.ArrayList(Panel),
-    layout: DockLayout,
     custom_layout: CustomLayoutState,
     focused_panel_id: ?PanelId,
     active_project: ProjectId,
     dirty: bool = false,
 
     pub fn initEmpty(allocator: std.mem.Allocator) Workspace {
+        _ = allocator;
         return .{
             .panels = std.ArrayList(Panel).empty,
-            .layout = .{ .imgui_ini = allocator.dupe(u8, "") catch unreachable },
             .custom_layout = .{},
             .focused_panel_id = null,
             .active_project = 0,
@@ -136,14 +150,12 @@ pub const Workspace = struct {
 
     pub fn initDefault(allocator: std.mem.Allocator) !Workspace {
         var ws = Workspace.initEmpty(allocator);
-        try ws.panels.ensureTotalCapacity(allocator, 4);
+        try ws.panels.ensureTotalCapacity(allocator, 2);
 
         try ws.panels.append(allocator, try makeControlPanel(allocator, 1));
-        try ws.panels.append(allocator, try makeCodeEditorPanel(allocator, 2, "main.zig", "zig", ""));
-        try ws.panels.append(allocator, try makeChatPanel(allocator, 3, "main", null));
-        try ws.panels.append(allocator, try makeToolOutputPanel(allocator, 4, "Tool Output", "", "", 0));
+        try ws.panels.append(allocator, try makeChatPanel(allocator, 2, "main", null));
 
-        ws.focused_panel_id = ws.panels.items[2].id;
+        ws.focused_panel_id = ws.panels.items[1].id;
         return ws;
     }
 
@@ -152,7 +164,6 @@ pub const Workspace = struct {
             panel.deinit(allocator);
         }
         self.panels.deinit(allocator);
-        allocator.free(self.layout.imgui_ini);
     }
 
     pub fn markDirty(self: *Workspace) void {
@@ -176,11 +187,9 @@ pub const Workspace = struct {
             panels[idx] = try panelToSnapshot(allocator, panel);
             filled = idx + 1;
         }
-        const layout_copy = try allocator.dupe(u8, self.layout.imgui_ini);
         return .{
             .active_project = self.active_project,
             .focused_panel_id = self.focused_panel_id,
-            .layout_ini = layout_copy,
             .custom_layout = .{
                 .left_ratio = self.custom_layout.left_ratio,
                 .min_left_width = self.custom_layout.min_left_width,
@@ -195,10 +204,6 @@ pub const Workspace = struct {
         ws.active_project = snapshot.active_project;
         ws.focused_panel_id = snapshot.focused_panel_id;
 
-        if (snapshot.layout_ini) |ini| {
-            allocator.free(ws.layout.imgui_ini);
-            ws.layout.imgui_ini = try allocator.dupe(u8, ini);
-        }
         if (snapshot.custom_layout) |layout| {
             ws.custom_layout = .{
                 .left_ratio = layout.left_ratio,
@@ -244,7 +249,7 @@ pub const ToolOutputPanelSnapshot = struct {
 };
 
 pub const ControlPanelSnapshot = struct {
-    active_tab: []const u8 = "Projects",
+    active_tab: []const u8 = "Agents",
     selected_agent_id: ?[]const u8 = null,
 };
 
@@ -268,12 +273,10 @@ pub const PanelSnapshot = struct {
 pub const WorkspaceSnapshot = struct {
     active_project: ProjectId = 0,
     focused_panel_id: ?PanelId = null,
-    layout_ini: ?[]const u8 = null,
     custom_layout: ?CustomLayoutSnapshot = null,
     panels: ?[]PanelSnapshot = null,
 
     pub fn deinit(self: *WorkspaceSnapshot, allocator: std.mem.Allocator) void {
-        if (self.layout_ini) |ini| allocator.free(ini);
         if (self.panels) |panels| {
             for (panels) |panel| {
                 freePanelSnapshot(allocator, panel);
@@ -349,7 +352,11 @@ fn panelToSnapshot(allocator: std.mem.Allocator, panel: Panel) !PanelSnapshot {
 }
 
 fn panelFromSnapshot(allocator: std.mem.Allocator, snap: PanelSnapshot) !Panel {
-    const title_copy = try allocator.dupe(u8, snap.title);
+    const resolved_title = if (snap.kind == .Control and std.mem.eql(u8, snap.title, "Control"))
+        "Workspace"
+    else
+        snap.title;
+    const title_copy = try allocator.dupe(u8, resolved_title);
     errdefer allocator.free(title_copy);
     const state_val = PanelState{
         .dock_node = snap.state.dock_node,
@@ -445,7 +452,7 @@ fn parseControlTab(label: []const u8) ControlTab {
     if (std.mem.eql(u8, label, "Settings")) return .Settings;
     if (std.mem.eql(u8, label, "Operator")) return .Operator;
     if (std.mem.eql(u8, label, "Showcase")) return .Showcase;
-    return .Sessions;
+    return .Agents;
 }
 
 fn freePanelSnapshot(allocator: std.mem.Allocator, panel: PanelSnapshot) void {

@@ -1,5 +1,4 @@
 const std = @import("std");
-const zgui = @import("zgui");
 const ui_systems = @import("ui_systems.zig");
 const draw_context = @import("draw_context.zig");
 const text_editor = @import("widgets/text_editor.zig");
@@ -11,6 +10,12 @@ const hint = "Message (⏎ to send, Shift+⏎ for line breaks, paste images)";
 
 var editor_state: ?text_editor.TextEditor = null;
 var emoji_open = false;
+
+pub fn deinit(allocator: std.mem.Allocator) void {
+    if (editor_state) |*editor| editor.deinit(allocator);
+    editor_state = null;
+    emoji_open = false;
+}
 
 pub fn draw(
     allocator: std.mem.Allocator,
@@ -26,8 +31,7 @@ pub fn draw(
     const editor = &editor_state.?;
 
     const t = theme.activeTheme();
-    const style = zgui.getStyle();
-    const line_h = zgui.getTextLineHeightWithSpacing();
+    const line_h = ctx.lineHeight();
     const button_height = @max(28.0, line_h + t.spacing.xs * 2.0);
     const gap = t.spacing.xs;
     var editor_height = rect.size()[1] - button_height - gap;
@@ -55,8 +59,7 @@ pub fn draw(
     }
 
     if (!editor.focused and editor.isEmpty()) {
-        const pad = style.frame_padding;
-        const pos = .{ editor_rect.min[0] + pad[0], editor_rect.min[1] + pad[1] };
+        const pos = .{ editor_rect.min[0] + t.spacing.sm, editor_rect.min[1] + t.spacing.xs };
         ctx.drawText(hint, pos, .{ .color = t.colors.text_secondary });
     }
 

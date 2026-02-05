@@ -1,8 +1,6 @@
 const std = @import("std");
-const zgui = @import("zgui");
 const theme = @import("../../theme.zig");
 const colors = @import("../../theme/colors.zig");
-const markdown_basic = @import("../../markdown_basic.zig");
 
 pub const Args = struct {
     id: []const u8,
@@ -22,55 +20,6 @@ pub const BubbleColors = struct {
     border: colors.Color,
     accent: colors.Color,
 };
-
-pub fn draw(args: Args) void {
-    const t = theme.activeTheme();
-    const avail = zgui.getContentRegionAvail();
-    const bubble_width = bubbleWidth(avail[0]);
-    const cursor_start = zgui.getCursorPos();
-
-    if (args.align_right and avail[0] > bubble_width) {
-        zgui.setCursorPosX(cursor_start[0] + (avail[0] - bubble_width));
-    }
-
-    const bubble = bubbleColors(args.role, t);
-
-    zgui.pushStyleVar2f(.{ .idx = .window_padding, .v = .{ t.spacing.sm, t.spacing.xs } });
-    zgui.pushStyleVar1f(.{ .idx = .child_rounding, .v = t.radius.md });
-    zgui.pushStyleVar1f(.{ .idx = .child_border_size, .v = 1.0 });
-    zgui.pushStyleColor4f(.{ .idx = .child_bg, .c = bubble.bg });
-    zgui.pushStyleColor4f(.{ .idx = .border, .c = bubble.border });
-
-    const id_z = zgui.formatZ("##bubble_{s}", .{args.id});
-    if (zgui.beginChild(id_z, .{
-        .w = bubble_width,
-        .h = 0.0,
-        .child_flags = .{ .border = true, .auto_resize_y = true, .always_use_window_padding = true },
-    })) {
-        theme.push(.heading);
-        zgui.textColored(bubble.accent, "{s}", .{roleLabel(args.role)});
-        theme.pop();
-        if (args.timestamp_ms) |ts| {
-            var time_buf: [32]u8 = undefined;
-            const label = formatRelativeTime(args.now_ms, ts, &time_buf);
-            zgui.sameLine(.{ .spacing = t.spacing.sm });
-            zgui.textDisabled("{s}", .{label});
-        }
-        zgui.pushTextWrapPos(0.0);
-        defer zgui.popTextWrapPos();
-        if (args.use_markdown) {
-            markdown_basic.draw(.{ .text = args.content });
-        } else {
-            zgui.textWrapped("{s}", .{args.content});
-        }
-    }
-    zgui.endChild();
-
-    zgui.popStyleColor(.{ .count = 2 });
-    zgui.popStyleVar(.{ .count = 3 });
-
-    zgui.setCursorPosX(cursor_start[0]);
-}
 
 pub fn bubbleWidth(avail: f32) f32 {
     const target = @max(min_bubble_width, avail * bubble_fill_ratio);

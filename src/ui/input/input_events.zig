@@ -1,5 +1,34 @@
 const std = @import("std");
-const zgui = @import("zgui");
+
+pub const Key = enum {
+    enter,
+    keypad_enter,
+    back_space,
+    delete,
+    tab,
+    left_arrow,
+    right_arrow,
+    up_arrow,
+    down_arrow,
+    home,
+    end,
+    page_up,
+    page_down,
+    a,
+    c,
+    v,
+    x,
+    z,
+    y,
+    left_ctrl,
+    right_ctrl,
+    left_shift,
+    right_shift,
+    left_alt,
+    right_alt,
+    left_super,
+    right_super,
+};
 
 pub const Modifiers = struct {
     ctrl: bool = false,
@@ -19,7 +48,7 @@ pub const MouseButton = enum {
 };
 
 pub const KeyEvent = struct {
-    key: zgui.Key,
+    key: Key,
     mods: Modifiers,
     repeat: bool = false,
 };

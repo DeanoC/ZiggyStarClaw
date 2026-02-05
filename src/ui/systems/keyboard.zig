@@ -1,5 +1,7 @@
 const std = @import("std");
-const zgui = @import("zgui");
+const input_events = @import("../input/input_events.zig");
+const input_router = @import("../input/input_router.zig");
+const input_state = @import("../input/input_state.zig");
 
 pub const Scope = enum {
     global,
@@ -8,7 +10,7 @@ pub const Scope = enum {
 
 pub const Shortcut = struct {
     id: []const u8,
-    key: zgui.Key,
+    key: input_events.Key,
     ctrl: bool = false,
     shift: bool = false,
     alt: bool = false,
@@ -54,11 +56,12 @@ pub const KeyboardManager = struct {
     }
 
     pub fn handle(self: *KeyboardManager) void {
+        const queue = input_router.getQueue();
         for (self.shortcuts.items) |shortcut| {
             if (!shortcut.enabled) continue;
             if (!scopeMatches(shortcut, self.focused_id)) continue;
-            if (!modifiersMatch(shortcut)) continue;
-            if (zgui.isKeyPressed(shortcut.key, false)) {
+            if (!modifiersMatch(shortcut, queue.state.modifiers)) continue;
+            if (wasKeyPressed(queue, shortcut.key)) {
                 if (shortcut.action) |action| {
                     action(shortcut.ctx);
                 }
@@ -78,14 +81,20 @@ fn scopeMatches(shortcut: Shortcut, focused_id: ?[]const u8) bool {
     };
 }
 
-fn modifiersMatch(shortcut: Shortcut) bool {
-    if (shortcut.ctrl != modifierDown(.left_ctrl, .right_ctrl)) return false;
-    if (shortcut.shift != modifierDown(.left_shift, .right_shift)) return false;
-    if (shortcut.alt != modifierDown(.left_alt, .right_alt)) return false;
-    if (shortcut.super != modifierDown(.left_super, .right_super)) return false;
+fn modifiersMatch(shortcut: Shortcut, mods: input_events.Modifiers) bool {
+    if (shortcut.ctrl != mods.ctrl) return false;
+    if (shortcut.shift != mods.shift) return false;
+    if (shortcut.alt != mods.alt) return false;
+    if (shortcut.super != mods.super) return false;
     return true;
 }
 
-fn modifierDown(left: zgui.Key, right: zgui.Key) bool {
-    return zgui.isKeyDown(left) or zgui.isKeyDown(right);
+fn wasKeyPressed(queue: *input_state.InputQueue, key: input_events.Key) bool {
+    for (queue.events.items) |evt| {
+        if (evt == .key_down) {
+            const kd = evt.key_down;
+            if (kd.key == key and !kd.repeat) return true;
+        }
+    }
+    return false;
 }

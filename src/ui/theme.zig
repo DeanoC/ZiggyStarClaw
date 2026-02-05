@@ -1,26 +1,12 @@
 const std = @import("std");
-const zgui = @import("zgui");
-const builtin = @import("builtin");
+const ui_build = @import("ui_build.zig");
+const use_imgui = ui_build.use_imgui;
+const zgui = if (use_imgui) @import("zgui") else struct {};
 
 const theme_tokens = @import("theme/theme.zig");
 const colors = @import("theme/colors.zig");
 
-const font_body_data = @embedFile("../assets/fonts/space_grotesk/SpaceGrotesk-Regular.ttf");
-const font_heading_data = @embedFile("../assets/fonts/space_grotesk/SpaceGrotesk-SemiBold.ttf");
-const emoji_font_data = @embedFile("../assets/fonts/noto/NotoColorEmoji.ttf");
-
-const emoji_ranges = [_]zgui.Wchar{
-    0x0020, 0x00FF,
-    0x2000, 0x206F,
-    0x2600, 0x27BF,
-    0x1F100, 0x1F1FF,
-    0x1F300, 0x1F5FF,
-    0x1F600, 0x1F64F,
-    0x1F680, 0x1F6FF,
-    0x1F900, 0x1F9FF,
-    0x1FA70, 0x1FAFF,
-    0,
-};
+const font_system = @import("font_system.zig");
 
 pub const FontRole = enum {
     body,
@@ -33,9 +19,6 @@ pub const Theme = theme_tokens.Theme;
 
 var active_mode: Mode = .light;
 
-var font_body: ?zgui.Font = null;
-var font_heading: ?zgui.Font = null;
-var font_title: ?zgui.Font = null;
 var last_scale: f32 = 0.0;
 var last_body_size: f32 = 0.0;
 var last_heading_size: f32 = 0.0;
@@ -81,6 +64,10 @@ fn tone(base: colors.Color, amount: f32) colors.Color {
 }
 
 pub fn apply() void {
+    if (!font_system.isInitialized()) {
+        font_system.init(std.heap.page_allocator);
+    }
+    if (!use_imgui) return;
     const style = zgui.getStyle();
     switch (active_mode) {
         .light => zgui.styleColorsLight(style),
@@ -189,45 +176,6 @@ pub fn apply() void {
     style.setColor(.modal_window_dim_bg, colors.withAlpha(colors.rgba(0, 0, 0, 255), 0.45));
 }
 
-fn tryAddEmojiFontFromFile(path: [:0]const u8, size: f32, cfg: zgui.FontConfig) bool {
-    const path_ptr: [*:0]const u8 = @ptrCast(path.ptr);
-    if (std.fs.accessAbsoluteZ(path_ptr, .{})) |_| {} else |_| return false;
-    const font: ?zgui.Font = zgui.io.addFontFromFileWithConfig(path, size, cfg, &emoji_ranges);
-    return font != null;
-}
-
-fn addEmojiFontFromMemory(size: f32, cfg: zgui.FontConfig) void {
-    _ = zgui.io.addFontFromMemoryWithConfig(emoji_font_data, size, cfg, &emoji_ranges);
-}
-
-fn addEmojiFont(size: f32, cfg: zgui.FontConfig) void {
-    if (builtin.abi == .android or builtin.cpu.arch == .wasm32) {
-        addEmojiFontFromMemory(size, cfg);
-        return;
-    }
-    if (builtin.os.tag == .windows) {
-        if (!tryAddEmojiFontFromFile("C:\\\\Windows\\\\Fonts\\\\seguiemj.ttf", size, cfg)) {
-            addEmojiFontFromMemory(size, cfg);
-        }
-        return;
-    }
-    if (builtin.os.tag == .macos) {
-        if (!tryAddEmojiFontFromFile("/System/Library/Fonts/Apple Color Emoji.ttc", size, cfg)) {
-            addEmojiFontFromMemory(size, cfg);
-        }
-        return;
-    }
-
-    const linux_paths = [_][:0]const u8{
-        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
-        "/usr/share/fonts/noto/NotoColorEmoji.ttf",
-    };
-    for (linux_paths) |path| {
-        if (tryAddEmojiFontFromFile(path, size, cfg)) return;
-    }
-    addEmojiFontFromMemory(size, cfg);
-}
-
 pub fn applyTypography(scale: f32) void {
     if (scale <= 0.0) return;
     const t = activeTheme();
@@ -235,49 +183,22 @@ pub fn applyTypography(scale: f32) void {
     const heading_size = t.typography.heading_size * scale;
     const title_size = t.typography.title_size * scale;
 
-    if (last_scale == scale and last_body_size == body_size and last_heading_size == heading_size and last_title_size == title_size and font_body != null) return;
+    if (last_scale == scale and last_body_size == body_size and last_heading_size == heading_size and last_title_size == title_size and font_system.isReady()) return;
 
     last_scale = scale;
     last_body_size = body_size;
     last_heading_size = heading_size;
     last_title_size = title_size;
 
-    var cfg = zgui.FontConfig.init();
-    cfg.font_data_owned_by_atlas = false;
-    cfg.pixel_snap_h = true;
-    cfg.oversample_h = 2;
-    cfg.oversample_v = 2;
-
-    font_body = zgui.io.addFontFromMemoryWithConfig(font_body_data, body_size, cfg, null);
-
-    var emoji_cfg = zgui.FontConfig.init();
-    emoji_cfg.merge_mode = true;
-    emoji_cfg.font_data_owned_by_atlas = false;
-    emoji_cfg.pixel_snap_h = true;
-    emoji_cfg.font_loader_flags = @as(c_uint, @bitCast(zgui.FreeTypeLoaderFlags{ .load_color = true }));
-    addEmojiFont(body_size, emoji_cfg);
-
-    font_heading = zgui.io.addFontFromMemoryWithConfig(font_heading_data, heading_size, cfg, null);
-    addEmojiFont(heading_size, emoji_cfg);
-
-    font_title = zgui.io.addFontFromMemoryWithConfig(font_heading_data, title_size, cfg, null);
-    addEmojiFont(title_size, emoji_cfg);
-
-    if (font_body) |body| {
-        zgui.io.setDefaultFont(body);
-    }
+    font_system.applyTypography(body_size, heading_size, title_size, scale);
 }
 
 pub fn push(role: FontRole) void {
     const t = activeTheme();
     const scale = if (last_scale > 0.0) last_scale else 1.0;
-    switch (role) {
-        .body => zgui.pushFont(font_body, t.typography.body_size * scale),
-        .heading => zgui.pushFont(font_heading, t.typography.heading_size * scale),
-        .title => zgui.pushFont(font_title, t.typography.title_size * scale),
-    }
+    font_system.push(role, scale, t);
 }
 
 pub fn pop() void {
-    zgui.popFont();
+    font_system.pop();
 }
