@@ -21,9 +21,9 @@ Environment:
   NODE_SANDBOX_DOCKER_ARGS  Extra docker run args (e.g. "-v $HOME/.config/ziggystarclaw:/config:ro")
 
 Examples:
-  scripts/dev/node_sandbox.sh -- --config /repo/config/dev.json --auto-approve-pairing
-  NODE_SANDBOX_DOCKER_ARGS="-v $HOME/.config/ziggystarclaw:/config:ro" \
-    scripts/dev/node_sandbox.sh -- --config /config/config.json
+  scripts/dev/node_sandbox.sh -- --config /repo/config/dev.json --node-mode --as-node --no-operator
+  NODE_SANDBOX_DOCKER_ARGS="-v $HOME/.config/ziggystarclaw:/root/.config/ziggystarclaw:ro" \
+    scripts/dev/node_sandbox.sh -- --config /root/.config/ziggystarclaw/config.json --node-mode --as-node --no-operator
 USAGE
 }
 
@@ -78,9 +78,19 @@ if [ -n "${NODE_SANDBOX_DOCKER_ARGS:-}" ]; then
   extra_args+=(${NODE_SANDBOX_DOCKER_ARGS})
 fi
 
-docker build -f "${DOCKERFILE}" -t "${IMAGE_NAME}" "${REPO_ROOT}"
+# Use docker directly if possible; otherwise, if the user is in the docker group but
+# this process hasn't refreshed groups yet, fall back to sg(1).
+DOCKER_BIN="docker"
+if ! docker ps >/dev/null 2>&1; then
+  if getent group docker >/dev/null 2>&1; then
+    # shellcheck disable=SC2209
+    DOCKER_BIN=(sg docker -c docker)
+  fi
+fi
 
-docker run --rm --network=host \
+"${DOCKER_BIN[@]}" build -f "${DOCKERFILE}" -t "${IMAGE_NAME}" "${REPO_ROOT}"
+
+"${DOCKER_BIN[@]}" run --rm --network=host \
   -v "${REPO_ROOT}:/repo:${mount_mode}" \
   -e ZIG_LOCAL_CACHE_DIR="${zig_cache}" \
   -e ZIG_GLOBAL_CACHE_DIR="${zig_global_cache}" \
@@ -88,4 +98,4 @@ docker run --rm --network=host \
   -w /repo \
   "${extra_args[@]}" \
   "${IMAGE_NAME}" \
-  /bin/bash -lc 'set -euo pipefail; mkdir -p "${ZIG_PREFIX}" "${ZIG_LOCAL_CACHE_DIR}" "${ZIG_GLOBAL_CACHE_DIR}"; zig build --prefix "${ZIG_PREFIX}"; exec "${ZIG_PREFIX}/bin/ziggystarclaw-cli" --node-mode "$@"' -- "$@"
+  /bin/bash -lc 'set -euo pipefail; mkdir -p "${ZIG_PREFIX}" "${ZIG_LOCAL_CACHE_DIR}" "${ZIG_GLOBAL_CACHE_DIR}"; zig build -Dclient=false --prefix "${ZIG_PREFIX}"; exec "${ZIG_PREFIX}/bin/ziggystarclaw-cli" "$@"' -- "$@"

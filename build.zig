@@ -32,6 +32,7 @@ pub fn build(b: *std.Build) void {
     const android_targets = android.standardTargets(b, target);
     const build_android = android_targets.len > 0;
     const app_version = readAppVersion(b);
+    const build_client = b.option(bool, "client", "Build native UI client") orelse true;
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "app_version", app_version);
     const imgui_cpp_flags = &.{
@@ -51,6 +52,37 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }).module("websocket");
     app_module.addImport("websocket", ws_native);
+
+    // Allow building only the CLI (useful for node-mode / headless sandbox runs)
+    // without pulling in UI deps.
+    if (!build_client) {
+        const cli_module = b.createModule(.{
+            .root_source_file = b.path("src/main_cli.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "websocket", .module = ws_native },
+            },
+        });
+
+        const cli_exe = b.addExecutable(.{
+            .name = "ziggystarclaw-cli",
+            .root_module = cli_module,
+        });
+        cli_exe.root_module.addOptions("build_options", build_options);
+
+        b.installArtifact(cli_exe);
+
+        const run_cli_step = b.step("run-cli", "Run the CLI client");
+        const run_cli_cmd = b.addRunArtifact(cli_exe);
+        run_cli_step.dependOn(&run_cli_cmd.step);
+        run_cli_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| {
+            run_cli_cmd.addArgs(args);
+        }
+
+        return;
+    }
 
     const zgui_pkg = b.dependency("zgui", .{
         .target = target,
