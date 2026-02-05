@@ -18,5 +18,5 @@ The PM loop should not start new work in these areas (to avoid parallel conflict
 ## Items
 
 1. `[protocol]` Define/confirm the exact OpenClaw node auth + pairing protocol fields (connect.auth vs device-auth payload) and document with examples.
-2. **no-auto-merge**: `[operator]` Implement operator role support in node-mode (second connection/profile) + approval workflows.
+2. `[operator]` Implement operator role support in node-mode (second connection/profile) + approval workflows.
 3. **no-auto-merge**: `[canvas]` Canvas/CDP: implement real `canvas.navigate` / `canvas.eval` / `canvas.snapshot` via CDP
