@@ -11,6 +11,10 @@ set -euo pipefail
 
 REPO="DeanoC/ZiggyStarClaw"
 
+# Safety: only auto-merge PRs created by allowlisted authors.
+# (Today this is just DeanoC; later we can add a dedicated Ziggy bot account.)
+ALLOWED_AUTHORS=("DeanoC")
+
 # Ensure we always run from the ZiggyStarClaw worktree root even if invoked from elsewhere.
 repo_root=$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null || true)
 if [[ -z "${repo_root}" ]]; then
@@ -68,6 +72,19 @@ if [[ -z "${prs}" ]]; then
 fi
 
 for pr in $prs; do
+  author=$(gh pr view "$pr" --repo "$REPO" --json author --jq '.author.login')
+  allowed=false
+  for a in "${ALLOWED_AUTHORS[@]}"; do
+    if [[ "$author" == "$a" ]]; then
+      allowed=true
+      break
+    fi
+  done
+  if [[ "$allowed" != "true" ]]; then
+    log "PR #$pr author=$author not allowlisted; skipping"
+    continue
+  fi
+
   # Skip draft
   isDraft=$(gh pr view "$pr" --repo "$REPO" --json isDraft --jq '.isDraft')
   if [[ "$isDraft" == "true" ]]; then
@@ -113,11 +130,31 @@ for pr in $prs; do
     continue
   fi
 
-  # Review decision gate: if GitHub has a decision and it isn't APPROVED, skip.
+  # Review decision gate:
+  # - If GitHub has a decision and it isn't APPROVED, skip.
+  # - If GitHub has NO decision (common when there are no formal reviews), we allow
+  #   a lightweight "LGTM" signal from our Codex connector bot: a PR *issue comment*
+  #   whose body contains a thumbs-up emoji.
   reviewDecision=$(gh pr view "$pr" --repo "$REPO" --json reviewDecision --jq '.reviewDecision // ""')
   if [[ -n "$reviewDecision" && "$reviewDecision" != "APPROVED" ]]; then
     log "PR #$pr reviewDecision=$reviewDecision; skipping"
     continue
+  fi
+
+  if [[ -z "$reviewDecision" ]]; then
+    # Accept either:
+    # - an issue comment whose body contains 👍, OR
+    # - an issue reaction (+1) by the bot (often used as the "LGTM" signal).
+    bot_lgtm_comment=$(gh api "repos/DeanoC/ZiggyStarClaw/issues/$pr/comments" \
+      --jq 'map(select(.user.login == "chatgpt-codex-connector[bot]") | .body) | any(test("👍"))')
+
+    bot_lgtm_reaction=$(gh api -H "Accept: application/vnd.github+json" "repos/DeanoC/ZiggyStarClaw/issues/$pr/reactions" \
+      --jq 'map(select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1")) | length > 0')
+
+    if [[ "$bot_lgtm_comment" != "true" && "$bot_lgtm_reaction" != "true" ]]; then
+      log "PR #$pr has no GitHub APPROVED review and no bot LGTM (👍 comment or +1 reaction) from chatgpt-codex-connector[bot]; skipping"
+      continue
+    fi
   fi
 
   url=$(gh pr view "$pr" --repo "$REPO" --json url --jq '.url')
