@@ -75,23 +75,47 @@
           if (document.activeElement !== canvas) focusCanvas();
         }, { capture: true });
 
+        function forwardPasteText(text) {
+          if (!Module._zsc_wasm_on_paste) return false;
+          if (typeof text !== "string" || !text.length) return false;
+          var len = lengthBytesUTF8(text);
+          var ptr = Module._malloc(len + 1);
+          if (!ptr) return false;
+          stringToUTF8(text, ptr, len + 1);
+          Module._zsc_wasm_on_paste(ptr, len);
+          Module._free(ptr);
+          return true;
+        }
+
+        // Prefer the synchronous "paste" event (doesn't require Clipboard API permissions).
+        // Only preventDefault if we actually forwarded text into the app, so we don't block
+        // browser-native paste when the Clipboard API is unavailable/denied.
+        window.addEventListener("paste", function(e) {
+          if (!Module._zsc_wasm_on_paste) return;
+          if (document.activeElement !== canvas) return;
+
+          var text = "";
+          if (e.clipboardData && e.clipboardData.getData) {
+            text = e.clipboardData.getData("text/plain") || "";
+          }
+          if (forwardPasteText(text)) {
+            e.preventDefault();
+          }
+        }, { capture: true });
+
         // Ctrl+V fallback: try async Clipboard API and forward text into the app.
         // This helps on browsers where "paste" events on a canvas don't fire.
+        //
+        // Important: don't call preventDefault here, otherwise a denied Clipboard API blocks
+        // native paste elsewhere. If the canvas is focused, the default browser paste is a no-op.
         window.addEventListener("keydown", function(e) {
           var isPaste = (e.key === "v" || e.key === "V") && (e.ctrlKey || e.metaKey);
           if (!isPaste) return;
+          if (document.activeElement !== canvas) return;
           if (!navigator.clipboard || !navigator.clipboard.readText) return;
           if (!Module._zsc_wasm_on_paste) return;
-          // Prevent the browser from interpreting paste in some other focused element.
-          e.preventDefault();
           navigator.clipboard.readText().then(function(text) {
-            if (typeof text !== "string" || !text.length) return;
-            var len = lengthBytesUTF8(text);
-            var ptr = Module._malloc(len + 1);
-            if (!ptr) return;
-            stringToUTF8(text, ptr, len + 1);
-            Module._zsc_wasm_on_paste(ptr, len);
-            Module._free(ptr);
+            forwardPasteText(text);
           }).catch(function() {
             // Ignore: permission denied / not allowed.
           });
