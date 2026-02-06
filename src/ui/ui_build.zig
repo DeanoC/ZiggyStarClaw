@@ -1,3 +1,4 @@
-const builtin = @import("builtin");
+const build_options = @import("build_options");
 
-pub const use_imgui = builtin.abi.isAndroid() or builtin.os.tag == .emscripten;
+// ImGui is legacy and is kept only for temporary fallback builds.
+pub const use_imgui: bool = build_options.use_imgui;

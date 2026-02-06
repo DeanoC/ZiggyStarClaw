@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const ui_build = @import("../ui_build.zig");
 const use_imgui = ui_build.use_imgui;
 const input_state = @import("input_state.zig");
@@ -10,12 +9,6 @@ else
         pub fn collect(_: std.mem.Allocator, _: *input_state.InputQueue) void {}
     };
 const sdl_input_backend = @import("sdl_input_backend.zig");
-const glfw_input_backend = if (builtin.os.tag == .emscripten)
-    @import("glfw_input_backend.zig")
-else
-    struct {
-        pub fn collect(_: std.mem.Allocator, _: *input_state.InputQueue) void {}
-    };
 
 pub const Backend = struct {
     collectFn: *const fn (std.mem.Allocator, *input_state.InputQueue) void,
@@ -38,7 +31,8 @@ pub const sdl3 = Backend{
 };
 
 pub const glfw = Backend{
-    .collectFn = if (builtin.os.tag == .emscripten) glfw_input_backend.collect else collectNoop,
+    // Legacy WASM path used GLFW; keep as noop for now.
+    .collectFn = collectNoop,
 };
 
 fn collectNoop(_: std.mem.Allocator, _: *input_state.InputQueue) void {}

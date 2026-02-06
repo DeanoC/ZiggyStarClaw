@@ -26,8 +26,7 @@
             .hash = "zglfw-0.10.0-dev-zgVDNES4IQAAXAcsFiHfmadlpDCHhF2cUqWxBGIViyU6",
         },
         .zgpu = .{
-            .url = "https://github.com/zig-gamedev/zgpu/archive/refs/heads/main.zip",
-            .hash = "zgpu-0.12.0-dev-nqFT5IChCACWEis11EjrBQGaA0QXEqXfsi1e6cF3_AL3",
+            .path = "deps/zgpu",
         },
         .dawn_x86_64_linux_gnu = .{
             .url = "https://github.com/michal-z/webgpu_dawn-x86_64-linux-gnu/archive/7d70db023bf254546024629cbec5ee6113e12a42.tar.gz",
@@ -40,12 +39,11 @@
             .lazy = true,
         },
         .android = .{
-            .url = "https://github.com/silbinarywolf/zig-android-sdk/archive/refs/tags/v0.3.0.tar.gz",
-            .hash = "android-0.3.0-7iz7QuLTAQAvVw7BFyhlf4GsEjxrYGtMpcvGQRbZ6K9X",
+            .path = "deps/android",
         },
-        .SDL = .{
-            .url = "https://github.com/allyourcodebase/SDL/archive/refs/heads/main.zip",
-            .hash = "SDL-2.32.10-JToi3yC3EgF2Z9jT2Zfq0y0xzmb0QxnaIfFDn0qPrzxB",
+        .sdl3_android_zip = .{
+            .url = "https://github.com/libsdl-org/SDL/releases/download/release-3.2.28/SDL3-devel-3.2.28-android.zip",
+            .hash = "N-V-__8AABsi6gAQwmFrn4CeuPIOfI95LP9XH1T0dyqc1F12",
         },
         .sdl3 = .{
             .url = "https://github.com/castholm/SDL/archive/refs/heads/main.zip",

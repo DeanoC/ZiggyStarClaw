@@ -1,4 +1,3 @@
-const std = @import("std");
 const builtin = @import("builtin");
 const ui_build = @import("../ui_build.zig");
 const use_imgui = ui_build.use_imgui;
@@ -10,34 +9,40 @@ else
         pub fn setImeData(_: [2]f32, _: f32, _: bool) void {}
     };
 
-const use_sdl = !builtin.abi.isAndroid() and switch (builtin.os.tag) {
-    .linux, .windows, .macos => true,
+// SDL3 text input/IME is used for the custom renderer path.
+// Legacy ImGui builds (currently WASM-only fallback) rely on their own input wiring.
+//
+// Zig models Android as `.os = .linux` with an Android ABI, so we check the ABI first.
+const use_sdl3 = if (builtin.abi.isAndroid())
+    !use_imgui
+else switch (builtin.os.tag) {
+    .linux, .windows, .macos, .emscripten => !use_imgui,
     else => false,
 };
 
-const sdl = if (use_sdl) @import("../../platform/sdl3.zig").c else struct {};
-
-var window_ptr: ?*sdl.SDL_Window = null;
+var window_ptr: ?*anyopaque = null;
 var active: bool = false;
 var frame_active_requested: bool = false;
 var frame_ime_pos: [2]f32 = .{ 0.0, 0.0 };
 var frame_ime_line: f32 = 0.0;
 var frame_ime_visible: bool = false;
 
-pub fn init(window: *sdl.SDL_Window) void {
-    if (!use_sdl) return;
+pub fn init(window: *anyopaque) void {
+    if (!use_sdl3) return;
     window_ptr = window;
 }
 
 pub fn deinit() void {
-    if (!use_sdl) return;
-    if (active) {
-        if (window_ptr) |window| {
-            _ = sdl.SDL_StopTextInput(window);
+    if (use_sdl3) {
+        const sdl = @import("../../platform/sdl3.zig").c;
+        if (active) {
+            if (window_ptr) |window| {
+                _ = sdl.SDL_StopTextInput(@ptrCast(window));
+            }
+            active = false;
         }
-        active = false;
+        window_ptr = null;
     }
-    window_ptr = null;
     frame_active_requested = false;
     frame_ime_visible = false;
 }
@@ -48,11 +53,12 @@ pub fn beginFrame() void {
 }
 
 pub fn endFrame() void {
-    if (use_sdl) {
+    if (use_sdl3) {
+        const sdl = @import("../../platform/sdl3.zig").c;
         if (frame_active_requested) {
             if (!active) {
                 if (window_ptr) |window| {
-                    _ = sdl.SDL_StartTextInput(window);
+                    _ = sdl.SDL_StartTextInput(@ptrCast(window));
                 }
                 active = true;
             }
@@ -62,12 +68,12 @@ pub fn endFrame() void {
                     const y = @as(c_int, @intFromFloat(@max(0.0, frame_ime_pos[1])));
                     const h = @as(c_int, @intFromFloat(@max(1.0, frame_ime_line)));
                     var rect = sdl.SDL_Rect{ .x = x, .y = y, .w = 1, .h = h };
-                    _ = sdl.SDL_SetTextInputArea(window, &rect, 0);
+                    _ = sdl.SDL_SetTextInputArea(@ptrCast(window), &rect, 0);
                 }
             }
         } else if (active) {
             if (window_ptr) |window| {
-                _ = sdl.SDL_StopTextInput(window);
+                _ = sdl.SDL_StopTextInput(@ptrCast(window));
             }
             active = false;
         }
