@@ -50,11 +50,16 @@ pub fn build(b: *std.Build) void {
     const use_imgui = build_wasm and !wasm_wgpu;
     const android_targets = android.standardTargets(b, target);
     const build_android = android_targets.len > 0;
+    const enable_ztracy = b.option(bool, "enable_ztracy", "Enable Tracy profile markers") orelse false;
+    const enable_tracy_fibers = b.option(bool, "enable_tracy_fibers", "Enable Tracy fiber support") orelse false;
+    const tracy_on_demand = b.option(bool, "tracy_on_demand", "Build Tracy with TRACY_ON_DEMAND") orelse false;
     const app_version = readAppVersion(b);
+    const build_client = b.option(bool, "client", "Build native UI client") orelse true;
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "app_version", app_version);
     build_options.addOption(bool, "use_imgui", use_imgui);
     build_options.addOption(bool, "wasm_wgpu", wasm_wgpu);
+    build_options.addOption(bool, "enable_ztracy", enable_ztracy);
     const app_module = b.addModule("ziggystarclaw", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -68,6 +73,49 @@ pub fn build(b: *std.Build) void {
     }).module("websocket");
     app_module.addImport("websocket", ws_native);
 
+    // Tracy profiling support:
+    // profiler.zig uses @import("ztracy") when enable_ztracy is on, so any module
+    // compiled with that option must have the import wired up (including app_module
+    // used by tests).
+    const ztracy_pkg = if (enable_ztracy) b.dependency("ztracy", .{
+        .enable_ztracy = enable_ztracy,
+        .enable_fibers = enable_tracy_fibers,
+        .on_demand = tracy_on_demand,
+    }) else null;
+    if (enable_ztracy) {
+        app_module.addImport("ztracy", ztracy_pkg.?.module("root"));
+    }
+
+    // Allow building only the CLI (useful for node-mode / headless sandbox runs)
+    // without pulling in UI deps.
+    if (!build_client) {
+        const cli_module = b.createModule(.{
+            .root_source_file = b.path("src/main_cli.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "websocket", .module = ws_native },
+            },
+        });
+
+        const cli_exe = b.addExecutable(.{
+            .name = "ziggystarclaw-cli",
+            .root_module = cli_module,
+        });
+        cli_exe.root_module.addOptions("build_options", build_options);
+
+        b.installArtifact(cli_exe);
+
+        const run_cli_step = b.step("run-cli", "Run the CLI client");
+        const run_cli_cmd = b.addRunArtifact(cli_exe);
+        run_cli_step.dependOn(&run_cli_cmd.step);
+        run_cli_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| {
+            run_cli_cmd.addArgs(args);
+        }
+
+        return;
+    }
     if (!build_wasm) {
         const native_module = b.createModule(.{
             .root_source_file = b.path("src/main_native.zig"),
@@ -103,6 +151,10 @@ pub fn build(b: *std.Build) void {
         });
         native_module.addImport("zgpu", zgpu_pkg.module("root"));
         native_exe.root_module.addIncludePath(zgpu_pkg.path("libs/dawn/include"));
+        if (enable_ztracy) {
+            native_module.addImport("ztracy", ztracy_pkg.?.module("root"));
+            native_exe.linkLibrary(ztracy_pkg.?.artifact("tracy"));
+        }
         native_exe.root_module.addCSourceFile(.{
             .file = zgpu_pkg.path("src/dawn.cpp"),
             .flags = &.{ "-std=c++17", "-fno-sanitize=undefined" },
@@ -200,6 +252,9 @@ pub fn build(b: *std.Build) void {
             test_mod.addIncludePath(b.path("src"));
             const tests = b.addTest(.{ .root_module = test_mod });
             tests.addCSourceFile(.{ .file = b.path("src/icon_loader.c"), .flags = &.{} });
+            if (enable_ztracy) {
+                tests.linkLibrary(ztracy_pkg.?.artifact("tracy"));
+            }
             const run_tests = b.addRunArtifact(tests);
             test_step.dependOn(&run_tests.step);
         }

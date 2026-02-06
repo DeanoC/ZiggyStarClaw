@@ -11,6 +11,10 @@ set -euo pipefail
 
 REPO="DeanoC/ZiggyStarClaw"
 
+# Safety: only auto-merge PRs created by allowlisted authors.
+# (Today this is just DeanoC; later we can add a dedicated Ziggy bot account.)
+ALLOWED_AUTHORS=("DeanoC")
+
 # Ensure we always run from the ZiggyStarClaw worktree root even if invoked from elsewhere.
 repo_root=$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null || true)
 if [[ -z "${repo_root}" ]]; then
@@ -20,6 +24,42 @@ fi
 cd "$repo_root"
 
 log() { echo "[auto-merge] $*"; }
+
+has_blocking_review_threads() {
+  local pr_number="$1"
+  local owner repo
+  owner=${REPO%%/*}
+  repo=${REPO##*/}
+
+  # GraphQL: reviewThreads contain isResolved state (the "Resolve conversation" feature).
+  # We block if there exists any UNRESOLVED thread where at least one comment author is:
+  # - a human (login does NOT end with [bot])
+  # - OR the codex connector bot (actionable feedback)
+  # Other bots are ignored.
+  gh api graphql \
+    -F owner="$owner" \
+    -F repo="$repo" \
+    -F prNumber="$pr_number" \
+    -f query='query($owner: String!, $repo: String!, $prNumber: Int!) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $prNumber) {
+          reviewThreads(first: 100) {
+            nodes {
+              isResolved
+              comments(first: 50) {
+                nodes { author { login } }
+              }
+            }
+          }
+        }
+      }
+    }' \
+    --jq '[.data.repository.pullRequest.reviewThreads.nodes[]? 
+            | select(.isResolved == false)
+            | (.comments.nodes[]?.author.login // "")
+          ]
+          | any(. == "chatgpt-codex-connector[bot]" or (endswith("[bot]") | not))'
+}
 
 # Local sanity build (acts as our 'local tests')
 log "Running local build: zig build"
@@ -32,6 +72,19 @@ if [[ -z "${prs}" ]]; then
 fi
 
 for pr in $prs; do
+  author=$(gh pr view "$pr" --repo "$REPO" --json author --jq '.author.login')
+  allowed=false
+  for a in "${ALLOWED_AUTHORS[@]}"; do
+    if [[ "$author" == "$a" ]]; then
+      allowed=true
+      break
+    fi
+  done
+  if [[ "$allowed" != "true" ]]; then
+    log "PR #$pr author=$author not allowlisted; skipping"
+    continue
+  fi
+
   # Skip draft
   isDraft=$(gh pr view "$pr" --repo "$REPO" --json isDraft --jq '.isDraft')
   if [[ "$isDraft" == "true" ]]; then
@@ -47,6 +100,17 @@ for pr in $prs; do
   fi
 
   mergeable=$(gh pr view "$pr" --repo "$REPO" --json mergeable --jq '.mergeable')
+
+  # GitHub's mergeable field is eventually-consistent and can temporarily report UNKNOWN
+  # right after label/check changes. If checks are green, do a short retry once.
+  if [[ "$mergeable" == "UNKNOWN" ]]; then
+    if gh pr checks "$pr" --repo "$REPO" >/tmp/zsc-pr-${pr}-checks.txt 2>&1; then
+      log "PR #$pr mergeable=UNKNOWN but checks are green; retrying mergeable in 20s"
+      sleep 20
+      mergeable=$(gh pr view "$pr" --repo "$REPO" --json mergeable --jq '.mergeable')
+    fi
+  fi
+
   if [[ "$mergeable" != "MERGEABLE" ]]; then
     log "PR #$pr not mergeable ($mergeable); skipping"
     continue
@@ -58,20 +122,39 @@ for pr in $prs; do
     continue
   fi
 
-  # Inline review comments: if there are any non-bot inline comments, skip.
-  # (Bot inline comments are handled elsewhere; we don't auto-merge over humans.)
-  human_inline=$(gh api "repos/DeanoC/ZiggyStarClaw/pulls/$pr/comments" \
-    --jq 'map(.user.login) | any(. != "chatgpt-codex-connector[bot]")')
-  if [[ "$human_inline" == "true" ]]; then
-    log "PR #$pr has human inline comments; skipping"
+  # Review thread gate (uses the "Resolve conversation" mechanism):
+  # Block if any UNRESOLVED review thread contains a human comment OR Codex bot comment.
+  # This is more robust than scanning raw inline review comments.
+  if [[ "$(has_blocking_review_threads "$pr")" == "true" ]]; then
+    log "PR #$pr has unresolved blocking review threads (human and/or codex bot); skipping"
     continue
   fi
 
-  # Review decision gate: if GitHub has a decision and it isn't APPROVED, skip.
+  # Review decision gate:
+  # - If GitHub has a decision and it isn't APPROVED, skip.
+  # - If GitHub has NO decision (common when there are no formal reviews), we allow
+  #   a lightweight "LGTM" signal from our Codex connector bot: a PR *issue comment*
+  #   whose body contains a thumbs-up emoji.
   reviewDecision=$(gh pr view "$pr" --repo "$REPO" --json reviewDecision --jq '.reviewDecision // ""')
   if [[ -n "$reviewDecision" && "$reviewDecision" != "APPROVED" ]]; then
     log "PR #$pr reviewDecision=$reviewDecision; skipping"
     continue
+  fi
+
+  if [[ -z "$reviewDecision" ]]; then
+    # Accept either:
+    # - an issue comment whose body contains 👍, OR
+    # - an issue reaction (+1) by the bot (often used as the "LGTM" signal).
+    bot_lgtm_comment=$(gh api "repos/DeanoC/ZiggyStarClaw/issues/$pr/comments" \
+      --jq 'map(select(.user.login == "chatgpt-codex-connector[bot]") | .body) | any(test("👍"))')
+
+    bot_lgtm_reaction=$(gh api -H "Accept: application/vnd.github+json" "repos/DeanoC/ZiggyStarClaw/issues/$pr/reactions" \
+      --jq 'map(select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1")) | length > 0')
+
+    if [[ "$bot_lgtm_comment" != "true" && "$bot_lgtm_reaction" != "true" ]]; then
+      log "PR #$pr has no GitHub APPROVED review and no bot LGTM (👍 comment or +1 reaction) from chatgpt-codex-connector[bot]; skipping"
+      continue
+    fi
   fi
 
   url=$(gh pr view "$pr" --repo "$REPO" --json url --jq '.url')
