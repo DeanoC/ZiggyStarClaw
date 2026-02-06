@@ -1,7 +1,6 @@
 const std = @import("std");
-const ui_build = @import("ui_build.zig");
-const use_imgui = ui_build.use_imgui;
-const zgui = if (use_imgui) @import("zgui") else struct {};
+const builtin = @import("builtin");
+const zgui = if (builtin.abi.isAndroid()) @import("zgui") else struct {};
 
 const theme_tokens = @import("theme/theme.zig");
 const colors = @import("theme/colors.zig");
@@ -67,7 +66,7 @@ pub fn apply() void {
     if (!font_system.isInitialized()) {
         font_system.init(std.heap.page_allocator);
     }
-    if (!use_imgui) return;
+    if (!builtin.abi.isAndroid()) return;
     const style = zgui.getStyle();
     switch (active_mode) {
         .light => zgui.styleColorsLight(style),

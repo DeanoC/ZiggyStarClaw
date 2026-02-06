@@ -1,8 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const ui_build = @import("../ui_build.zig");
-const use_imgui = ui_build.use_imgui;
-const imgui_bridge = if (use_imgui)
+const imgui_bridge = if (builtin.abi.isAndroid())
     @import("../imgui_bridge.zig")
 else
     struct {
@@ -11,7 +9,7 @@ else
     };
 
 const use_sdl = !builtin.abi.isAndroid() and switch (builtin.os.tag) {
-    .linux, .windows, .macos => true,
+    .linux, .windows, .macos, .emscripten => true,
     else => false,
 };
 

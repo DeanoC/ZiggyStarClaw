@@ -5,10 +5,8 @@ pub const Metrics = types.Metrics;
 pub const noop = types.noop;
 
 const builtin = @import("builtin");
-const ui_build = @import("ui_build.zig");
-const use_imgui = ui_build.use_imgui;
-const use_freetype = !builtin.abi.isAndroid() and builtin.os.tag != .emscripten;
-const imgui_impl = if (use_imgui)
+const use_freetype = !builtin.abi.isAndroid();
+const imgui_impl = if (builtin.abi.isAndroid())
     @import("text_metrics_imgui.zig")
 else
     struct {

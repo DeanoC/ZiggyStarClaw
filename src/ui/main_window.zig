@@ -1,8 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const ui_build = @import("ui_build.zig");
-const use_imgui = ui_build.use_imgui;
-const zgui = if (use_imgui) @import("zgui") else struct {};
+const zgui = if (builtin.abi.isAndroid()) @import("zgui") else struct {};
 const state = @import("../client/state.zig");
 const config = @import("../client/config.zig");
 const theme = @import("theme.zig");
@@ -13,7 +11,7 @@ const text_buffer = @import("text_buffer.zig");
 const workspace = @import("workspace.zig");
 const draw_context = @import("draw_context.zig");
 const command_queue = @import("render/command_queue.zig");
-const render_imgui = if (use_imgui)
+const render_imgui = if (builtin.abi.isAndroid())
     @import("render/imgui_renderer.zig")
 else
     struct {
@@ -304,7 +302,7 @@ pub fn draw(
 
     const t = theme.activeTheme();
 
-    if (use_imgui) {
+    if (builtin.abi.isAndroid()) {
         const display = zgui.io.getDisplaySize();
         if (display[0] > 0.0 and display[1] > 0.0) {
             const left = safe_insets[0];

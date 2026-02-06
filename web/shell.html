@@ -23,7 +23,7 @@
     </style>
   </head>
   <body>
-    <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+    <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="0"></canvas>
     <script>
       var Module = {
         canvas: (function() { return document.getElementById('canvas'); })(),
@@ -60,6 +60,43 @@
       } else {
         window.addEventListener("load", resizeCanvas);
       }
+
+      // Ensure the canvas can receive keyboard events (required for SDL text input on web).
+      (function() {
+        var canvas = Module.canvas;
+        if (!canvas) return;
+        function focusCanvas() {
+          try { canvas.focus({ preventScroll: true }); } catch (e) { try { canvas.focus(); } catch (e2) {} }
+        }
+        canvas.addEventListener("pointerdown", focusCanvas);
+        canvas.addEventListener("mousedown", focusCanvas);
+        window.addEventListener("keydown", function(e) {
+          // If the user starts typing before clicking, redirect focus to the canvas.
+          if (document.activeElement !== canvas) focusCanvas();
+        }, { capture: true });
+
+        // Ctrl+V fallback: try async Clipboard API and forward text into the app.
+        // This helps on browsers where "paste" events on a canvas don't fire.
+        window.addEventListener("keydown", function(e) {
+          var isPaste = (e.key === "v" || e.key === "V") && (e.ctrlKey || e.metaKey);
+          if (!isPaste) return;
+          if (!navigator.clipboard || !navigator.clipboard.readText) return;
+          if (!Module._zsc_wasm_on_paste) return;
+          // Prevent the browser from interpreting paste in some other focused element.
+          e.preventDefault();
+          navigator.clipboard.readText().then(function(text) {
+            if (typeof text !== "string" || !text.length) return;
+            var len = lengthBytesUTF8(text);
+            var ptr = Module._malloc(len + 1);
+            if (!ptr) return;
+            stringToUTF8(text, ptr, len + 1);
+            Module._zsc_wasm_on_paste(ptr, len);
+            Module._free(ptr);
+          }).catch(function() {
+            // Ignore: permission denied / not allowed.
+          });
+        }, { capture: true });
+      })();
     </script>
     {{{ SCRIPT }}}
   </body>

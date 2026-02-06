@@ -2,13 +2,10 @@ const std = @import("std");
 const builtin = @import("builtin");
 const input_state = @import("input_state.zig");
 const input_backend = @import("input_backend.zig");
-const ui_build = @import("../ui_build.zig");
 
 var global_queue: ?input_state.InputQueue = null;
-var backend: input_backend.Backend = if (ui_build.use_imgui)
+var backend: input_backend.Backend = if (builtin.abi.isAndroid())
     input_backend.imgui
-else if (builtin.os.tag == .emscripten)
-    input_backend.glfw
 else
     input_backend.sdl3;
 

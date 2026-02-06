@@ -1,7 +1,6 @@
 const std = @import("std");
 const zemscripten = @import("zemscripten");
-const glfw = @import("zglfw");
-const zgui = @import("zgui");
+const sdl = @import("platform/sdl3.zig").c;
 const ui = @import("ui/main_window.zig");
 const theme = @import("ui/theme.zig");
 const operator_view = @import("ui/operator_view.zig");
@@ -9,7 +8,12 @@ const panel_manager = @import("ui/panel_manager.zig");
 const workspace = @import("ui/workspace.zig");
 const ui_command_inbox = @import("ui/ui_command_inbox.zig");
 const image_cache = @import("ui/image_cache.zig");
+const attachment_cache = @import("ui/attachment_cache.zig");
 const input_router = @import("ui/input/input_router.zig");
+const input_backend = @import("ui/input/input_backend.zig");
+const sdl_input_backend = @import("ui/input/sdl_input_backend.zig");
+const text_input_backend = @import("ui/input/text_input_backend.zig");
+const clipboard = @import("ui/clipboard.zig");
 const client_state = @import("client/state.zig");
 const agent_registry = @import("client/agent_registry.zig");
 const session_keys = @import("client/session_keys.zig");
@@ -30,25 +34,14 @@ const logger = @import("utils/logger.zig");
 const builtin = @import("builtin");
 const update_checker = @import("client/update_checker.zig");
 const build_options = @import("build_options");
+const webgpu_renderer = @import("client/renderer.zig");
+const font_system = @import("ui/font_system.zig");
 
-const c = @cImport({
-    @cInclude("GLES3/gl3.h");
-});
-
-extern fn ImGui_ImplGlfw_InitForOpenGL(window: *const anyopaque, install_callbacks: bool) bool;
-extern fn ImGui_ImplGlfw_Shutdown() void;
-extern fn ImGui_ImplGlfw_NewFrame() void;
-extern fn ImGui_ImplOpenGL3_Init(glsl_version: [*c]const u8) void;
-extern fn ImGui_ImplOpenGL3_Shutdown() void;
-extern fn ImGui_ImplOpenGL3_NewFrame() void;
-extern fn ImGui_ImplOpenGL3_RenderDrawData(data: *const anyopaque) void;
-extern fn molt_clipboard_init() void;
 extern fn molt_ws_open(url: [*:0]const u8) void;
 extern fn molt_ws_send(text: [*:0]const u8) void;
 extern fn molt_ws_close() void;
 extern fn molt_ws_ready_state() c_int;
 extern fn molt_open_url(url: [*:0]const u8) void;
-extern fn zsc_imgui_use_freetype() void;
 
 pub const panic = zemscripten.panic;
 
@@ -59,7 +52,8 @@ pub const std_options = std.Options{
 
 var emalloc = zemscripten.EmmallocAllocator{};
 var allocator: std.mem.Allocator = undefined;
-var window: ?*glfw.Window = null;
+var window: ?*sdl.SDL_Window = null;
+var renderer: ?webgpu_renderer.Renderer = null;
 var ctx: client_state.ClientContext = undefined;
 var cfg: config.Config = undefined;
 var agents: agent_registry.AgentRegistry = undefined;
@@ -105,82 +99,42 @@ const MessageQueue = struct {
     }
 };
 
-fn glfwErrorCallback(code: glfw.ErrorCode, desc: ?[*:0]const u8) callconv(.c) void {
-    if (desc) |d| {
-        logger.err("GLFW error {d}: {s}", .{ @as(i32, @intCast(code)), d });
-    } else {
-        logger.err("GLFW error {d}: (no description)", .{ @as(i32, @intCast(code)) });
-    }
-}
-
-fn applyDpiScale(scale: f32) void {
-    const resolved_scale: f32 = if (scale > 0.0) scale else 1.0;
-    theme.apply();
-    theme.applyTypography(resolved_scale);
-    if (resolved_scale == 1.0) return;
-    const style = zgui.getStyle();
-    style.scaleAllSizes(resolved_scale);
-}
-
-fn beginFrame(
-    window_width: u32,
-    window_height: u32,
-    framebuffer_width: u32,
-    framebuffer_height: u32,
-) void {
-    ImGui_ImplGlfw_NewFrame();
-    ImGui_ImplOpenGL3_NewFrame();
-
-    const win_w_u32: u32 = if (window_width > 0) window_width else framebuffer_width;
-    const win_h_u32: u32 = if (window_height > 0) window_height else framebuffer_height;
-    const win_w: f32 = @floatFromInt(win_w_u32);
-    const win_h: f32 = @floatFromInt(win_h_u32);
-
-    zgui.io.setDisplaySize(win_w, win_h);
-
-    var scale_x: f32 = 1.0;
-    var scale_y: f32 = 1.0;
-    if (window_width > 0 and window_height > 0) {
-        scale_x = @as(f32, @floatFromInt(framebuffer_width)) / win_w;
-        scale_y = @as(f32, @floatFromInt(framebuffer_height)) / win_h;
-    }
-    zgui.io.setDisplayFramebufferScale(scale_x, scale_y);
-
-    zgui.newFrame();
-}
-
-fn endFrame() void {
-    zgui.render();
-    ImGui_ImplOpenGL3_RenderDrawData(zgui.getDrawData());
-}
-
 fn initApp() !void {
     allocator = emalloc.allocator();
-    _ = glfw.setErrorCallback(glfwErrorCallback);
-    try glfw.init();
 
-    glfw.windowHint(.client_api, .opengl_es_api);
-    glfw.windowHint(.context_version_major, 3);
-    glfw.windowHint(.context_version_minor, 0);
-    glfw.windowHint(.doublebuffer, true);
-
-    const win = try glfw.createWindow(1280, 720, "ZiggyStarClaw (Web)", null, null);
-    glfw.makeContextCurrent(win);
-    glfw.swapInterval(1);
-
-    zgui.init(allocator);
-    zsc_imgui_use_freetype();
-    zgui.io.setConfigFlags(.{ .dock_enable = true });
-    zgui.io.setIniFilename(null);
-    theme.apply();
-    image_cache.init(allocator);
-    if (!ImGui_ImplGlfw_InitForOpenGL(win, true)) {
-        logger.err("Failed to init ImGui GLFW backend.", .{});
+    if (!sdl.SDL_Init(sdl.SDL_INIT_VIDEO | sdl.SDL_INIT_GAMEPAD)) {
+        logger.err("SDL init failed: {s}", .{sdl.SDL_GetError()});
+        return error.SdlInitFailed;
     }
-    ImGui_ImplOpenGL3_Init("#version 300 es");
-    molt_clipboard_init();
-    const scale = win.getContentScale();
-    applyDpiScale(scale[0]);
+    _ = sdl.SDL_SetHint("SDL_IME_SHOW_UI", "1");
+
+    const window_flags: sdl.SDL_WindowFlags = @intCast(
+        sdl.SDL_WINDOW_RESIZABLE | sdl.SDL_WINDOW_HIGH_PIXEL_DENSITY,
+    );
+    const win = sdl.SDL_CreateWindow("ZiggyStarClaw (Web)", 1280, 720, window_flags) orelse {
+        logger.err("SDL_CreateWindow failed: {s}", .{sdl.SDL_GetError()});
+        return error.SdlWindowCreateFailed;
+    };
+
+    sdl_input_backend.init(allocator);
+    input_router.setBackend(input_backend.sdl3);
+    text_input_backend.init(win);
+    clipboard.init();
+
+    theme.apply();
+    const dpi_scale_raw: f32 = sdl.SDL_GetWindowDisplayScale(win);
+    const dpi_scale: f32 = if (dpi_scale_raw > 0.0) dpi_scale_raw else 1.0;
+    if (!font_system.isInitialized()) {
+        font_system.init(std.heap.page_allocator);
+    }
+    theme.applyTypography(dpi_scale);
+
+    image_cache.init(allocator);
+    attachment_cache.init(allocator);
+    attachment_cache.setEnabled(true);
+
+    const created_renderer = try webgpu_renderer.Renderer.init(allocator, win);
+    renderer = created_renderer;
 
     ctx = try client_state.ClientContext.init(allocator);
     cfg = try loadConfigFromStorage();
@@ -202,10 +156,16 @@ fn initApp() !void {
 
 fn deinitApp() void {
     if (!initialized) return;
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
+
+    if (renderer) |*r| {
+        r.deinit();
+        renderer = null;
+    }
+
+    text_input_backend.deinit();
+    sdl_input_backend.deinit();
+    attachment_cache.deinit();
     image_cache.deinit();
-    zgui.deinit();
     ui.deinit(allocator);
     manager.deinit();
     command_inbox.deinit(allocator);
@@ -225,9 +185,10 @@ fn deinitApp() void {
         device_identity = null;
     }
     if (window) |win| {
-        glfw.destroyWindow(win);
+        sdl.SDL_DestroyWindow(win);
+        window = null;
     }
-    glfw.terminate();
+    sdl.SDL_Quit();
     initialized = false;
 }
 
@@ -1141,27 +1102,37 @@ export fn molt_ws_on_message(ptr: [*]const u8, len: usize) void {
     };
 }
 
+export fn zsc_wasm_on_paste(ptr: [*]const u8, len: usize) void {
+    if (!initialized or len == 0) return;
+    sdl_input_backend.pushTextInputUtf8(ptr, len);
+}
+
 fn frame() callconv(.c) void {
     if (!initialized) return;
     const win = window.?;
-    glfw.pollEvents();
 
-    if (win.shouldClose()) {
+    var should_close = false;
+    var event: sdl.SDL_Event = undefined;
+    while (sdl.SDL_PollEvent(&event)) {
+        sdl_input_backend.pushEvent(&event);
+        switch (event.type) {
+            sdl.SDL_EVENT_QUIT,
+            sdl.SDL_EVENT_WINDOW_CLOSE_REQUESTED,
+            => should_close = true,
+            else => {},
+        }
+    }
+    if (should_close) {
         zemscripten.cancelMainLoop();
         deinitApp();
         return;
     }
 
-    const win_size = win.getSize();
-    const win_width: u32 = if (win_size[0] > 0) @intCast(win_size[0]) else 1;
-    const win_height: u32 = if (win_size[1] > 0) @intCast(win_size[1]) else 1;
-    const fb_size = win.getFramebufferSize();
-    const fb_width: u32 = if (fb_size[0] > 0) @intCast(fb_size[0]) else 1;
-    const fb_height: u32 = if (fb_size[1] > 0) @intCast(fb_size[1]) else 1;
-
-    c.glViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-    c.glClearColor(0.08, 0.08, 0.1, 1.0);
-    c.glClear(c.GL_COLOR_BUFFER_BIT);
+    var fb_w: c_int = 0;
+    var fb_h: c_int = 0;
+    _ = sdl.SDL_GetWindowSizeInPixels(win, &fb_w, &fb_h);
+    const fb_width: u32 = if (fb_w > 0) @intCast(fb_w) else 1;
+    const fb_height: u32 = if (fb_h > 0) @intCast(fb_h) else 1;
 
     var drained = message_queue.drain();
     defer {
@@ -1237,7 +1208,7 @@ fn frame() callconv(.c) void {
         }
     }
 
-    beginFrame(win_width, win_height, fb_width, fb_height);
+    renderer.?.beginFrame(fb_width, fb_height);
     const ui_action = ui.draw(
         allocator,
         &ctx,
@@ -1247,7 +1218,7 @@ fn frame() callconv(.c) void {
         build_options.app_version,
         fb_width,
         fb_height,
-        false,
+        true,
         &manager,
         &command_inbox,
     );
@@ -1519,9 +1490,7 @@ fn frame() callconv(.c) void {
         ctx.clearOperatorNotice();
     }
 
-    endFrame();
-
-    win.swapBuffers();
+    renderer.?.render();
 }
 
 fn approvalDecisionLabel(decision: operator_view.ExecApprovalDecision) []const u8 {

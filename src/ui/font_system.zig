@@ -1,8 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const ui_build = @import("ui_build.zig");
-const use_imgui = ui_build.use_imgui;
-const zgui = if (use_imgui) @import("zgui") else struct {};
+const zgui = if (builtin.abi.isAndroid()) @import("zgui") else struct {};
 const theme = @import("theme.zig");
 
 const font_body_data = @embedFile("../assets/fonts/space_grotesk/SpaceGrotesk-Regular.ttf");
@@ -11,7 +9,7 @@ const emoji_font_data = @embedFile("../assets/fonts/noto/NotoColorEmoji.ttf");
 const emoji_font_windows_data = @embedFile("../assets/fonts/noto/NotoColorEmoji_WindowsCompatible.ttf");
 const emoji_mono_data = @embedFile("../assets/fonts/noto/NotoSansSymbols2-Regular.ttf");
 
-const EmojiWchar = if (use_imgui) zgui.Wchar else u16;
+const EmojiWchar = if (builtin.abi.isAndroid()) zgui.Wchar else u16;
 const emoji_ranges = [_]EmojiWchar{
     0x0020, 0x00FF,
     0x2000, 0x206F,
@@ -26,8 +24,8 @@ const emoji_ranges = [_]EmojiWchar{
 };
 
 var initialized = false;
-const FontHandle = if (use_imgui) zgui.Font else u8;
-const FontConfig = if (use_imgui)
+const FontHandle = if (builtin.abi.isAndroid()) zgui.Font else u8;
+const FontConfig = if (builtin.abi.isAndroid())
     zgui.FontConfig
 else
     struct {
@@ -53,7 +51,7 @@ pub fn isInitialized() bool {
 }
 
 pub fn isReady() bool {
-    return !use_imgui or font_body != null;
+    return !builtin.abi.isAndroid() or font_body != null;
 }
 
 pub fn currentRole() theme.FontRole {
@@ -88,7 +86,7 @@ pub fn emojiMonoFontData() []const u8 {
 }
 
 fn tryAddEmojiFontFromFile(path: [:0]const u8, size: f32, cfg: FontConfig) bool {
-    if (!use_imgui) return false;
+    if (!builtin.abi.isAndroid()) return false;
     const path_ptr: [*:0]const u8 = @ptrCast(path.ptr);
     if (std.fs.accessAbsoluteZ(path_ptr, .{})) |_| {} else |_| return false;
     const font: ?zgui.Font = zgui.io.addFontFromFileWithConfig(path, size, cfg, &emoji_ranges);
@@ -96,12 +94,12 @@ fn tryAddEmojiFontFromFile(path: [:0]const u8, size: f32, cfg: FontConfig) bool 
 }
 
 fn addEmojiFontFromMemory(size: f32, cfg: FontConfig) void {
-    if (!use_imgui) return;
+    if (!builtin.abi.isAndroid()) return;
     _ = zgui.io.addFontFromMemoryWithConfig(emoji_font_data, size, cfg, &emoji_ranges);
 }
 
 fn addEmojiFont(size: f32, cfg: FontConfig) void {
-    if (!use_imgui) return;
+    if (!builtin.abi.isAndroid()) return;
     if (builtin.abi.isAndroid() or builtin.cpu.arch == .wasm32) {
         addEmojiFontFromMemory(size, cfg);
         return;
@@ -133,7 +131,7 @@ pub fn applyTypography(body_size: f32, heading_size: f32, title_size: f32, scale
     current_role = .body;
     current_scale = scale;
     role_stack_len = 0;
-    if (!use_imgui) return;
+    if (!builtin.abi.isAndroid()) return;
     var cfg = FontConfig.init();
     cfg.font_data_owned_by_atlas = false;
     cfg.pixel_snap_h = true;
@@ -146,9 +144,7 @@ pub fn applyTypography(body_size: f32, heading_size: f32, title_size: f32, scale
     emoji_cfg.merge_mode = true;
     emoji_cfg.font_data_owned_by_atlas = false;
     emoji_cfg.pixel_snap_h = true;
-    if (use_imgui) {
-        emoji_cfg.font_loader_flags = @as(c_uint, @bitCast(zgui.FreeTypeLoaderFlags{ .load_color = true }));
-    }
+    emoji_cfg.font_loader_flags = @as(c_uint, @bitCast(zgui.FreeTypeLoaderFlags{ .load_color = true }));
     addEmojiFont(body_size, emoji_cfg);
 
     font_heading = zgui.io.addFontFromMemoryWithConfig(font_heading_data, heading_size, cfg, null);
@@ -169,7 +165,7 @@ pub fn push(role: theme.FontRole, scale: f32, t: *const theme.Theme) void {
     }
     current_role = role;
     current_scale = scale;
-    if (!use_imgui) return;
+    if (!builtin.abi.isAndroid()) return;
     switch (role) {
         .body => zgui.pushFont(font_body, t.typography.body_size * scale),
         .heading => zgui.pushFont(font_heading, t.typography.heading_size * scale),
@@ -184,6 +180,6 @@ pub fn pop() void {
         current_role = entry.role;
         current_scale = entry.scale;
     }
-    if (!use_imgui) return;
+    if (!builtin.abi.isAndroid()) return;
     zgui.popFont();
 }

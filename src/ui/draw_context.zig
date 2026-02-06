@@ -1,7 +1,6 @@
 const std = @import("std");
-const ui_build = @import("ui_build.zig");
-const use_imgui = ui_build.use_imgui;
-const zgui = if (use_imgui) @import("zgui") else struct {};
+const builtin = @import("builtin");
+const zgui = if (builtin.abi.isAndroid()) @import("zgui") else struct {};
 const input_router = @import("input/input_router.zig");
 const command_list = @import("render/command_list.zig");
 const theme = @import("theme.zig");
@@ -85,7 +84,7 @@ pub const DrawContext = struct {
         theme_ref: *const theme.Theme,
         viewport: Rect,
     ) DrawContext {
-        const resolved_backend: Backend = if (use_imgui) backend else switch (backend) {
+        const resolved_backend: Backend = if (builtin.abi.isAndroid()) backend else switch (backend) {
             .imgui => .{ .direct = .{} },
             .direct => backend,
         };
@@ -413,7 +412,7 @@ fn recordPopClip(ctx: *DrawContext) void {
     list.popClip();
 }
 
-const imgui_render_backend = if (use_imgui)
+const imgui_render_backend = if (builtin.abi.isAndroid())
     RenderBackend{
         .drawRect = imguiDrawRect,
         .drawRoundedRect = imguiDrawRoundedRect,
@@ -493,7 +492,7 @@ fn nullIsDragging(ctx: *DrawContext, rect: Rect) bool {
     return false;
 }
 
-const imgui_input_backend = if (use_imgui)
+const imgui_input_backend = if (builtin.abi.isAndroid())
     InputBackend{
         .isHovered = imguiIsHovered,
         .isClicked = imguiIsClicked,

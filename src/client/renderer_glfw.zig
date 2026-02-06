@@ -60,7 +60,7 @@ pub const Renderer = struct {
 
     pub fn render(self: *Renderer) void {
         const gctx = self.gctx;
-        const back_view = gctx.swapchain.getCurrentTextureView();
+        const back_view = currentTextureViewMaybe(gctx) orelse return;
         defer back_view.release();
 
         const encoder = gctx.device.createCommandEncoder(null);
@@ -90,6 +90,14 @@ pub const Renderer = struct {
         _ = gctx.present();
     }
 };
+
+fn currentTextureViewMaybe(gctx: *zgpu.GraphicsContext) ?zgpu.wgpu.TextureView {
+    const view = gctx.swapchain.getCurrentTextureView();
+    return switch (comptime @typeInfo(@TypeOf(view))) {
+        .optional => view,
+        else => view,
+    };
+}
 
 fn glfwGetTime() f64 {
     return zglfw.getTime();
