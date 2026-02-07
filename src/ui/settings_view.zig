@@ -345,6 +345,12 @@ fn drawAppearanceCard(
     if (widgets.button.draw(dc, winamp_rect, "Use winamp pack", queue, .{ .variant = .secondary })) {
         ensureEditor(&theme_pack_editor, allocator).setText(allocator, "themes/zsc_winamp");
         profile_choice = .desktop;
+        // The winamp-ish pack is authored with intentionally dark fills in the style sheet.
+        // Switching to dark mode by default avoids a "mixed" look where token-driven panels
+        // render light while style-driven chrome stays dark.
+        theme_is_light = false;
+        theme.setMode(.dark);
+        theme.apply();
         appearance_changed = true;
     }
     button_x += winamp_w + t.spacing.xs;
