@@ -49,13 +49,21 @@ const UiWindow = struct {
     id: u32,
     queue: input_state.InputQueue,
     swapchain: multi_renderer.WindowSwapchain,
+    manager: panel_manager.PanelManager,
 };
 
 fn destroyUiWindow(allocator: std.mem.Allocator, w: *UiWindow) void {
     w.queue.deinit(allocator);
     w.swapchain.deinit();
+    w.manager.deinit();
     sdl.SDL_DestroyWindow(w.window);
     allocator.destroy(w);
+}
+
+fn cloneWorkspace(allocator: std.mem.Allocator, src: *const workspace.Workspace) !workspace.Workspace {
+    var snap = try src.toSnapshot(allocator);
+    defer snap.deinit(allocator);
+    return try workspace.Workspace.fromSnapshot(allocator, snap);
 }
 
 fn createUiWindow(
@@ -65,7 +73,11 @@ fn createUiWindow(
     width: c_int,
     height: c_int,
     flags: sdl.SDL_WindowFlags,
+    initial_workspace: workspace.Workspace,
 ) !*UiWindow {
+    var ws = initial_workspace;
+    errdefer ws.deinit(allocator);
+
     const win = sdl.SDL_CreateWindow(title, width, height, flags) orelse {
         logger.err("SDL_CreateWindow failed: {s}", .{sdl.SDL_GetError()});
         return error.SdlWindowCreateFailed;
@@ -75,16 +87,19 @@ fn createUiWindow(
     multi_renderer.cachePlatformHandlesFromWindow(win);
     logSurfaceBackend(win);
 
+    var swapchain = try multi_renderer.WindowSwapchain.initOwned(shared, win);
+    errdefer swapchain.deinit();
+
     const out = try allocator.create(UiWindow);
     errdefer allocator.destroy(out);
     out.* = .{
         .window = win,
         .id = sdl.SDL_GetWindowID(win),
         .queue = input_state.InputQueue.init(allocator),
-        .swapchain = try multi_renderer.WindowSwapchain.initOwned(shared, win),
+        .swapchain = swapchain,
+        .manager = panel_manager.PanelManager.init(allocator, ws),
     };
     errdefer out.queue.deinit(allocator);
-    errdefer out.swapchain.deinit();
     return out;
 }
 
@@ -1055,6 +1070,8 @@ pub fn main() !void {
         .id = sdl.SDL_GetWindowID(window),
         .queue = input_state.InputQueue.init(allocator),
         .swapchain = multi_renderer.WindowSwapchain.initMain(&gpu, window),
+        // Initialize immediately so early errors don't trip `destroyUiWindow`.
+        .manager = panel_manager.PanelManager.init(allocator, workspace.Workspace.initEmpty(allocator)),
     };
     errdefer main_win.queue.deinit(allocator);
     errdefer main_win.swapchain.deinit();
@@ -1094,8 +1111,8 @@ pub fn main() !void {
             return init_err;
         };
     };
-    var manager = panel_manager.PanelManager.init(allocator, workspace_state);
-    defer manager.deinit();
+    main_win.manager.deinit();
+    main_win.manager = panel_manager.PanelManager.init(allocator, workspace_state);
     defer ui.deinit(allocator);
     var command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);
     defer command_inbox.deinit(allocator);
@@ -1271,11 +1288,21 @@ pub fn main() !void {
         const focused_id: u32 = if (kb_focus) |w| sdl.SDL_GetWindowID(w) else main_win.id;
 
         var ui_action: ui.UiAction = .{};
+        var active_window: *UiWindow = main_win;
         {
             const zone = profiler.zone("frame.ui");
             defer zone.end();
 
-            ui.frameBegin(allocator, &ctx, &manager, &command_inbox);
+            // Apply assistant UI commands to the currently focused window only.
+            // Other windows still render the shared app state (sessions, agents, etc.),
+            // but panel/layout interactions remain independent per window.
+            for (ui_windows.items) |w| {
+                if (w.id == focused_id) {
+                    active_window = w;
+                    break;
+                }
+            }
+            ui.frameBegin(allocator, &ctx, &active_window.manager, &command_inbox);
             for (ui_windows.items) |w| {
                 var w_fb_w: c_int = 0;
                 var w_fb_h: c_int = 0;
@@ -1298,12 +1325,13 @@ pub fn main() !void {
                     build_options.app_version,
                     w_fb_width,
                     w_fb_height,
-                    &manager,
+                    &w.manager,
                     &command_inbox,
                     &w.queue,
                 );
                 if (w.id == focused_id) {
                     ui_action = action;
+                    active_window = w;
                 }
 
                 if (command_queue.get()) |list| {
@@ -1347,10 +1375,14 @@ pub fn main() !void {
         }
 
         if (ui_action.save_workspace) {
-            workspace_store.save(allocator, "ziggystarclaw_workspace.json", &manager.workspace) catch |err| {
-                logger.err("Failed to save workspace: {}", .{err});
-            };
-            manager.workspace.markClean();
+            if (active_window.id == main_win.id) {
+                workspace_store.save(allocator, "ziggystarclaw_workspace.json", &active_window.manager.workspace) catch |err| {
+                    logger.err("Failed to save workspace: {}", .{err});
+                };
+            }
+            // Secondary windows are currently ephemeral (not persisted); still mark clean
+            // to avoid requesting a save every frame.
+            active_window.manager.workspace.markClean();
         }
 
         if (ui_action.check_updates) {
@@ -1472,7 +1504,7 @@ pub fn main() !void {
                     if (agents.setDefaultSession(allocator, "main", session_key) catch false) {
                         agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
                     }
-                    _ = manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
+                    _ = active_window.manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
                     ctx.clearSessionState(session_key);
                     ctx.setCurrentSession(session_key) catch {};
                     sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
@@ -1492,7 +1524,7 @@ pub fn main() !void {
                         agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
                     }
 
-                    _ = manager.ensureChatPanelForAgent(agent_id, agentDisplayName(&agents, agent_id), session_key) catch {};
+                    _ = active_window.manager.ensureChatPanelForAgent(agent_id, agentDisplayName(&agents, agent_id), session_key) catch {};
                     ctx.clearSessionState(session_key);
                     ctx.setCurrentSession(session_key) catch {};
                     sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
@@ -1511,7 +1543,7 @@ pub fn main() !void {
             ctx.setCurrentSession(open.session_key) catch |err| {
                 logger.warn("Failed to set session: {}", .{err});
             };
-            _ = manager.ensureChatPanelForAgent(open.agent_id, agentDisplayName(&agents, open.agent_id), open.session_key) catch {};
+            _ = active_window.manager.ensureChatPanelForAgent(open.agent_id, agentDisplayName(&agents, open.agent_id), open.session_key) catch {};
             if (ws_client.is_connected) {
                 sendChatHistoryRequest(allocator, &ctx, &ws_client, open.session_key);
             }
@@ -1523,9 +1555,9 @@ pub fn main() !void {
                 logger.warn("Failed to set session: {}", .{err});
             };
             if (session_keys.parse(session_key)) |parts| {
-                _ = manager.ensureChatPanelForAgent(parts.agent_id, agentDisplayName(&agents, parts.agent_id), session_key) catch {};
+                _ = active_window.manager.ensureChatPanelForAgent(parts.agent_id, agentDisplayName(&agents, parts.agent_id), session_key) catch {};
             } else {
-                _ = manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
+                _ = active_window.manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
             }
             if (ws_client.is_connected) {
                 sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
@@ -1545,7 +1577,9 @@ pub fn main() !void {
             sendSessionsDeleteRequest(allocator, &ctx, &ws_client, session_key);
             _ = ctx.removeSessionByKey(session_key);
             ctx.clearSessionState(session_key);
-            clearChatPanelsForSession(&manager, allocator, session_key);
+            for (ui_windows.items) |w| {
+                clearChatPanelsForSession(&w.manager, allocator, session_key);
+            }
             if (agents.clearDefaultIfMatches(allocator, session_key)) {
                 agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
             }
@@ -1564,7 +1598,7 @@ pub fn main() !void {
                 .default_session_key = null,
             })) |_| {
                 agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
-                _ = manager.ensureChatPanelForAgent(owned.id, agentDisplayName(&agents, owned.id), null) catch {};
+                _ = active_window.manager.ensureChatPanelForAgent(owned.id, agentDisplayName(&agents, owned.id), null) catch {};
             } else |err| {
                 logger.warn("Failed to add agent: {}", .{err});
                 allocator.free(owned.id);
@@ -1577,7 +1611,9 @@ pub fn main() !void {
             defer allocator.free(agent_id);
             if (agents.remove(allocator, agent_id)) {
                 agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
-                closeAgentChatPanels(&manager, agent_id);
+                for (ui_windows.items) |w| {
+                    closeAgentChatPanels(&w.manager, agent_id);
+                }
             }
         }
 
@@ -1641,7 +1677,9 @@ pub fn main() !void {
             sendChatMessageRequest(allocator, &ctx, &ws_client, payload.session_key, payload.message);
         }
 
-        ensureChatPanelsReady(allocator, &ctx, &ws_client, &agents, &manager);
+        for (ui_windows.items) |w| {
+            ensureChatPanelsReady(allocator, &ctx, &ws_client, &agents, &w.manager);
+        }
 
         if (ui_action.clear_node_result) {
             ctx.clearNodeResult();
@@ -1716,15 +1754,22 @@ pub fn main() !void {
 
             var cur_w: c_int = 960;
             var cur_h: c_int = 720;
-            _ = sdl.SDL_GetWindowSize(main_win.window, &cur_w, &cur_h);
+            _ = sdl.SDL_GetWindowSize(active_window.window, &cur_w, &cur_h);
             if (cur_w < 300) cur_w = 960;
             if (cur_h < 200) cur_h = 720;
 
-            const new_win = createUiWindow(allocator, &gpu, title_z, cur_w, cur_h, window_flags) catch null;
+            const ws_copy = cloneWorkspace(allocator, &active_window.manager.workspace) catch null;
+            const new_win = if (ws_copy) |ws_val|
+                createUiWindow(allocator, &gpu, title_z, cur_w, cur_h, window_flags, ws_val) catch |err| blk: {
+                    logger.warn("Failed to create window: {}", .{err});
+                    break :blk null;
+                }
+            else
+                null;
             if (new_win) |w| {
                 var pos_x: c_int = 0;
                 var pos_y: c_int = 0;
-                _ = sdl.SDL_GetWindowPosition(main_win.window, &pos_x, &pos_y);
+                _ = sdl.SDL_GetWindowPosition(active_window.window, &pos_x, &pos_y);
                 const offs: c_int = @intCast(@min(index * 24, 240));
                 _ = sdl.SDL_SetWindowPosition(w.window, pos_x + offs, pos_y + offs);
                 ui_windows.append(allocator, w) catch {
