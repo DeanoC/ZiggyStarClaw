@@ -11,11 +11,17 @@ pub const Profile = profile.Profile;
 pub const StyleSheet = style_sheet.StyleSheet;
 pub const WindowTemplate = schema.WindowTemplate;
 
+pub const RenderDefaults = struct {
+    image_sampling: @import("../render/command_list.zig").ImageSampling = .linear,
+    pixel_snap_textured: bool = false,
+};
+
 var active_profile: Profile = profile.defaultsFor(.desktop, profile.PlatformCaps.defaultForTarget());
 var active_styles_light: StyleSheet = .{};
 var active_styles_dark: StyleSheet = .{};
 var active_pack_root: ?[]const u8 = null;
 var active_windows: []const WindowTemplate = &[_]WindowTemplate{};
+var render_defaults: RenderDefaults = .{};
 
 pub fn setProfile(p: Profile) void {
     active_profile = p;
@@ -55,6 +61,14 @@ pub fn setWindowTemplates(templates: []const WindowTemplate) void {
 
 pub fn getWindowTemplates() []const WindowTemplate {
     return active_windows;
+}
+
+pub fn setRenderDefaults(v: RenderDefaults) void {
+    render_defaults = v;
+}
+
+pub fn getRenderDefaults() RenderDefaults {
+    return render_defaults;
 }
 
 pub fn resolveThemeAssetPath(buf: []u8, rel_path: []const u8) ?[]const u8 {

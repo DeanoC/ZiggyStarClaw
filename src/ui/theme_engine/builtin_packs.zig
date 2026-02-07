@@ -39,6 +39,18 @@ const packs = [_]BuiltinPack{
         },
     },
     .{
+        .dir_name = "zsc_winamp_pixel",
+        .files = &[_]PackFile{
+            .{ .rel_path = "manifest.json", .bytes = @embedFile("builtin_packs_data/zsc_winamp_pixel/manifest.json") },
+            .{ .rel_path = "windows.json", .bytes = @embedFile("builtin_packs_data/zsc_winamp_pixel/windows.json") },
+            .{ .rel_path = "tokens/base.json", .bytes = @embedFile("builtin_packs_data/zsc_winamp_pixel/tokens/base.json") },
+            .{ .rel_path = "tokens/light.json", .bytes = @embedFile("builtin_packs_data/zsc_winamp_pixel/tokens/light.json") },
+            .{ .rel_path = "tokens/dark.json", .bytes = @embedFile("builtin_packs_data/zsc_winamp_pixel/tokens/dark.json") },
+            .{ .rel_path = "styles/components.json", .bytes = @embedFile("builtin_packs_data/zsc_winamp_pixel/styles/components.json") },
+            .{ .rel_path = "assets/images/panel_frame.png", .bytes = @embedFile("builtin_packs_data/zsc_winamp_pixel/assets/images/panel_frame.png") },
+        },
+    },
+    .{
         .dir_name = "zsc_showcase",
         .files = &[_]PackFile{
             .{ .rel_path = "manifest.json", .bytes = @embedFile("builtin_packs_data/zsc_showcase/manifest.json") },

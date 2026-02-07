@@ -62,6 +62,16 @@ pub const BlendMode = enum(u8) {
     additive = 1,
 };
 
+pub const ImageSampling = enum(u8) {
+    linear = 0,
+    nearest = 1,
+};
+
+pub const Meta = struct {
+    image_sampling: ImageSampling = .linear,
+    pixel_snap_textured: bool = false,
+};
+
 pub const SoftRoundedRectCmd = struct {
     // The quad we render (usually expanded to cover blur).
     draw_rect: Rect,
@@ -128,12 +138,14 @@ pub const CommandList = struct {
     allocator: std.mem.Allocator,
     commands: std.ArrayList(Command) = .empty,
     text_storage: std.ArrayList(u8) = .empty,
+    meta: Meta = .{},
 
     pub fn init(allocator: std.mem.Allocator) CommandList {
         return .{
             .allocator = allocator,
             .commands = .empty,
             .text_storage = .empty,
+            .meta = .{},
         };
     }
 
@@ -145,6 +157,7 @@ pub const CommandList = struct {
     pub fn clear(self: *CommandList) void {
         self.commands.clearRetainingCapacity();
         self.text_storage.clearRetainingCapacity();
+        self.meta = .{};
     }
 
     fn storeText(self: *CommandList, text: []const u8) TextCmd {

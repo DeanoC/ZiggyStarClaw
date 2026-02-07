@@ -355,6 +355,18 @@ fn drawAppearanceCard(
     }
     button_x += winamp_w + t.spacing.xs;
 
+    const winamp_px_w = buttonWidth(dc, "Use winamp pixel pack", t);
+    const winamp_px_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ winamp_px_w, button_height });
+    if (widgets.button.draw(dc, winamp_px_rect, "Use winamp pixel pack", queue, .{ .variant = .secondary })) {
+        ensureEditor(&theme_pack_editor, allocator).setText(allocator, "themes/zsc_winamp_pixel");
+        profile_choice = .desktop;
+        theme_is_light = false;
+        theme.setMode(.dark);
+        theme.apply();
+        appearance_changed = true;
+    }
+    button_x += winamp_px_w + t.spacing.xs;
+
     const theme_pack_text = editorText(theme_pack_editor);
     const can_reload = theme_pack_text.len > 0 and !(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi);
     const reload_w = buttonWidth(dc, "Reload pack", t);

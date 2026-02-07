@@ -50,7 +50,9 @@ Example:
 
   "defaults": {
     "variant": "dark",
-    "profile": "desktop"
+    "profile": "desktop",
+    "image_sampling": "linear",
+    "pixel_snap_textured": false
   },
 
   "capabilities": {

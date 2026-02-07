@@ -73,6 +73,7 @@ pub fn freeWindowTemplates(allocator: std.mem.Allocator, templates: []schema.Win
         allocator.free(tpl.id);
         allocator.free(tpl.title);
         if (tpl.profile) |p| allocator.free(p);
+        if (tpl.image_sampling) |p| allocator.free(p);
         if (tpl.focused_panel) |p| allocator.free(p);
         if (tpl.panels) |list| {
             for (list) |label| allocator.free(label);
@@ -114,6 +115,8 @@ fn loadOptionalWindows(
         errdefer allocator.free(title_copy);
         const profile_copy = if (tpl.profile) |p| try allocator.dupe(u8, p) else null;
         errdefer if (profile_copy) |p| allocator.free(p);
+        const sampling_copy = if (tpl.image_sampling) |p| try allocator.dupe(u8, p) else null;
+        errdefer if (sampling_copy) |p| allocator.free(p);
         const focused_copy = if (tpl.focused_panel) |p| try allocator.dupe(u8, p) else null;
         errdefer if (focused_copy) |p| allocator.free(p);
 
@@ -141,6 +144,8 @@ fn loadOptionalWindows(
             .width = tpl.width,
             .height = tpl.height,
             .profile = profile_copy,
+            .image_sampling = sampling_copy,
+            .pixel_snap_textured = tpl.pixel_snap_textured,
             .panels = panels_copy,
             .focused_panel = focused_copy,
         };
@@ -171,6 +176,7 @@ pub fn loadFromDirectory(allocator: std.mem.Allocator, path: []const u8) !ThemeP
     manifest.license = try allocator.dupe(u8, manifest.license);
     manifest.defaults.variant = try allocator.dupe(u8, manifest.defaults.variant);
     manifest.defaults.profile = try allocator.dupe(u8, manifest.defaults.profile);
+    manifest.defaults.image_sampling = try allocator.dupe(u8, manifest.defaults.image_sampling);
 
     const tokens_base_bytes = try readFileAlloc(allocator, dir, "tokens/base.json", 2 * 1024 * 1024);
     defer allocator.free(tokens_base_bytes);
@@ -201,6 +207,7 @@ fn freeManifestStrings(allocator: std.mem.Allocator, m: *schema.Manifest) void {
     allocator.free(m.license);
     allocator.free(m.defaults.variant);
     allocator.free(m.defaults.profile);
+    allocator.free(m.defaults.image_sampling);
 }
 
 fn freeTokensStrings(allocator: std.mem.Allocator, t: *schema.TokensFile) void {

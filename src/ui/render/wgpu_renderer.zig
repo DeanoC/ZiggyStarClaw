@@ -16,6 +16,7 @@ const Rect = command_list.Rect;
 const FontRole = command_list.FontRole;
 const Gradient4 = command_list.Gradient4;
 const SoftFxKind = command_list.SoftFxKind;
+const ImageSampling = command_list.ImageSampling;
 
 const ShapeVertex = struct {
     pos: Vec2,
@@ -137,8 +138,10 @@ const FontAtlas = struct {
 const ImageTexture = struct {
     texture: zgpu.wgpu.Texture,
     view: zgpu.wgpu.TextureView,
-    sampler: zgpu.wgpu.Sampler,
-    bind_group: zgpu.wgpu.BindGroup,
+    sampler_linear: zgpu.wgpu.Sampler,
+    bind_group_linear: zgpu.wgpu.BindGroup,
+    sampler_nearest: zgpu.wgpu.Sampler,
+    bind_group_nearest: zgpu.wgpu.BindGroup,
     width: u32,
     height: u32,
 };
@@ -174,6 +177,8 @@ pub const Renderer = struct {
     clip_stack: std.ArrayList(Rect) = .empty,
     font_atlases: std.AutoHashMap(FontKey, FontAtlas),
     image_textures: std.AutoHashMap(u32, ImageTexture),
+    image_sampling: ImageSampling = .linear,
+    pixel_snap_textured: bool = false,
     screen_width: u32 = 1,
     screen_height: u32 = 1,
     ft_ready: bool = false,
@@ -664,8 +669,10 @@ pub const Renderer = struct {
 
         var img_it = self.image_textures.iterator();
         while (img_it.next()) |entry| {
-            entry.value_ptr.bind_group.release();
-            entry.value_ptr.sampler.release();
+            entry.value_ptr.bind_group_linear.release();
+            entry.value_ptr.sampler_linear.release();
+            entry.value_ptr.bind_group_nearest.release();
+            entry.value_ptr.sampler_nearest.release();
             entry.value_ptr.view.release();
             entry.value_ptr.texture.release();
         }
@@ -716,6 +723,8 @@ pub const Renderer = struct {
     pub fn record(self: *Renderer, list: *command_list.CommandList) void {
         const zone = profiler.zone("wgpu.record");
         defer zone.end();
+        self.image_sampling = list.meta.image_sampling;
+        self.pixel_snap_textured = list.meta.pixel_snap_textured;
         self.shape_vertices.clearRetainingCapacity();
         self.sdf_vertices.clearRetainingCapacity();
         self.sdf_params.clearRetainingCapacity();
@@ -1166,7 +1175,7 @@ pub const Renderer = struct {
         const tex_id: u32 = @intCast(image_cmd.texture);
         const texture = self.ensureImageTexture(tex_id) orelse return;
         const start = self.textured_vertices.items.len;
-        const rect = image_cmd.rect;
+        const rect = if (self.pixel_snap_textured) snapRect(image_cmd.rect) else image_cmd.rect;
         self.appendTexturedQuad(
             rect.min,
             .{ rect.max[0], rect.min[1] },
@@ -1176,7 +1185,7 @@ pub const Renderer = struct {
             .{ 1.0, 1.0 },
             .{ 1.0, 1.0, 1.0, 1.0 },
         );
-        self.pushRenderItem(.textured, start, self.textured_vertices.items.len - start, scissor, texture.bind_group);
+        self.pushRenderItem(.textured, start, self.textured_vertices.items.len - start, scissor, textureBindGroup(self, texture));
     }
 
     fn pushNineSlice(self: *Renderer, cmd: command_list.NineSliceCmd, scissor: Scissor) void {
@@ -1192,8 +1201,9 @@ pub const Renderer = struct {
         const right_src = std.math.clamp(cmd.slices_px[2], 0.0, w_tex);
         const bottom_src = std.math.clamp(cmd.slices_px[3], 0.0, h_tex);
 
-        const dst_w = cmd.rect.max[0] - cmd.rect.min[0];
-        const dst_h = cmd.rect.max[1] - cmd.rect.min[1];
+        const rect = if (self.pixel_snap_textured) snapRect(cmd.rect) else cmd.rect;
+        const dst_w = rect.max[0] - rect.min[0];
+        const dst_h = rect.max[1] - rect.min[1];
         if (dst_w <= 0.0 or dst_h <= 0.0) return;
 
         // If the destination rect is too small to fit corners, proportionally shrink corners.
@@ -1212,13 +1222,13 @@ pub const Renderer = struct {
             bottom *= s;
         }
 
-        const x0 = cmd.rect.min[0];
+        const x0 = rect.min[0];
         const x1 = x0 + left;
-        const x3 = cmd.rect.max[0];
+        const x3 = rect.max[0];
         const x2 = x3 - right;
-        const y0 = cmd.rect.min[1];
+        const y0 = rect.min[1];
         const y1 = y0 + top;
-        const y3 = cmd.rect.max[1];
+        const y3 = rect.max[1];
         const y2 = y3 - bottom;
 
         const u_min: f32 = 0.0;
@@ -1248,7 +1258,21 @@ pub const Renderer = struct {
         self.appendTexturedQuad(.{ x1, y2 }, .{ x2, y2 }, .{ x2, y3 }, .{ x1, y3 }, .{ u_left, v_bottom }, .{ u_right, v_max }, tint);
         self.appendTexturedQuad(.{ x2, y2 }, .{ x3, y2 }, .{ x3, y3 }, .{ x2, y3 }, .{ u_right, v_bottom }, .{ u_max, v_max }, tint);
 
-        self.pushRenderItem(.textured, start, self.textured_vertices.items.len - start, scissor, texture.bind_group);
+        self.pushRenderItem(.textured, start, self.textured_vertices.items.len - start, scissor, textureBindGroup(self, texture));
+    }
+
+    fn snapRect(r: Rect) Rect {
+        return .{
+            .min = .{ @round(r.min[0]), @round(r.min[1]) },
+            .max = .{ @round(r.max[0]), @round(r.max[1]) },
+        };
+    }
+
+    fn textureBindGroup(self: *Renderer, tex: *ImageTexture) zgpu.wgpu.BindGroup {
+        return switch (self.image_sampling) {
+            .linear => tex.bind_group_linear,
+            .nearest => tex.bind_group_nearest,
+        };
     }
 
     fn appendShapeTriangle(self: *Renderer, a: Vec2, b: Vec2, c_point: Vec2, color: Color) void {
@@ -1917,8 +1941,10 @@ pub const Renderer = struct {
         const entry_opt = image_cache.getById(id);
         if (entry_opt == null) {
             if (self.image_textures.fetchRemove(id)) |removed| {
-                removed.value.bind_group.release();
-                removed.value.sampler.release();
+                removed.value.bind_group_linear.release();
+                removed.value.sampler_linear.release();
+                removed.value.bind_group_nearest.release();
+                removed.value.sampler_nearest.release();
                 removed.value.view.release();
                 removed.value.texture.release();
             }
@@ -1943,7 +1969,7 @@ pub const Renderer = struct {
             .dimension = .tdim_2d,
         });
         const view = texture.createView(.{ .format = .rgba8_unorm, .dimension = .tvdim_2d });
-        const sampler = self.device.createSampler(.{
+        const sampler_linear = self.device.createSampler(.{
             .label = "ui.image.sampler",
             .address_mode_u = .clamp_to_edge,
             .address_mode_v = .clamp_to_edge,
@@ -1951,6 +1977,15 @@ pub const Renderer = struct {
             .mag_filter = .linear,
             .min_filter = .linear,
             .mipmap_filter = .linear,
+        });
+        const sampler_nearest = self.device.createSampler(.{
+            .label = "ui.image.sampler.nearest",
+            .address_mode_u = .clamp_to_edge,
+            .address_mode_v = .clamp_to_edge,
+            .address_mode_w = .clamp_to_edge,
+            .mag_filter = .nearest,
+            .min_filter = .nearest,
+            .mipmap_filter = .nearest,
         });
 
         const layout = zgpu.wgpu.TextureDataLayout{
@@ -1967,7 +2002,7 @@ pub const Renderer = struct {
         const size = zgpu.wgpu.Extent3D{ .width = entry.width, .height = entry.height, .depth_or_array_layers = 1 };
         self.queue.writeTexture(destination, layout, size, u8, pixels);
 
-        const entries = [_]zgpu.wgpu.BindGroupEntry{
+        const entries_linear = [_]zgpu.wgpu.BindGroupEntry{
             .{
                 .binding = 0,
                 .buffer = self.uniform_buffer,
@@ -1976,7 +2011,7 @@ pub const Renderer = struct {
             },
             .{
                 .binding = 1,
-                .sampler = sampler,
+                .sampler = sampler_linear,
                 .size = 0,
             },
             .{
@@ -1985,24 +2020,52 @@ pub const Renderer = struct {
                 .size = 0,
             },
         };
-        const bind_group = self.device.createBindGroup(.{
+        const bind_group_linear = self.device.createBindGroup(.{
             .label = "ui.image.bg",
             .layout = self.texture_bind_group_layout,
-            .entry_count = entries.len,
-            .entries = &entries,
+            .entry_count = entries_linear.len,
+            .entries = &entries_linear,
+        });
+        const entries_nearest = [_]zgpu.wgpu.BindGroupEntry{
+            .{
+                .binding = 0,
+                .buffer = self.uniform_buffer,
+                .offset = 0,
+                .size = @sizeOf(Uniforms),
+            },
+            .{
+                .binding = 1,
+                .sampler = sampler_nearest,
+                .size = 0,
+            },
+            .{
+                .binding = 2,
+                .texture_view = view,
+                .size = 0,
+            },
+        };
+        const bind_group_nearest = self.device.createBindGroup(.{
+            .label = "ui.image.bg.nearest",
+            .layout = self.texture_bind_group_layout,
+            .entry_count = entries_nearest.len,
+            .entries = &entries_nearest,
         });
 
         image_cache.releasePixels(id);
         self.image_textures.put(id, .{
             .texture = texture,
             .view = view,
-            .sampler = sampler,
-            .bind_group = bind_group,
+            .sampler_linear = sampler_linear,
+            .bind_group_linear = bind_group_linear,
+            .sampler_nearest = sampler_nearest,
+            .bind_group_nearest = bind_group_nearest,
             .width = entry.width,
             .height = entry.height,
         }) catch {
-            bind_group.release();
-            sampler.release();
+            bind_group_linear.release();
+            sampler_linear.release();
+            bind_group_nearest.release();
+            sampler_nearest.release();
             view.release();
             texture.release();
             return null;

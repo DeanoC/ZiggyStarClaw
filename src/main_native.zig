@@ -35,6 +35,7 @@ const sdl_input_backend = @import("ui/input/sdl_input_backend.zig");
 const text_input_backend = @import("ui/input/text_input_backend.zig");
 const command_queue = @import("ui/render/command_queue.zig");
 const input_state = @import("ui/input/input_state.zig");
+const ui_commands = @import("ui/render/command_list.zig");
 
 const multi_renderer = @import("client/multi_window_renderer.zig");
 const font_system = @import("ui/font_system.zig");
@@ -53,6 +54,8 @@ const UiWindow = struct {
     manager: panel_manager.PanelManager,
     ui_state: ui.WindowUiState = .{},
     profile_override: ?theme_engine.ProfileId = null,
+    image_sampling_override: ?ui_commands.ImageSampling = null,
+    pixel_snap_textured_override: ?bool = null,
 };
 
 fn destroyUiWindow(allocator: std.mem.Allocator, w: *UiWindow) void {
@@ -76,6 +79,12 @@ fn parsePanelKindLabel(label: []const u8) ?workspace.PanelKind {
     if (std.ascii.eqlIgnoreCase(label, "code_editor") or std.ascii.eqlIgnoreCase(label, "codeeditor")) return .CodeEditor;
     if (std.ascii.eqlIgnoreCase(label, "tool_output") or std.ascii.eqlIgnoreCase(label, "tooloutput")) return .ToolOutput;
     return null;
+}
+
+fn parseImageSamplingLabel(label: ?[]const u8) ui_commands.ImageSampling {
+    const v = label orelse return .linear;
+    if (std.ascii.eqlIgnoreCase(v, "nearest")) return .nearest;
+    return .linear;
 }
 
 fn takeWorkspaceFromManager(allocator: std.mem.Allocator, manager: *panel_manager.PanelManager) workspace.Workspace {
@@ -128,6 +137,8 @@ fn createUiWindow(
     flags: sdl.SDL_WindowFlags,
     initial_workspace: workspace.Workspace,
     profile_override: ?theme_engine.ProfileId,
+    image_sampling_override: ?ui_commands.ImageSampling,
+    pixel_snap_textured_override: ?bool,
 ) !*UiWindow {
     var ws = initial_workspace;
     errdefer ws.deinit(allocator);
@@ -154,6 +165,8 @@ fn createUiWindow(
         .manager = panel_manager.PanelManager.init(allocator, ws),
         .ui_state = .{},
         .profile_override = profile_override,
+        .image_sampling_override = image_sampling_override,
+        .pixel_snap_textured_override = pixel_snap_textured_override,
     };
     errdefer out.queue.deinit(allocator);
     return out;
@@ -1129,6 +1142,8 @@ pub fn main() !void {
         .manager = panel_manager.PanelManager.init(allocator, workspace.Workspace.initEmpty(allocator)),
         .ui_state = .{},
         .profile_override = null,
+        .image_sampling_override = null,
+        .pixel_snap_textured_override = null,
     };
     errdefer main_win.queue.deinit(allocator);
     errdefer main_win.swapchain.deinit();
@@ -1397,6 +1412,9 @@ pub fn main() !void {
                 }
 
                 if (command_queue.get()) |list| {
+                    const defaults = theme_engine.runtime.getRenderDefaults();
+                    list.meta.image_sampling = w.image_sampling_override orelse defaults.image_sampling;
+                    list.meta.pixel_snap_textured = w.pixel_snap_textured_override orelse defaults.pixel_snap_textured;
                     gpu.ui_renderer.beginFrame(w_fb_width, w_fb_height);
                     w.swapchain.render(&gpu, list);
                 }
@@ -1820,6 +1838,8 @@ pub fn main() !void {
             var title_buf: [96]u8 = undefined;
             var title_z: [:0]const u8 = "ZiggyStarClaw";
             var profile_override: ?theme_engine.ProfileId = active_window.profile_override;
+            var sampling_override: ?ui_commands.ImageSampling = active_window.image_sampling_override;
+            var pixel_override: ?bool = active_window.pixel_snap_textured_override;
 
             var ws_for_new: workspace.Workspace = undefined;
             var ws_owned: bool = false;
@@ -1837,6 +1857,12 @@ pub fn main() !void {
                     if (profile.profileFromLabel(tpl.profile)) |pid| {
                         profile_override = pid;
                     }
+                    if (tpl.image_sampling) |label| {
+                        sampling_override = parseImageSamplingLabel(label);
+                    }
+                    if (tpl.pixel_snap_textured) |snap| {
+                        pixel_override = snap;
+                    }
                     if (buildWorkspaceFromTemplate(allocator, tpl)) |ws_val| {
                         ws_for_new = ws_val;
                         ws_owned = true;
@@ -1853,7 +1879,18 @@ pub fn main() !void {
             }
 
             const new_win = if (ws_owned)
-                createUiWindow(allocator, &gpu, title_z, cur_w, cur_h, window_flags, ws_for_new, profile_override) catch |err| blk: {
+                createUiWindow(
+                    allocator,
+                    &gpu,
+                    title_z,
+                    cur_w,
+                    cur_h,
+                    window_flags,
+                    ws_for_new,
+                    profile_override,
+                    sampling_override,
+                    pixel_override,
+                ) catch |err| blk: {
                     logger.warn("Failed to create window: {}", .{err});
                     break :blk null;
                 }

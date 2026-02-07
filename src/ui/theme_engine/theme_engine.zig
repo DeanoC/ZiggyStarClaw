@@ -10,6 +10,7 @@ const theme_package = @import("theme_package.zig");
 const style_sheet = @import("style_sheet.zig");
 const builtin_packs = @import("builtin_packs.zig");
 pub const runtime = @import("runtime.zig");
+const ui_commands = @import("../render/command_list.zig");
 const wasm_fetch = @import("../../platform/wasm_fetch.zig");
 const wasm_storage = if (builtin.target.os.tag == .emscripten)
     @import("../../platform/wasm_storage.zig")
@@ -96,6 +97,7 @@ pub const ThemeEngine = struct {
         runtime.setStyleSheets(.{}, .{});
         runtime.setThemePackRootPath(null);
         runtime.setWindowTemplates(&[_]schema.WindowTemplate{});
+        runtime.setRenderDefaults(.{});
         runtime.setProfile(profile.defaultsFor(.desktop, self.caps));
     }
 
@@ -117,6 +119,7 @@ pub const ThemeEngine = struct {
         runtime.setStyleSheets(.{}, .{});
         runtime.setThemePackRootPath(null);
         runtime.setWindowTemplates(&[_]schema.WindowTemplate{});
+        runtime.setRenderDefaults(.{});
     }
 
     pub fn takeWebThemeChanged(self: *ThemeEngine) bool {
@@ -224,6 +227,16 @@ pub const ThemeEngine = struct {
         }
         self.active_pack_root = try self.allocator.dupe(u8, root_for_assets);
         runtime.setThemePackRootPath(self.active_pack_root);
+
+        // Pack-wide render defaults (used for "pixel" style packs).
+        const defaults_sampling = if (std.ascii.eqlIgnoreCase(pack.manifest.defaults.image_sampling, "nearest"))
+            ui_commands.ImageSampling.nearest
+        else
+            ui_commands.ImageSampling.linear;
+        runtime.setRenderDefaults(.{
+            .image_sampling = defaults_sampling,
+            .pixel_snap_textured = pack.manifest.defaults.pixel_snap_textured,
+        });
 
         // Adopt optional multi-window templates (ThemeEngine owns the memory).
         if (self.windows) |v| theme_package.freeWindowTemplates(self.allocator, v);

@@ -17,6 +17,8 @@ pub const Manifest = struct {
     pub const Defaults = struct {
         variant: []const u8 = "dark",
         profile: []const u8 = "desktop",
+        image_sampling: []const u8 = "linear",
+        pixel_snap_textured: bool = false,
     };
 
     pub const Capabilities = struct {
@@ -37,6 +39,8 @@ pub const WindowTemplate = struct {
     width: u32 = 960,
     height: u32 = 720,
     profile: ?[]const u8 = null,
+    image_sampling: ?[]const u8 = null,
+    pixel_snap_textured: ?bool = null,
     panels: ?[]const []const u8 = null,
     focused_panel: ?[]const u8 = null,
 };
