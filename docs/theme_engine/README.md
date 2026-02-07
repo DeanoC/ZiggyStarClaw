@@ -32,6 +32,14 @@ The goal of this theme engine is to move beyond “light/dark” tokens and supp
 
 A minimal example theme pack (tokens + styles) lives at:
 - `docs/theme_engine/examples/zsc_clean/manifest.json`
+- `docs/theme_engine/examples/zsc_clean/tokens/base.json`
+- `docs/theme_engine/examples/zsc_clean/styles/components.json`
+
+When you run `zig build`, the example pack is also installed next to the executable at:
+- `zig-out/bin/themes/zsc_clean`
+
+So config can use:
+- `"ui_theme_pack": "themes/zsc_clean"`
 
 ## Key Concepts (Terms)
 

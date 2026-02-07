@@ -211,67 +211,39 @@ const ThemePackCandidates = struct {
         if (self.raw_path.len == 0) return;
         if (std.fs.path.isAbsolute(self.raw_path)) return;
 
-        // WASM/WASI builds: theme packs are unsupported anyway, and some std.fs helpers
-        // (realpath / selfExePath) are not available at compile-time on those targets.
+        // WASM/WASI builds: theme packs are unsupported anyway, and selfExePath is not
+        // available (or meaningful).
         if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi) return;
 
-        if (try resolveRelativeAgainstProjectRoot(self.allocator, self.raw_path, .cwd)) |cand| {
+        if (try resolveRelativeToExeDir(self.allocator, self.raw_path)) |cand| {
             try self.owned.append(self.allocator, cand);
             try self.list.append(self.allocator, cand);
         }
-        if (try resolveRelativeAgainstProjectRoot(self.allocator, self.raw_path, .exe_dir)) |cand| {
-            try self.owned.append(self.allocator, cand);
-            try self.list.append(self.allocator, cand);
+
+        // Back-compat: older configs used the repo-relative docs path. In production builds
+        // we install example packs alongside the executable at `themes/<id>`.
+        const docs_prefix = "docs/theme_engine/examples/";
+        if (std.mem.startsWith(u8, self.raw_path, docs_prefix)) {
+            const suffix = self.raw_path[docs_prefix.len..];
+            if (suffix.len > 0) {
+                const rel_themes = try std.fs.path.join(self.allocator, &.{ "themes", suffix });
+                try self.owned.append(self.allocator, rel_themes);
+                try self.list.append(self.allocator, rel_themes);
+
+                if (try resolveRelativeToExeDir(self.allocator, rel_themes)) |abs_themes| {
+                    try self.owned.append(self.allocator, abs_themes);
+                    try self.list.append(self.allocator, abs_themes);
+                }
+            }
         }
     }
 };
 
-const ProjectRootBase = enum { cwd, exe_dir };
-
-fn resolveRelativeAgainstProjectRoot(
-    allocator: std.mem.Allocator,
-    rel: []const u8,
-    base: ProjectRootBase,
-) !?[]u8 {
-    const maybe_start_dir: ?[]u8 = switch (base) {
-        .cwd => std.fs.cwd().realpathAlloc(allocator, ".") catch null,
-        .exe_dir => blk: {
-            const exe_path = std.fs.selfExePathAlloc(allocator) catch break :blk null;
-            defer allocator.free(exe_path);
-            const exe_dir = std.fs.path.dirname(exe_path) orelse break :blk null;
-            break :blk allocator.dupe(u8, exe_dir) catch null;
-        },
-    };
-    const start_dir = maybe_start_dir orelse return null;
-    defer allocator.free(start_dir);
-
-    const root = findAncestorWithFile(allocator, start_dir, "build.zig") orelse return null;
-    defer allocator.free(root);
-
-    return try std.fs.path.join(allocator, &.{ root, rel });
-}
-
-fn findAncestorWithFile(allocator: std.mem.Allocator, start_dir_abs: []const u8, marker_file: []const u8) ?[]u8 {
-    var current = allocator.dupe(u8, start_dir_abs) catch return null;
-    errdefer allocator.free(current);
-
-    while (true) {
-        const marker = std.fs.path.join(allocator, &.{ current, marker_file }) catch break;
-        defer allocator.free(marker);
-        if (std.fs.cwd().access(marker, .{})) |_| {
-            return current; // owned by caller
-        } else |_| {}
-
-        const parent = std.fs.path.dirname(current) orelse break;
-        if (std.mem.eql(u8, parent, current)) break;
-
-        const next = allocator.dupe(u8, parent) catch break;
-        allocator.free(current);
-        current = next;
-    }
-
-    allocator.free(current);
-    return null;
+fn resolveRelativeToExeDir(allocator: std.mem.Allocator, rel: []const u8) !?[]u8 {
+    const exe_path = std.fs.selfExePathAlloc(allocator) catch return null;
+    defer allocator.free(exe_path);
+    const exe_dir = std.fs.path.dirname(exe_path) orelse return null;
+    return std.fs.path.join(allocator, &.{ exe_dir, rel }) catch null;
 }
 
 fn buildRuntimeTheme(allocator: std.mem.Allocator, tokens: schema.TokensFile) !*theme_tokens.Theme {

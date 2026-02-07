@@ -59,7 +59,7 @@ Add config fields (proposal):
 
 ```json
 {
-  "ui_theme_pack": "docs/theme_engine/examples/zsc_clean",
+  "ui_theme_pack": "themes/zsc_clean",
   "ui_profile": "desktop"
 }
 ```
