@@ -19,6 +19,7 @@ const win_service = @import("windows/service.zig");
 const linux_service = @import("linux/systemd_service.zig");
 const node_register = @import("node_register.zig");
 const unified_config = @import("unified_config.zig");
+const winamp_import = @import("ui/theme_engine/winamp_import.zig");
 
 pub const std_options = std.Options{
     .logFn = cliLogFn,
@@ -112,6 +113,8 @@ const usage =
     \\  --node-service-status     Show service status
     \\  --node-service-mode <m>   onlogon|onstart (default: onlogon)
     \\  --node-service-name <n>   Override service name (default: ZiggyStarClaw Node)
+    \\  --extract-wsz <path>      Extract a Winamp .wsz skin to a directory (zip)
+    \\  --extract-dest <path>     Destination directory for --extract-wsz
     \\
     \\  --save-config            Save --url, --token, --update-url, --use-session, --use-node to config file
     \\  --version                Print version and exit
@@ -193,6 +196,8 @@ pub fn main() !void {
     var interactive = false;
     var node_register_mode = false;
     var node_register_wait = false;
+    var extract_wsz: ?[]const u8 = null;
+    var extract_dest: ?[]const u8 = null;
 
     // Windows task-scheduler "service" helpers
     var node_service_install = false;
@@ -373,6 +378,14 @@ pub fn main() !void {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             node_service_name = args[i];
+        } else if (std.mem.eql(u8, arg, "--extract-wsz")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            extract_wsz = args[i];
+        } else if (std.mem.eql(u8, arg, "--extract-dest")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            extract_dest = args[i];
         } else if (std.mem.eql(u8, arg, "--node-mode")) {
             // handled by pre-scan
         } else if (std.mem.eql(u8, arg, "--operator-mode")) {
@@ -400,11 +413,22 @@ pub fn main() !void {
         poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
         canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or exec_approvals_get or
         exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or use_session != null or use_node != null or
-        check_update_only or print_update_url or interactive or node_mode or node_register_mode or save_config or
+        extract_wsz != null or check_update_only or print_update_url or interactive or node_mode or node_register_mode or save_config or
         node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status;
     if (!has_action) {
         var stdout = std.fs.File.stdout().deprecatedWriter();
         try stdout.writeAll(usage);
+        return;
+    }
+
+    if (extract_wsz) |path| {
+        const dest = extract_dest orelse return error.InvalidArguments;
+        winamp_import.extractWszToDirectory(allocator, path, dest) catch |err| {
+            logger.err("Failed to extract wsz: {}", .{err});
+            return err;
+        };
+        var stdout = std.fs.File.stdout().deprecatedWriter();
+        try stdout.print("Extracted .wsz to: {s}\n", .{dest});
         return;
     }
 

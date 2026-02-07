@@ -104,3 +104,12 @@ Then implement:
 
 - Phase 6 (Fullscreen + controller):
   - app is usable with controller only
+
+## Winamp Skin Extraction (WIP)
+
+ZiggyStarClaw includes a minimal `.wsz` (Winamp skin) extractor in the CLI to support the
+Winamp import pipeline.
+
+```bash
+./zig-out/bin/ziggystarclaw-cli --extract-wsz path/to/skin.wsz --extract-dest themes/imported/my_skin
+```
