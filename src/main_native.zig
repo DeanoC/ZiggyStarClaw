@@ -915,6 +915,12 @@ pub fn main() !void {
             logger.err("Failed to write default config: {}", .{err});
         };
     }
+    if (config.migrateThemePackPath(allocator, &cfg)) {
+        logger.info("Migrated ui_theme_pack to: {s}", .{cfg.ui_theme_pack orelse ""});
+        config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
+            logger.err("Failed to save migrated config: {}", .{err});
+        };
+    }
     {
         const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch null;
         defer if (cwd) |v| allocator.free(v);

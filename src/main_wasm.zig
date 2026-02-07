@@ -139,6 +139,9 @@ fn initApp() !void {
 
     ctx = try client_state.ClientContext.init(allocator);
     cfg = try loadConfigFromStorage();
+    if (config.migrateThemePackPath(allocator, &cfg)) {
+        saveConfigToStorage();
+    }
     if (cfg.ui_theme) |label| {
         theme.setMode(theme.modeFromLabel(label));
         theme.apply();

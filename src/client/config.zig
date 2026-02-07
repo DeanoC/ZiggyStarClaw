@@ -40,6 +40,21 @@ pub const Config = struct {
     }
 };
 
+/// Back-compat / UX migration: older configs used a repo-relative docs path for the example pack.
+/// New builds install example packs next to the executable at `themes/<id>`.
+pub fn migrateThemePackPath(allocator: std.mem.Allocator, cfg: *Config) bool {
+    const current = cfg.ui_theme_pack orelse return false;
+    const docs_prefix = "docs/theme_engine/examples/";
+    if (!std.mem.startsWith(u8, current, docs_prefix)) return false;
+    const suffix = current[docs_prefix.len..];
+    if (suffix.len == 0) return false;
+
+    const migrated = std.fmt.allocPrint(allocator, "themes/{s}", .{suffix}) catch return false;
+    if (cfg.ui_theme_pack) |old| allocator.free(old);
+    cfg.ui_theme_pack = migrated;
+    return true;
+}
+
 pub fn initDefault(allocator: std.mem.Allocator) !Config {
     return .{
         .server_url = try allocator.dupe(u8, ""),
