@@ -64,7 +64,7 @@ pub const ThemeEngine = struct {
         }
         self.active_pack_path = null;
         self.styles.deinit();
-        runtime.setStyleSheet(.{});
+        runtime.setStyleSheets(.{}, .{});
         runtime.setProfile(profile.defaultsFor(.desktop, self.caps));
     }
 
@@ -79,7 +79,7 @@ pub const ThemeEngine = struct {
         self.active_pack_path = null;
         self.styles.deinit();
         self.styles = style_sheet.StyleSheetStore.initEmpty(self.allocator);
-        runtime.setStyleSheet(.{});
+        runtime.setStyleSheets(.{}, .{});
     }
 
     pub fn setProfile(self: *ThemeEngine, p: Profile) void {
@@ -105,11 +105,6 @@ pub const ThemeEngine = struct {
         const base_theme = try buildRuntimeTheme(self.allocator, pack.tokens_base);
         errdefer freeTheme(self.allocator, base_theme);
 
-        // Load + resolve style sheet (optional) using base tokens.
-        self.styles.deinit();
-        self.styles = try style_sheet.loadFromDirectoryMaybe(self.allocator, pack.root_path, base_theme);
-        runtime.setStyleSheet(self.styles.resolved);
-
         const light_theme = if (pack.tokens_light) |tf|
             try buildRuntimeTheme(self.allocator, tf)
         else
@@ -121,6 +116,18 @@ pub const ThemeEngine = struct {
         else
             try cloneTheme(self.allocator, base_theme);
         errdefer freeTheme(self.allocator, dark_theme);
+
+        // Load style sheet raw JSON once (optional) and resolve per mode so light/dark
+        // overrides don't accidentally render dark surfaces in light mode.
+        self.styles.deinit();
+        self.styles = try style_sheet.loadRawFromDirectoryMaybe(self.allocator, pack.root_path);
+        if (self.styles.raw_json.len > 0) {
+            const ss_light = try style_sheet.parseResolved(self.allocator, self.styles.raw_json, light_theme);
+            const ss_dark = try style_sheet.parseResolved(self.allocator, self.styles.raw_json, dark_theme);
+            runtime.setStyleSheets(ss_light, ss_dark);
+        } else {
+            runtime.setStyleSheets(.{}, .{});
+        }
 
         // Swap in new themes.
         theme_mod.setRuntimeTheme(.light, light_theme);

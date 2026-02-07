@@ -51,10 +51,9 @@ pub const StyleSheetStore = struct {
     }
 };
 
-pub fn loadFromDirectoryMaybe(
+pub fn loadRawFromDirectoryMaybe(
     allocator: std.mem.Allocator,
     root_path: []const u8,
-    theme: *const theme_tokens.Theme,
 ) !StyleSheetStore {
     var dir = std.fs.cwd().openDir(root_path, .{}) catch {
         return StyleSheetStore.initEmpty(allocator);
@@ -67,10 +66,19 @@ pub fn loadFromDirectoryMaybe(
     defer f.close();
 
     const bytes = try f.readToEndAlloc(allocator, 512 * 1024);
-    errdefer allocator.free(bytes);
+    return .{ .allocator = allocator, .raw_json = bytes, .resolved = .{} };
+}
 
-    const resolved = try parseResolved(allocator, bytes, theme);
-    return .{ .allocator = allocator, .raw_json = bytes, .resolved = resolved };
+pub fn loadFromDirectoryMaybe(
+    allocator: std.mem.Allocator,
+    root_path: []const u8,
+    theme: *const theme_tokens.Theme,
+) !StyleSheetStore {
+    var store = try loadRawFromDirectoryMaybe(allocator, root_path);
+    if (store.raw_json.len == 0) return store;
+    const resolved = try parseResolved(allocator, store.raw_json, theme);
+    store.resolved = resolved;
+    return store;
 }
 
 pub fn parseResolved(
