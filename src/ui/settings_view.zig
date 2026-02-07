@@ -28,9 +28,12 @@ var server_editor: ?text_editor.TextEditor = null;
 var token_editor: ?text_editor.TextEditor = null;
 var connect_host_editor: ?text_editor.TextEditor = null;
 var update_url_editor: ?text_editor.TextEditor = null;
+var theme_pack_editor: ?text_editor.TextEditor = null;
 var insecure_tls_value = false;
 var auto_connect_value = true;
 var theme_is_light = true;
+const ProfileChoice = enum { auto, desktop, phone, tablet, fullscreen };
+var profile_choice: ProfileChoice = .auto;
 var initialized = false;
 var download_popup_opened = false;
 var scroll_y: f32 = 0.0;
@@ -49,10 +52,12 @@ pub fn deinit(allocator: std.mem.Allocator) void {
     if (token_editor) |*editor| editor.deinit(allocator);
     if (connect_host_editor) |*editor| editor.deinit(allocator);
     if (update_url_editor) |*editor| editor.deinit(allocator);
+    if (theme_pack_editor) |*editor| editor.deinit(allocator);
     server_editor = null;
     token_editor = null;
     connect_host_editor = null;
     update_url_editor = null;
+    theme_pack_editor = null;
     initialized = false;
     download_popup_opened = false;
 }
@@ -99,18 +104,23 @@ pub fn draw(
     const start_y = cursor_y;
     const card_x = content_rect.min[0] + t.spacing.md;
 
-    cursor_y += drawAppearanceCard(&dc, queue, card_x, cursor_y, card_width);
+    cursor_y += drawAppearanceCard(&dc, queue, allocator, card_x, cursor_y, card_width);
     cursor_y += t.spacing.md;
 
     const server_text = editorText(server_editor);
     const connect_host_text = editorText(connect_host_editor);
     const token_text = editorText(token_editor);
     const update_url_text = editorText(update_url_editor);
+    const theme_pack_text = editorText(theme_pack_editor);
     const theme_default_light = theme.modeFromLabel(cfg.ui_theme) == .light;
+    const cfg_profile = cfg.ui_profile orelse "";
+    const desired_profile = profileLabel(profile_choice) orelse "";
     const dirty = !std.mem.eql(u8, server_text, cfg.server_url) or
         !std.mem.eql(u8, token_text, cfg.token) or
         !std.mem.eql(u8, connect_host_text, cfg.connect_host_override orelse "") or
         !std.mem.eql(u8, update_url_text, cfg.update_manifest_url orelse "") or
+        !std.mem.eql(u8, theme_pack_text, cfg.ui_theme_pack orelse "") or
+        !std.mem.eql(u8, desired_profile, cfg_profile) or
         theme_is_light != theme_default_light or
         (show_insecure_tls and insecure_tls_value != cfg.insecure_tls) or
         auto_connect_value != cfg.auto_connect_on_launch;
@@ -163,9 +173,11 @@ fn syncBuffers(allocator: std.mem.Allocator, cfg: config.Config) void {
     ensureEditor(&connect_host_editor, allocator).setText(allocator, cfg.connect_host_override orelse "");
     ensureEditor(&token_editor, allocator).setText(allocator, cfg.token);
     ensureEditor(&update_url_editor, allocator).setText(allocator, cfg.update_manifest_url orelse "");
+    ensureEditor(&theme_pack_editor, allocator).setText(allocator, cfg.ui_theme_pack orelse "");
     insecure_tls_value = cfg.insecure_tls;
     auto_connect_value = cfg.auto_connect_on_launch;
     theme_is_light = theme.modeFromLabel(cfg.ui_theme) == .light;
+    profile_choice = profileChoiceFromLabel(cfg.ui_profile);
 }
 
 fn ensureEditor(
@@ -209,6 +221,7 @@ fn drawHeader(dc: *draw_context.DrawContext, rect: draw_context.Rect) struct { h
 fn drawAppearanceCard(
     dc: *draw_context.DrawContext,
     queue: *input_state.InputQueue,
+    allocator: std.mem.Allocator,
     x: f32,
     y: f32,
     width: f32,
@@ -217,7 +230,13 @@ fn drawAppearanceCard(
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const checkbox_height = line_height + t.spacing.xs * 2.0;
-    const height = padding + line_height + t.spacing.xs + checkbox_height + padding;
+    const input_height = widgets.text_input.defaultHeight(line_height);
+    const button_height = line_height + t.spacing.xs * 2.0;
+
+    var height = padding + line_height + t.spacing.xs + checkbox_height + t.spacing.sm;
+    height += labeledInputHeight(input_height, line_height, t);
+    height += line_height + t.spacing.xs; // helper text
+    height += button_height + padding;
     const rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ width, height });
 
     const content_y = drawCardBase(dc, rect, "Appearance");
@@ -232,7 +251,79 @@ fn drawAppearanceCard(
         theme.apply();
     }
 
+    var cursor_y = content_y + checkbox_height + t.spacing.sm;
+    cursor_y += drawLabeledInput(
+        dc,
+        queue,
+        allocator,
+        rect.min[0] + padding,
+        cursor_y,
+        width - padding * 2.0,
+        "Theme pack path",
+        ensureEditor(&theme_pack_editor, allocator),
+        .{ .placeholder = "docs/theme_engine/examples/zsc_clean" },
+    );
+
+    dc.drawText(
+        "Theme packs and profile selection apply on next app launch (for now).",
+        .{ rect.min[0] + padding, cursor_y - t.spacing.sm },
+        .{ .color = t.colors.text_secondary },
+    );
+
+    const button_w = buttonWidth(dc, "Use example pack", t);
+    const button_rect = draw_context.Rect.fromMinSize(
+        .{ rect.min[0] + padding, rect.max[1] - padding - button_height },
+        .{ button_w, button_height },
+    );
+    if (widgets.button.draw(dc, button_rect, "Use example pack", queue, .{ .variant = .secondary })) {
+        ensureEditor(&theme_pack_editor, allocator).setText(allocator, "docs/theme_engine/examples/zsc_clean");
+        profile_choice = .desktop;
+    }
+
+    // Simple profile picker (stored into config, used to choose UI scaling/density/input assumptions).
+    const picker_label = "Profile:";
+    const picker_x = button_rect.max[0] + t.spacing.md;
+    dc.drawText(picker_label, .{ picker_x, button_rect.min[1] + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_primary });
+
+    var px = picker_x + dc.measureText(picker_label, 0.0)[0] + t.spacing.sm;
+    const choices = [_]struct { id: ProfileChoice, label: []const u8 }{
+        .{ .id = .auto, .label = "Auto" },
+        .{ .id = .desktop, .label = "Desktop" },
+        .{ .id = .phone, .label = "Phone" },
+        .{ .id = .tablet, .label = "Tablet" },
+        .{ .id = .fullscreen, .label = "Fullscreen" },
+    };
+    for (choices) |c| {
+        const w = buttonWidth(dc, c.label, t);
+        const r = draw_context.Rect.fromMinSize(.{ px, button_rect.min[1] }, .{ w, button_height });
+        const is_selected = profile_choice == c.id;
+        if (widgets.button.draw(dc, r, c.label, queue, .{ .variant = if (is_selected) .primary else .ghost })) {
+            profile_choice = c.id;
+        }
+        px += w + t.spacing.xs;
+    }
+
     return height;
+}
+
+fn profileChoiceFromLabel(label: ?[]const u8) ProfileChoice {
+    if (label == null or label.?.len == 0) return .auto;
+    const value = label.?;
+    if (std.ascii.eqlIgnoreCase(value, "desktop")) return .desktop;
+    if (std.ascii.eqlIgnoreCase(value, "phone")) return .phone;
+    if (std.ascii.eqlIgnoreCase(value, "tablet")) return .tablet;
+    if (std.ascii.eqlIgnoreCase(value, "fullscreen")) return .fullscreen;
+    return .auto;
+}
+
+fn profileLabel(choice: ProfileChoice) ?[]const u8 {
+    return switch (choice) {
+        .auto => null,
+        .desktop => "desktop",
+        .phone => "phone",
+        .tablet => "tablet",
+        .fullscreen => "fullscreen",
+    };
 }
 
 fn drawConnectionCard(
@@ -295,13 +386,34 @@ fn drawConnectionCard(
     var cursor_x = content_x;
     const apply_w = buttonWidth(dc, "Apply", t);
     if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ apply_w, button_height }), "Apply", queue, .{ .variant = .primary, .disabled = !dirty })) {
-        if (applyConfig(allocator, cfg, editorText(server_editor), editorText(connect_host_editor), editorText(token_editor), editorText(update_url_editor))) {
+        if (applyConfig(
+            allocator,
+            cfg,
+            editorText(server_editor),
+            editorText(connect_host_editor),
+            editorText(token_editor),
+            editorText(update_url_editor),
+            editorText(theme_pack_editor),
+            profileLabel(profile_choice),
+        )) {
             action.config_updated = true;
         }
     }
     cursor_x += apply_w + t.spacing.sm;
     const save_w = buttonWidth(dc, "Save", t);
     if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ save_w, button_height }), "Save", queue, .{ .variant = .secondary })) {
+        if (dirty and applyConfig(
+            allocator,
+            cfg,
+            editorText(server_editor),
+            editorText(connect_host_editor),
+            editorText(token_editor),
+            editorText(update_url_editor),
+            editorText(theme_pack_editor),
+            profileLabel(profile_choice),
+        )) {
+            action.config_updated = true;
+        }
         action.save = true;
     }
     cursor_x += save_w + t.spacing.sm;
@@ -319,7 +431,16 @@ fn drawConnectionCard(
     } else {
         const conn_w = buttonWidth(dc, "Connect", t);
         if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ content_x, cursor_y }, .{ conn_w, button_height }), "Connect", queue, .{ .variant = .primary })) {
-            if (dirty and applyConfig(allocator, cfg, editorText(server_editor), editorText(connect_host_editor), editorText(token_editor), editorText(update_url_editor))) {
+            if (dirty and applyConfig(
+                allocator,
+                cfg,
+                editorText(server_editor),
+                editorText(connect_host_editor),
+                editorText(token_editor),
+                editorText(update_url_editor),
+                editorText(theme_pack_editor),
+                profileLabel(profile_choice),
+            )) {
                 action.config_updated = true;
             }
             action.connect = true;
@@ -407,7 +528,16 @@ fn drawUpdatesCard(
     const update_url_text = editorText(update_url_editor);
     const check_w = buttonWidth(dc, "Check Updates", t);
     if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ content_x, cursor_y }, .{ check_w, button_height }), "Check Updates", queue, .{ .variant = .secondary, .disabled = snapshot.in_flight or update_url_text.len == 0 })) {
-        if (applyConfig(allocator, cfg, editorText(server_editor), editorText(connect_host_editor), editorText(token_editor), update_url_text)) {
+        if (applyConfig(
+            allocator,
+            cfg,
+            editorText(server_editor),
+            editorText(connect_host_editor),
+            editorText(token_editor),
+            update_url_text,
+            editorText(theme_pack_editor),
+            profileLabel(profile_choice),
+        )) {
             action.config_updated = true;
         }
         action.check_updates = true;
@@ -759,6 +889,8 @@ fn applyConfig(
     connect_host_text: []const u8,
     token_text: []const u8,
     update_url_text: []const u8,
+    theme_pack_text: []const u8,
+    profile_label: ?[]const u8,
 ) bool {
     var changed = false;
 
@@ -814,6 +946,31 @@ fn applyConfig(
         }
         if (update_url_text.len > 0) {
             cfg.update_manifest_url = allocator.dupe(u8, update_url_text) catch return changed;
+        }
+        changed = true;
+    }
+
+    const current_theme_pack = cfg.ui_theme_pack orelse "";
+    if (!std.mem.eql(u8, current_theme_pack, theme_pack_text)) {
+        if (cfg.ui_theme_pack) |value| {
+            allocator.free(value);
+            cfg.ui_theme_pack = null;
+        }
+        if (theme_pack_text.len > 0) {
+            cfg.ui_theme_pack = allocator.dupe(u8, theme_pack_text) catch return changed;
+        }
+        changed = true;
+    }
+
+    const desired_profile = profile_label orelse "";
+    const current_profile = cfg.ui_profile orelse "";
+    if (!std.mem.eql(u8, current_profile, desired_profile)) {
+        if (cfg.ui_profile) |value| {
+            allocator.free(value);
+            cfg.ui_profile = null;
+        }
+        if (profile_label) |label| {
+            cfg.ui_profile = allocator.dupe(u8, label) catch return changed;
         }
         changed = true;
     }
