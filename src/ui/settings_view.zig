@@ -799,7 +799,8 @@ fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: [
     }
 
     // Optional theme-provided 9-slice frame image (Winamp-style chrome, but also useful for subtle frames).
-    if (ss.panel.frame_image) |rel_img| {
+    if (ss.panel.frame_image.isSet()) {
+        const rel_img = ss.panel.frame_image.slice();
         if (ss.panel.frame_slices_px) |slices| {
             var path_buf: [std.fs.max_path_bytes]u8 = undefined;
             if (theme_runtime.resolveThemeAssetPath(path_buf[0..], rel_img)) |abs_path| {

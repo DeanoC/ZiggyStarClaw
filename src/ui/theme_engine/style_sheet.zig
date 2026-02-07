@@ -16,6 +16,30 @@ pub const Paint = union(enum) {
     gradient4: Gradient4,
 };
 
+pub const AssetPath = struct {
+    // Theme asset paths are authored inside packs and should be short; keep this allocation-free.
+    len: u16 = 0,
+    buf: [256]u8 = undefined,
+
+    pub fn isSet(self: *const AssetPath) bool {
+        return self.len != 0;
+    }
+
+    pub fn slice(self: *const AssetPath) []const u8 {
+        return self.buf[0..self.len];
+    }
+
+    pub fn set(self: *AssetPath, s: []const u8) void {
+        const n: usize = @min(s.len, self.buf.len);
+        if (n == 0) {
+            self.len = 0;
+            return;
+        }
+        @memcpy(self.buf[0..n], s[0..n]);
+        self.len = @intCast(n);
+    }
+};
+
 pub const ButtonVariantStyle = struct {
     radius: ?f32 = null,
     fill: ?Paint = null,
@@ -33,7 +57,7 @@ pub const PanelStyle = struct {
     radius: ?f32 = null,
     fill: ?Paint = null,
     border: ?Color = null,
-    frame_image: ?[]const u8 = null,
+    frame_image: AssetPath = .{},
     frame_slices_px: ?[4]f32 = null,
     frame_tint: ?Color = null,
 };
@@ -152,7 +176,7 @@ fn parsePanelFrame(out: *PanelStyle, v: std.json.Value, theme: *const theme_toke
     if (v != .object) return;
     const obj = v.object;
     if (obj.get("image")) |iv| {
-        if (iv == .string) out.frame_image = iv.string;
+        if (iv == .string) out.frame_image.set(iv.string);
     }
     if (obj.get("slices_px")) |sv| {
         out.frame_slices_px = parseSlicesPx(sv) orelse out.frame_slices_px;

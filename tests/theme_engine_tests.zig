@@ -69,6 +69,6 @@ test "theme engine loads showcase theme pack directory (partial overrides + per-
     try std.testing.expect(ss_dark.focus_ring.color != null);
 
     // Ensure 9-slice panel frame config is present.
-    try std.testing.expect(ss_dark.panel.frame_image != null);
+    try std.testing.expect(ss_dark.panel.frame_image.isSet());
     try std.testing.expect(ss_dark.panel.frame_slices_px != null);
 }
