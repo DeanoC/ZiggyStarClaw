@@ -11,6 +11,7 @@ const input_state = @import("input/input_state.zig");
 const widgets = @import("widgets/widgets.zig");
 const text_editor = @import("widgets/text_editor.zig");
 const theme_runtime = @import("theme_engine/runtime.zig");
+const style_sheet = @import("theme_engine/style_sheet.zig");
 
 pub const SettingsAction = struct {
     connect: bool = false,
@@ -781,9 +782,20 @@ fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: [
     const line_height = dc.lineHeight();
 
     const radius = ss.panel.radius orelse t.radius.md;
-    const fill = ss.panel.fill orelse t.colors.surface;
+    const fill = ss.panel.fill orelse style_sheet.Paint{ .solid = t.colors.surface };
     const border = ss.panel.border orelse t.colors.border;
-    dc.drawRoundedRect(rect, radius, .{ .fill = fill, .stroke = border, .thickness = 1.0 });
+    switch (fill) {
+        .solid => |c| dc.drawRoundedRect(rect, radius, .{ .fill = c, .stroke = border, .thickness = 1.0 }),
+        .gradient4 => |g| {
+            dc.drawRoundedRectGradient(rect, radius, .{
+                .tl = g.tl,
+                .tr = g.tr,
+                .bl = g.bl,
+                .br = g.br,
+            });
+            dc.drawRoundedRect(rect, radius, .{ .stroke = border, .thickness = 1.0 });
+        },
+    }
     theme.push(.heading);
     dc.drawText(title, .{ rect.min[0] + padding, rect.min[1] + padding }, .{ .color = t.colors.text_primary });
     theme.pop();

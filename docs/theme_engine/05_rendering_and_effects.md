@@ -83,10 +83,16 @@ pub fn drawMaterialRect(dc: *DrawContext, rect: Rect, id: MaterialId, params: Ma
 
 If “materials” feels too big initially, implement in slices:
 
-1. Add `drawGradientRect` + `Command.gradient_rect`
+1. Add `drawRectGradient` / `drawRoundedRectGradient` + `Command.rect_gradient` / `Command.rounded_rect_gradient`
 2. Add `drawNineSlice` + `Command.nine_slice`
 3. Add `drawShadow` + `Command.shadow`
 4. Once you have 3-4 effect commands, refactor into materials to avoid combinatorial growth.
+
+### Status In This Branch
+
+- Implemented: **4-corner gradients** (`gradient4`) for filled rects and filled rounded rects.
+  - StyleSheet `fill` can be a solid color or `{ "gradient4": { "tl": ..., "tr": ..., "bl": ..., "br": ... } }`.
+  - Renderer implementation uses per-vertex colors (bilinear interpolation).
 
 ## Performance Notes
 
@@ -107,4 +113,3 @@ The theme engine should not “draw”. It should:
 The UI code uses the style sheet to pick:
 - which material id to use for each component/state
 - which parameters to pass
-

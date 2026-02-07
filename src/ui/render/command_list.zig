@@ -26,10 +26,28 @@ pub const RectCmd = struct {
     style: RectStyle,
 };
 
+pub const Gradient4 = struct {
+    tl: Color,
+    tr: Color,
+    bl: Color,
+    br: Color,
+};
+
+pub const RectGradientCmd = struct {
+    rect: Rect,
+    colors: Gradient4,
+};
+
 pub const RoundedRectCmd = struct {
     rect: Rect,
     radius: f32,
     style: RectStyle,
+};
+
+pub const RoundedRectGradientCmd = struct {
+    rect: Rect,
+    radius: f32,
+    colors: Gradient4,
 };
 
 pub const TextCmd = struct {
@@ -59,7 +77,9 @@ pub const ClipCmd = struct {
 
 pub const Command = union(enum) {
     rect: RectCmd,
+    rect_gradient: RectGradientCmd,
     rounded_rect: RoundedRectCmd,
+    rounded_rect_gradient: RoundedRectGradientCmd,
     text: TextCmd,
     line: LineCmd,
     image: ImageCmd,
@@ -118,9 +138,19 @@ pub const CommandList = struct {
         _ = self.commands.append(self.allocator, .{ .rect = .{ .rect = rect, .style = style } }) catch {};
     }
 
+    pub fn pushRectGradient(self: *CommandList, rect: Rect, colors: Gradient4) void {
+        _ = self.commands.append(self.allocator, .{ .rect_gradient = .{ .rect = rect, .colors = colors } }) catch {};
+    }
+
     pub fn pushRoundedRect(self: *CommandList, rect: Rect, radius: f32, style: RectStyle) void {
         _ = self.commands.append(self.allocator, .{
             .rounded_rect = .{ .rect = rect, .radius = radius, .style = style },
+        }) catch {};
+    }
+
+    pub fn pushRoundedRectGradient(self: *CommandList, rect: Rect, radius: f32, colors: Gradient4) void {
+        _ = self.commands.append(self.allocator, .{
+            .rounded_rect_gradient = .{ .rect = rect, .radius = radius, .colors = colors },
         }) catch {};
     }
 

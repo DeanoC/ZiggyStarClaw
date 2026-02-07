@@ -14,6 +14,7 @@ const Vec2 = command_list.Vec2;
 const Color = command_list.Color;
 const Rect = command_list.Rect;
 const FontRole = command_list.FontRole;
+const Gradient4 = command_list.Gradient4;
 
 const ShapeVertex = struct {
     pos: Vec2,
@@ -513,6 +514,10 @@ pub const Renderer = struct {
                         self.pushRectStroke(rect_cmd.rect, rect_cmd.style.thickness, stroke, current_scissor);
                     }
                 },
+                .rect_gradient => |rect_cmd| {
+                    if (current_scissor.width == 0 or current_scissor.height == 0) continue;
+                    self.pushFilledRectGradient(rect_cmd.rect, rect_cmd.colors, current_scissor);
+                },
                 .rounded_rect => |rect_cmd| {
                     if (current_scissor.width == 0 or current_scissor.height == 0) continue;
                     if (rect_cmd.style.fill) |fill| {
@@ -521,6 +526,10 @@ pub const Renderer = struct {
                     if (rect_cmd.style.stroke) |stroke| {
                         self.pushRoundedRectStroke(rect_cmd.rect, rect_cmd.radius, rect_cmd.style.thickness, stroke, current_scissor);
                     }
+                },
+                .rounded_rect_gradient => |rect_cmd| {
+                    if (current_scissor.width == 0 or current_scissor.height == 0) continue;
+                    self.pushRoundedRectGradient(rect_cmd.rect, rect_cmd.radius, rect_cmd.colors, current_scissor);
                 },
                 .line => |line_cmd| {
                     if (current_scissor.width == 0 or current_scissor.height == 0) continue;
@@ -638,6 +647,16 @@ pub const Renderer = struct {
         self.pushRenderItem(.shape, start, self.shape_vertices.items.len - start, scissor, null);
     }
 
+    fn pushFilledRectGradient(self: *Renderer, rect: Rect, colors: Gradient4, scissor: Scissor) void {
+        const start = self.shape_vertices.items.len;
+        const p0 = rect.min;
+        const p1 = .{ rect.max[0], rect.min[1] };
+        const p2 = rect.max;
+        const p3 = .{ rect.min[0], rect.max[1] };
+        self.appendShapeQuadGradient(p0, p1, p2, p3, colors.tl, colors.tr, colors.br, colors.bl);
+        self.pushRenderItem(.shape, start, self.shape_vertices.items.len - start, scissor, null);
+    }
+
     fn pushRectStroke(self: *Renderer, rect: Rect, thickness: f32, color: Color, scissor: Scissor) void {
         if (thickness <= 0.0) return;
         const points = [_]Vec2{
@@ -666,6 +685,30 @@ pub const Renderer = struct {
             const a = points[i];
             const b = points[(i + 1) % points.len];
             self.appendShapeTriangle(center, a, b, color);
+        }
+        self.pushRenderItem(.shape, start, self.shape_vertices.items.len - start, scissor, null);
+    }
+
+    fn pushRoundedRectGradient(self: *Renderer, rect: Rect, radius: f32, colors: Gradient4, scissor: Scissor) void {
+        if (radius <= 0.0) {
+            self.pushFilledRectGradient(rect, colors, scissor);
+            return;
+        }
+        const points = self.buildRoundedRectPoints(rect, radius);
+        if (points.len < 3) return;
+        const center = .{
+            (rect.min[0] + rect.max[0]) * 0.5,
+            (rect.min[1] + rect.max[1]) * 0.5,
+        };
+        const start = self.shape_vertices.items.len;
+        const center_color = gradientColorAt(center, rect, colors);
+        var i: usize = 0;
+        while (i < points.len) : (i += 1) {
+            const a = points[i];
+            const b = points[(i + 1) % points.len];
+            const ca = gradientColorAt(a, rect, colors);
+            const cb = gradientColorAt(b, rect, colors);
+            self.appendShapeTriangleColors(center, a, b, center_color, ca, cb);
         }
         self.pushRenderItem(.shape, start, self.shape_vertices.items.len - start, scissor, null);
     }
@@ -779,9 +822,38 @@ pub const Renderer = struct {
         _ = self.shape_vertices.append(self.allocator, .{ .pos = c_point, .color = color }) catch {};
     }
 
+    fn appendShapeTriangleColors(
+        self: *Renderer,
+        a: Vec2,
+        b: Vec2,
+        c_point: Vec2,
+        color_a: Color,
+        color_b: Color,
+        color_c: Color,
+    ) void {
+        _ = self.shape_vertices.append(self.allocator, .{ .pos = a, .color = color_a }) catch {};
+        _ = self.shape_vertices.append(self.allocator, .{ .pos = b, .color = color_b }) catch {};
+        _ = self.shape_vertices.append(self.allocator, .{ .pos = c_point, .color = color_c }) catch {};
+    }
+
     fn appendShapeQuad(self: *Renderer, p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, color: Color) void {
         self.appendShapeTriangle(p0, p1, p2, color);
         self.appendShapeTriangle(p0, p2, p3, color);
+    }
+
+    fn appendShapeQuadGradient(
+        self: *Renderer,
+        p0: Vec2,
+        p1: Vec2,
+        p2: Vec2,
+        p3: Vec2,
+        c0: Color,
+        c1: Color,
+        c2: Color,
+        c3: Color,
+    ) void {
+        self.appendShapeTriangleColors(p0, p1, p2, c0, c1, c2);
+        self.appendShapeTriangleColors(p0, p2, p3, c0, c2, c3);
     }
 
     fn appendShapeLineQuad(self: *Renderer, from: Vec2, to: Vec2, width: f32, color: Color) void {
@@ -872,6 +944,31 @@ pub const Renderer = struct {
         appendArc(&self.scratch_points, self.allocator, tl, r, 180.0, 270.0, segments, false);
 
         return self.scratch_points.items;
+    }
+
+    fn gradientColorAt(pos: Vec2, rect: Rect, colors: Gradient4) Color {
+        const w = rect.max[0] - rect.min[0];
+        const h = rect.max[1] - rect.min[1];
+        const u: f32 = if (w > 0.0001) (pos[0] - rect.min[0]) / w else 0.0;
+        const v: f32 = if (h > 0.0001) (pos[1] - rect.min[1]) / h else 0.0;
+        return bilerp(colors.tl, colors.tr, colors.bl, colors.br, u, v);
+    }
+
+    fn bilerp(tl: Color, tr: Color, bl: Color, br: Color, u: f32, v: f32) Color {
+        const uu = std.math.clamp(u, 0.0, 1.0);
+        const vv = std.math.clamp(v, 0.0, 1.0);
+        const top = lerp4(tl, tr, uu);
+        const bot = lerp4(bl, br, uu);
+        return lerp4(top, bot, vv);
+    }
+
+    fn lerp4(a: Color, b: Color, t: f32) Color {
+        return .{
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+            a[3] + (b[3] - a[3]) * t,
+        };
     }
 
     fn pushRenderItem(

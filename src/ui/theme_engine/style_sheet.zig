@@ -4,9 +4,21 @@ const theme_tokens = @import("../theme/theme.zig");
 
 pub const Color = [4]f32;
 
+pub const Gradient4 = struct {
+    tl: Color,
+    tr: Color,
+    bl: Color,
+    br: Color,
+};
+
+pub const Paint = union(enum) {
+    solid: Color,
+    gradient4: Gradient4,
+};
+
 pub const ButtonVariantStyle = struct {
     radius: ?f32 = null,
-    fill: ?Color = null,
+    fill: ?Paint = null,
     text: ?Color = null,
     border: ?Color = null,
 };
@@ -19,7 +31,7 @@ pub const ButtonStyles = struct {
 
 pub const PanelStyle = struct {
     radius: ?f32 = null,
-    fill: ?Color = null,
+    fill: ?Paint = null,
     border: ?Color = null,
 };
 
@@ -117,7 +129,7 @@ fn parseButtonVariant(out: *ButtonVariantStyle, v: std.json.Value, theme: *const
     if (v != .object) return;
     const obj = v.object;
     if (obj.get("radius")) |rv| out.radius = parseRadius(rv, theme) orelse out.radius;
-    if (obj.get("fill")) |cv| out.fill = parseColor(cv, theme) orelse out.fill;
+    if (obj.get("fill")) |cv| out.fill = parsePaint(cv, theme) orelse out.fill;
     if (obj.get("text")) |cv| out.text = parseColor(cv, theme) orelse out.text;
     if (obj.get("border")) |cv| out.border = parseColor(cv, theme) orelse out.border;
 }
@@ -126,7 +138,7 @@ fn parsePanel(out: *PanelStyle, v: std.json.Value, theme: *const theme_tokens.Th
     if (v != .object) return;
     const obj = v.object;
     if (obj.get("radius")) |rv| out.radius = parseRadius(rv, theme) orelse out.radius;
-    if (obj.get("fill")) |cv| out.fill = parseColor(cv, theme) orelse out.fill;
+    if (obj.get("fill")) |cv| out.fill = parsePaint(cv, theme) orelse out.fill;
     if (obj.get("border")) |cv| out.border = parseColor(cv, theme) orelse out.border;
 }
 
@@ -181,6 +193,28 @@ fn parseColor(v: std.json.Value, theme: *const theme_tokens.Theme) ?Color {
         },
         else => return null,
     }
+}
+
+fn parsePaint(v: std.json.Value, theme: *const theme_tokens.Theme) ?Paint {
+    // Back-compat: allow a color directly.
+    if (parseColor(v, theme)) |c| return .{ .solid = c };
+
+    // New: gradient object.
+    if (v != .object) return null;
+    const obj = v.object;
+    const grad_val = obj.get("gradient4") orelse return null;
+    if (grad_val != .object) return null;
+    const g = grad_val.object;
+    const tl = g.get("tl") orelse return null;
+    const tr = g.get("tr") orelse return null;
+    const bl = g.get("bl") orelse return null;
+    const br = g.get("br") orelse return null;
+    return .{ .gradient4 = .{
+        .tl = parseColor(tl, theme) orelse return null,
+        .tr = parseColor(tr, theme) orelse return null,
+        .bl = parseColor(bl, theme) orelse return null,
+        .br = parseColor(br, theme) orelse return null,
+    } };
 }
 
 fn resolveColorToken(token: []const u8, theme: *const theme_tokens.Theme) ?Color {

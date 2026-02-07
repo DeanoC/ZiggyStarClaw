@@ -135,6 +135,31 @@ Example (sketch):
 Pragmatic recommendation:
 - allow both direct values and “token references” like `colors.primary`.
 
+### Paint Values (Implemented)
+
+Where a component field expects a `fill`, ZiggyStarClaw currently supports:
+
+1. Solid color (back-compat):
+
+```json
+{ "fill": "colors.surface" }
+```
+
+2. 4-corner gradient (bilinear, GPU vertex colors):
+
+```json
+{
+  "fill": {
+    "gradient4": {
+      "tl": "colors.surface",
+      "tr": "colors.background",
+      "bl": "colors.background",
+      "br": "colors.surface"
+    }
+  }
+}
+```
+
 ## Profile Overrides (`profiles/*.json`)
 
 Example `profiles/phone.json`:
@@ -161,4 +186,3 @@ The theme engine should use a single abstraction for reading assets:
 - WASM: fetch over HTTP (and optionally cache in IndexedDB); local filesystem is not portable.
 
 The docs assume “file loading can be added on most platforms”, but the loader must still be capability-gated.
-

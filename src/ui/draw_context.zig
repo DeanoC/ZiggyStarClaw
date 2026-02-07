@@ -11,9 +11,18 @@ pub const Color = [4]f32;
 pub const Texture = u64;
 pub const TextMetrics = text_metrics.Metrics;
 
+pub const Gradient4 = struct {
+    tl: Color,
+    tr: Color,
+    bl: Color,
+    br: Color,
+};
+
 pub const RenderBackend = struct {
     drawRect: *const fn (ctx: *DrawContext, rect: Rect, style: RectStyle) void,
+    drawRectGradient: *const fn (ctx: *DrawContext, rect: Rect, colors: Gradient4) void,
     drawRoundedRect: *const fn (ctx: *DrawContext, rect: Rect, radius: f32, style: RectStyle) void,
+    drawRoundedRectGradient: *const fn (ctx: *DrawContext, rect: Rect, radius: f32, colors: Gradient4) void,
     drawText: *const fn (ctx: *DrawContext, text: []const u8, pos: Vec2, style: TextStyle) void,
     drawLine: *const fn (ctx: *DrawContext, from: Vec2, to: Vec2, width: f32, color: Color) void,
     drawImage: *const fn (ctx: *DrawContext, texture: Texture, rect: Rect) void,
@@ -134,8 +143,16 @@ pub const DrawContext = struct {
         self.render.drawRect(self, rect, style);
     }
 
+    pub fn drawRectGradient(self: *DrawContext, rect: Rect, colors: Gradient4) void {
+        self.render.drawRectGradient(self, rect, colors);
+    }
+
     pub fn drawRoundedRect(self: *DrawContext, rect: Rect, radius: f32, style: RectStyle) void {
         self.render.drawRoundedRect(self, rect, radius, style);
+    }
+
+    pub fn drawRoundedRectGradient(self: *DrawContext, rect: Rect, radius: f32, colors: Gradient4) void {
+        self.render.drawRoundedRectGradient(self, rect, radius, colors);
     }
 
     pub fn drawText(self: *DrawContext, text: []const u8, pos: Vec2, style: TextStyle) void {
@@ -214,7 +231,9 @@ pub fn clearGlobalCommandList() void {
 }
 
 fn nullDrawRect(_: *DrawContext, _: Rect, _: RectStyle) void {}
+fn nullDrawRectGradient(_: *DrawContext, _: Rect, _: Gradient4) void {}
 fn nullDrawRoundedRect(_: *DrawContext, _: Rect, _: f32, _: RectStyle) void {}
+fn nullDrawRoundedRectGradient(_: *DrawContext, _: Rect, _: f32, _: Gradient4) void {}
 fn nullDrawText(_: *DrawContext, _: []const u8, _: Vec2, _: TextStyle) void {}
 fn nullDrawLine(_: *DrawContext, _: Vec2, _: Vec2, _: f32, _: Color) void {}
 fn nullDrawImage(_: *DrawContext, _: Texture, _: Rect) void {}
@@ -223,7 +242,9 @@ fn nullPopClip(_: *DrawContext) void {}
 
 const null_render_backend = RenderBackend{
     .drawRect = nullDrawRect,
+    .drawRectGradient = nullDrawRectGradient,
     .drawRoundedRect = nullDrawRoundedRect,
+    .drawRoundedRectGradient = nullDrawRoundedRectGradient,
     .drawText = nullDrawText,
     .drawLine = nullDrawLine,
     .drawImage = nullDrawImage,
@@ -244,9 +265,29 @@ fn recordDrawRect(ctx: *DrawContext, rect: Rect, style: RectStyle) void {
     list.pushRect(.{ .min = rect.min, .max = rect.max }, recordRectStyle(style));
 }
 
+fn recordDrawRectGradient(ctx: *DrawContext, rect: Rect, colors: Gradient4) void {
+    const list = ctx.command_list orelse return;
+    list.pushRectGradient(.{ .min = rect.min, .max = rect.max }, .{
+        .tl = colors.tl,
+        .tr = colors.tr,
+        .bl = colors.bl,
+        .br = colors.br,
+    });
+}
+
 fn recordDrawRoundedRect(ctx: *DrawContext, rect: Rect, radius: f32, style: RectStyle) void {
     const list = ctx.command_list orelse return;
     list.pushRoundedRect(.{ .min = rect.min, .max = rect.max }, radius, recordRectStyle(style));
+}
+
+fn recordDrawRoundedRectGradient(ctx: *DrawContext, rect: Rect, radius: f32, colors: Gradient4) void {
+    const list = ctx.command_list orelse return;
+    list.pushRoundedRectGradient(.{ .min = rect.min, .max = rect.max }, radius, .{
+        .tl = colors.tl,
+        .tr = colors.tr,
+        .bl = colors.bl,
+        .br = colors.br,
+    });
 }
 
 fn recordDrawText(ctx: *DrawContext, text: []const u8, pos: Vec2, style: TextStyle) void {
@@ -284,7 +325,9 @@ fn recordPopClip(ctx: *DrawContext) void {
 
 const record_render_backend = RenderBackend{
     .drawRect = recordDrawRect,
+    .drawRectGradient = recordDrawRectGradient,
     .drawRoundedRect = recordDrawRoundedRect,
+    .drawRoundedRectGradient = recordDrawRoundedRectGradient,
     .drawText = recordDrawText,
     .drawLine = recordDrawLine,
     .drawImage = recordDrawImage,
@@ -323,4 +366,3 @@ const basic_input_backend = InputBackend{
     .isClicked = basicIsClicked,
     .isDragging = basicIsDragging,
 };
-

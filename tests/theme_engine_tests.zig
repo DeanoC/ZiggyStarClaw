@@ -19,10 +19,15 @@ test "theme engine loads example theme pack directory" {
 
     const ss = zsc.ui.theme_engine.runtime.getStyleSheet();
     try std.testing.expect(ss.button.primary.fill != null);
-    if (ss.button.primary.fill) |c| {
-        try std.testing.expectApproxEqAbs(t.colors.primary[0], c[0], 0.0001);
-        try std.testing.expectApproxEqAbs(t.colors.primary[1], c[1], 0.0001);
-        try std.testing.expectApproxEqAbs(t.colors.primary[2], c[2], 0.0001);
+    if (ss.button.primary.fill) |p| {
+        switch (p) {
+            .solid => |c| {
+                try std.testing.expectApproxEqAbs(t.colors.primary[0], c[0], 0.0001);
+                try std.testing.expectApproxEqAbs(t.colors.primary[1], c[1], 0.0001);
+                try std.testing.expectApproxEqAbs(t.colors.primary[2], c[2], 0.0001);
+            },
+            else => try std.testing.expect(false),
+        }
     }
 }
 
@@ -44,11 +49,19 @@ test "theme engine loads showcase theme pack directory (partial overrides + per-
 
     try std.testing.expect(ss_light.panel.fill != null);
     try std.testing.expect(ss_dark.panel.fill != null);
-    if (ss_light.panel.fill) |a| {
-        if (ss_dark.panel.fill) |b| {
-            // Light vs dark token overrides should yield different resolved panel colors.
-            try std.testing.expect(@abs(a[0] - b[0]) > 0.05);
-        }
+    const a = ss_light.panel.fill.?;
+    const b = ss_dark.panel.fill.?;
+    switch (a) {
+        .gradient4 => |ga| {
+            switch (b) {
+                .gradient4 => |gb| {
+                    // Light vs dark token overrides should yield different resolved colors.
+                    try std.testing.expect(@abs(ga.tl[0] - gb.tl[0]) > 0.02 or @abs(ga.tr[0] - gb.tr[0]) > 0.02);
+                },
+                else => try std.testing.expect(false),
+            }
+        },
+        else => try std.testing.expect(false),
     }
 
     // Ensure focus ring config is present.
