@@ -11,6 +11,15 @@ const style_sheet = @import("style_sheet.zig");
 const builtin_packs = @import("builtin_packs.zig");
 pub const runtime = @import("runtime.zig");
 const wasm_fetch = @import("../../platform/wasm_fetch.zig");
+const wasm_storage = if (builtin.target.os.tag == .emscripten)
+    @import("../../platform/wasm_storage.zig")
+else
+    struct {
+        pub fn get(_: std.mem.Allocator, _: [:0]const u8) !?[]u8 {
+            return null;
+        }
+        pub fn set(_: std.mem.Allocator, _: [:0]const u8, _: []const u8) !void {}
+    };
 
 pub const PlatformCaps = profile.PlatformCaps;
 pub const ProfileId = profile.ProfileId;
@@ -305,6 +314,7 @@ const WebPackJob = struct {
     tokens_light: ?schema.TokensFile = null,
     tokens_dark: ?schema.TokensFile = null,
     styles_raw: ?[]u8 = null,
+    last_rel: []const u8 = "",
 
     fn init(engine: *ThemeEngine, generation: u32, root: []const u8) !*WebPackJob {
         const job = try engine.allocator.create(WebPackJob);
@@ -333,6 +343,7 @@ const WebPackJob = struct {
     }
 
     fn fetchRel(self: *WebPackJob, rel: []const u8) !void {
+        self.last_rel = rel;
         const url = try joinUrl(self.allocator, self.root, rel);
         defer self.allocator.free(url);
         try wasm_fetch.fetchBytes(self.allocator, url, @intFromPtr(self), webFetchSuccess, webFetchError);
@@ -349,6 +360,34 @@ fn looksLikeNotFound(msg: []const u8) bool {
     return std.mem.startsWith(u8, msg, "HTTP 404");
 }
 
+fn looksLikeHttpError(msg: []const u8) bool {
+    return std.mem.startsWith(u8, msg, "HTTP ");
+}
+
+fn cacheKeyZ(allocator: std.mem.Allocator, root: []const u8, rel: []const u8) ![:0]u8 {
+    // Use a simple delimiter; localStorage keys can be arbitrary strings.
+    // Note: this is a 0-terminated key for `molt_storage_*`.
+    const buf = try std.fmt.allocPrint(allocator, "zsc.theme_pack_cache|{s}|{s}\x00", .{ root, rel });
+    return buf[0 .. buf.len - 1 :0];
+}
+
+fn cachePut(job: *WebPackJob, rel: []const u8, bytes: []const u8) void {
+    // Cache only text JSON-ish resources. (Binary assets are handled by the browser HTTP cache.)
+    if (builtin.target.os.tag != .emscripten) return;
+    if (bytes.len == 0) return;
+    const key_z = cacheKeyZ(job.allocator, job.root, rel) catch return;
+    defer job.allocator.free(key_z);
+    wasm_storage.set(job.allocator, key_z, bytes) catch {};
+}
+
+fn cacheGet(job: *WebPackJob, rel: []const u8) ?[]u8 {
+    if (builtin.target.os.tag != .emscripten) return null;
+    const key_z = cacheKeyZ(job.allocator, job.root, rel) catch return null;
+    defer job.allocator.free(key_z);
+    const cached = wasm_storage.get(job.allocator, key_z) catch return null;
+    return cached;
+}
+
 fn webFetchSuccess(user_ctx: usize, bytes: []const u8) void {
     const job: *WebPackJob = @ptrFromInt(user_ctx);
     const eng = job.engine;
@@ -356,6 +395,8 @@ fn webFetchSuccess(user_ctx: usize, bytes: []const u8) void {
         job.deinit();
         return;
     }
+
+    cachePut(job, job.last_rel, bytes);
 
     switch (job.stage) {
         .manifest => {
@@ -491,6 +532,15 @@ fn webFetchError(user_ctx: usize, msg: []const u8) void {
     if (eng.web_job == null or eng.web_job.? != job or eng.web_generation != job.generation) {
         job.deinit();
         return;
+    }
+
+    // Network-ish errors: try cached version before failing (lets offline loads work).
+    if (!looksLikeHttpError(msg)) {
+        if (cacheGet(job, job.last_rel)) |cached| {
+            defer job.allocator.free(cached);
+            webFetchSuccess(user_ctx, cached);
+            return;
+        }
     }
 
     // Optional resources: treat 404 as missing and continue.
