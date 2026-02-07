@@ -56,6 +56,7 @@
     "color": "colors.primary",
     "glow": {
       "color": "#6B6BFFFF",
+      "blend": "additive",
       "blur_px": 18.0,
       "spread_px": 2.0,
       "falloff_exp": 0.85,

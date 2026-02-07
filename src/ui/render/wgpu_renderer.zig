@@ -55,7 +55,7 @@ const Scissor = struct {
     height: u32,
 };
 
-const PipelineKind = enum { shape, sdf, textured };
+const PipelineKind = enum { shape, sdf, sdf_additive, textured };
 
 const RenderItem = struct {
     kind: PipelineKind,
@@ -152,6 +152,7 @@ pub const Renderer = struct {
     shape_bind_group_layout: zgpu.wgpu.BindGroupLayout,
     shape_bind_group: zgpu.wgpu.BindGroup,
     sdf_pipeline: zgpu.wgpu.RenderPipeline,
+    sdf_additive_pipeline: zgpu.wgpu.RenderPipeline,
     sdf_bind_group_layout: zgpu.wgpu.BindGroupLayout,
     sdf_bind_group: zgpu.wgpu.BindGroup,
     sdf_param_buffer: zgpu.wgpu.Buffer,
@@ -498,7 +499,7 @@ pub const Renderer = struct {
             .attributes = &textured_vertex_attrs,
         }};
 
-        const blend = zgpu.wgpu.BlendState{
+        const blend_alpha = zgpu.wgpu.BlendState{
             .color = .{
                 .operation = .add,
                 .src_factor = .src_alpha,
@@ -511,9 +512,28 @@ pub const Renderer = struct {
             },
         };
 
-        const color_target = [_]zgpu.wgpu.ColorTargetState{.{
+        const blend_additive = zgpu.wgpu.BlendState{
+            .color = .{
+                .operation = .add,
+                .src_factor = .src_alpha,
+                .dst_factor = .one,
+            },
+            .alpha = .{
+                .operation = .add,
+                .src_factor = .one,
+                .dst_factor = .one,
+            },
+        };
+
+        const color_target_alpha = [_]zgpu.wgpu.ColorTargetState{.{
             .format = swapchain_format,
-            .blend = &blend,
+            .blend = &blend_alpha,
+            .write_mask = zgpu.wgpu.ColorWriteMask.all,
+        }};
+
+        const color_target_additive = [_]zgpu.wgpu.ColorTargetState{.{
+            .format = swapchain_format,
+            .blend = &blend_additive,
             .write_mask = zgpu.wgpu.ColorWriteMask.all,
         }};
 
@@ -529,8 +549,8 @@ pub const Renderer = struct {
             .fragment = &.{
                 .module = shape_shader,
                 .entry_point = "fs_main",
-                .target_count = color_target.len,
-                .targets = &color_target,
+                .target_count = color_target_alpha.len,
+                .targets = &color_target_alpha,
             },
             .primitive = .{ .topology = .triangle_list, .cull_mode = .none },
         });
@@ -547,8 +567,26 @@ pub const Renderer = struct {
             .fragment = &.{
                 .module = sdf_shader,
                 .entry_point = "fs_main",
-                .target_count = color_target.len,
-                .targets = &color_target,
+                .target_count = color_target_alpha.len,
+                .targets = &color_target_alpha,
+            },
+            .primitive = .{ .topology = .triangle_list, .cull_mode = .none },
+        });
+
+        const sdf_additive_pipeline = device.createRenderPipeline(.{
+            .label = "ui.sdf_additive.pipeline",
+            .layout = sdf_pipeline_layout,
+            .vertex = .{
+                .module = sdf_shader,
+                .entry_point = "vs_main",
+                .buffer_count = sdf_vertex_buffers.len,
+                .buffers = &sdf_vertex_buffers,
+            },
+            .fragment = &.{
+                .module = sdf_shader,
+                .entry_point = "fs_main",
+                .target_count = color_target_additive.len,
+                .targets = &color_target_additive,
             },
             .primitive = .{ .topology = .triangle_list, .cull_mode = .none },
         });
@@ -565,8 +603,8 @@ pub const Renderer = struct {
             .fragment = &.{
                 .module = textured_shader,
                 .entry_point = "fs_main",
-                .target_count = color_target.len,
-                .targets = &color_target,
+                .target_count = color_target_alpha.len,
+                .targets = &color_target_alpha,
             },
             .primitive = .{ .topology = .triangle_list, .cull_mode = .none },
         });
@@ -597,6 +635,7 @@ pub const Renderer = struct {
             .shape_bind_group_layout = shape_bind_group_layout,
             .shape_bind_group = shape_bind_group,
             .sdf_pipeline = sdf_pipeline,
+            .sdf_additive_pipeline = sdf_additive_pipeline,
             .sdf_bind_group_layout = sdf_bind_group_layout,
             .sdf_bind_group = sdf_bind_group,
             .sdf_param_buffer = sdf_param_buffer,
@@ -649,6 +688,7 @@ pub const Renderer = struct {
         self.texture_bind_group_layout.release();
         self.shape_pipeline.release();
         self.sdf_pipeline.release();
+        self.sdf_additive_pipeline.release();
         self.texture_pipeline.release();
         self.shape_vertices.deinit(self.allocator);
         self.sdf_vertices.deinit(self.allocator);
@@ -818,6 +858,12 @@ pub const Renderer = struct {
                     },
                     .sdf => {
                         pass.setPipeline(self.sdf_pipeline);
+                        pass.setBindGroup(0, self.sdf_bind_group, null);
+                        const sdf_bytes: u64 = @intCast(self.sdf_vertices.items.len * @sizeOf(SdfVertex));
+                        pass.setVertexBuffer(0, self.sdf_vertex_buffer, 0, sdf_bytes);
+                    },
+                    .sdf_additive => {
+                        pass.setPipeline(self.sdf_additive_pipeline);
                         pass.setBindGroup(0, self.sdf_bind_group, null);
                         const sdf_bytes: u64 = @intCast(self.sdf_vertices.items.len * @sizeOf(SdfVertex));
                         pass.setVertexBuffer(0, self.sdf_vertex_buffer, 0, sdf_bytes);
@@ -1023,7 +1069,11 @@ pub const Renderer = struct {
         const p2 = cmd.draw_rect.max;
         const p3 = .{ cmd.draw_rect.min[0], cmd.draw_rect.max[1] };
         self.appendSdfQuad(p0, p1, p2, p3, param_index);
-        self.pushRenderItem(.sdf, start, self.sdf_vertices.items.len - start, scissor, null);
+        const kind: PipelineKind = switch (cmd.blend) {
+            .alpha => .sdf,
+            .additive => .sdf_additive,
+        };
+        self.pushRenderItem(kind, start, self.sdf_vertices.items.len - start, scissor, null);
     }
 
     fn pushRoundedRectStroke(

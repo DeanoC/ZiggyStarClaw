@@ -102,6 +102,7 @@ If “materials” feels too big initially, implement in slices:
   - This keeps the API portable across native/wasm/android while staying “GPU powered”.
   - Extra tuning knobs:
     - `falloff_exp`: exponent applied to the computed alpha (1.0 default, >1 tighter, <1 softer).
+    - `blend`: `"alpha"` (default) or `"additive"` (useful for glows that should pop over bright backgrounds).
     - `ignore_clip`: if true, draws with a full-screen scissor instead of the current clip stack (useful for drop shadows).
       - Warning: setting this on a broad style like `panel.shadow` can cause shadows to bleed outside scroll/clipped regions.
 

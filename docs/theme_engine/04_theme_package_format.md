@@ -190,6 +190,19 @@ Where a component field expects a `fill`, ZiggyStarClaw currently supports:
 }
 ```
 
+### Effect Values (Implemented)
+
+`panel.shadow` and `focus_ring.glow` share the same effect object fields:
+
+- `color`: RGBA array, hex string, or `colors.*` token (required to enable the effect)
+- `blur_px`: number
+- `spread_px`: number
+- `offset`: `[x, y]`
+- `steps`: integer (currently unused; reserved for multi-pass approximations)
+- `falloff_exp`: number (1.0 default, >1 tighter edge, <1 softer spread)
+- `ignore_clip`: boolean (if true, draws ignoring the clip stack)
+- `blend`: `"alpha"` (default) or `"additive"`
+
 ## Profile Overrides (`profiles/*.json`)
 
 Example `profiles/phone.json`:

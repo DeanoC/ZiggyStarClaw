@@ -23,6 +23,11 @@ pub const SoftFxKind = enum(u8) {
     stroke_soft = 1,
 };
 
+pub const BlendMode = enum(u8) {
+    alpha = 0,
+    additive = 1,
+};
+
 pub const RenderBackend = struct {
     drawRect: *const fn (ctx: *DrawContext, rect: Rect, style: RectStyle) void,
     drawRectGradient: *const fn (ctx: *DrawContext, rect: Rect, colors: Gradient4) void,
@@ -39,6 +44,7 @@ pub const RenderBackend = struct {
         falloff_exp: f32,
         color: Color,
         respect_clip: bool,
+        blend: BlendMode,
     ) void,
     drawText: *const fn (ctx: *DrawContext, text: []const u8, pos: Vec2, style: TextStyle) void,
     drawLine: *const fn (ctx: *DrawContext, from: Vec2, to: Vec2, width: f32, color: Color) void,
@@ -186,8 +192,9 @@ pub const DrawContext = struct {
         falloff_exp: f32,
         color: Color,
         respect_clip: bool,
+        blend: BlendMode,
     ) void {
-        self.render.drawSoftRoundedRect(self, draw_rect, rect, radius, kind, thickness, blur_px, falloff_exp, color, respect_clip);
+        self.render.drawSoftRoundedRect(self, draw_rect, rect, radius, kind, thickness, blur_px, falloff_exp, color, respect_clip, blend);
     }
 
     pub fn drawText(self: *DrawContext, text: []const u8, pos: Vec2, style: TextStyle) void {
@@ -273,7 +280,7 @@ fn nullDrawRect(_: *DrawContext, _: Rect, _: RectStyle) void {}
 fn nullDrawRectGradient(_: *DrawContext, _: Rect, _: Gradient4) void {}
 fn nullDrawRoundedRect(_: *DrawContext, _: Rect, _: f32, _: RectStyle) void {}
 fn nullDrawRoundedRectGradient(_: *DrawContext, _: Rect, _: f32, _: Gradient4) void {}
-fn nullDrawSoftRoundedRect(_: *DrawContext, _: Rect, _: Rect, _: f32, _: SoftFxKind, _: f32, _: f32, _: f32, _: Color, _: bool) void {}
+fn nullDrawSoftRoundedRect(_: *DrawContext, _: Rect, _: Rect, _: f32, _: SoftFxKind, _: f32, _: f32, _: f32, _: Color, _: bool, _: BlendMode) void {}
 fn nullDrawText(_: *DrawContext, _: []const u8, _: Vec2, _: TextStyle) void {}
 fn nullDrawLine(_: *DrawContext, _: Vec2, _: Vec2, _: f32, _: Color) void {}
 fn nullDrawImage(_: *DrawContext, _: Texture, _: Rect) void {}
@@ -344,11 +351,16 @@ fn recordDrawSoftRoundedRect(
     falloff_exp: f32,
     color: Color,
     respect_clip: bool,
+    blend: BlendMode,
 ) void {
     const list = ctx.command_list orelse return;
     const cmd_kind: command_list.SoftFxKind = switch (kind) {
         .fill_soft => .fill_soft,
         .stroke_soft => .stroke_soft,
+    };
+    const cmd_blend: command_list.BlendMode = switch (blend) {
+        .alpha => .alpha,
+        .additive => .additive,
     };
     list.pushSoftRoundedRect(
         .{ .min = draw_rect.min, .max = draw_rect.max },
@@ -360,6 +372,7 @@ fn recordDrawSoftRoundedRect(
         falloff_exp,
         color,
         respect_clip,
+        cmd_blend,
     );
 }
 

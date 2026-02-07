@@ -189,7 +189,7 @@ fn drawSdfDemos(dc: *draw_context.DrawContext, rect: draw_context.Rect, t: *cons
             .min = .{ base.min[0] - 24, base.min[1] - 24 },
             .max = .{ base.max[0] + 24, base.max[1] + 24 },
         };
-        dc.drawSoftRoundedRect(draw_rect, base, 10.0, .fill_soft, 0.0, 18.0, 1.0, .{ 0, 0, 0, 0.55 }, true);
+        dc.drawSoftRoundedRect(draw_rect, base, 10.0, .fill_soft, 0.0, 18.0, 1.0, .{ 0, 0, 0, 0.55 }, true, .alpha);
         dc.drawRoundedRect(base, 10.0, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
         dc.drawText("shadow (soft fill)", .{ a.min[0] + 10, a.min[1] + 6 }, .{ .color = t.colors.text_secondary });
     }
@@ -201,7 +201,8 @@ fn drawSdfDemos(dc: *draw_context.DrawContext, rect: draw_context.Rect, t: *cons
             .min = .{ base.min[0] - 26, base.min[1] - 26 },
             .max = .{ base.max[0] + 26, base.max[1] + 26 },
         };
-        dc.drawSoftRoundedRect(draw_rect, base, 12.0, .stroke_soft, 10.0, 16.0, 1.0, .{ t.colors.primary[0], t.colors.primary[1], t.colors.primary[2], 0.9 }, true);
+        // Additive makes glows "pop" and is a common game-UI trick.
+        dc.drawSoftRoundedRect(draw_rect, base, 12.0, .stroke_soft, 10.0, 16.0, 1.0, .{ t.colors.primary[0], t.colors.primary[1], t.colors.primary[2], 0.9 }, true, .additive);
         dc.drawRoundedRect(base, 12.0, .{ .fill = t.colors.background, .stroke = t.colors.border, .thickness = 1.0 });
         dc.drawText("glow (soft stroke)", .{ b.min[0] + 10, b.min[1] + 6 }, .{ .color = t.colors.text_secondary });
     }
@@ -214,8 +215,8 @@ fn drawSdfDemos(dc: *draw_context.DrawContext, rect: draw_context.Rect, t: *cons
         const blur: f32 = 18.0;
         const draw0 = draw_context.Rect{ .min = .{ base0.min[0] - 26, base0.min[1] - 26 }, .max = .{ base0.max[0] + 26, base0.max[1] + 26 } };
         const draw1 = draw_context.Rect{ .min = .{ base1.min[0] - 26, base1.min[1] - 26 }, .max = .{ base1.max[0] + 26, base1.max[1] + 26 } };
-        dc.drawSoftRoundedRect(draw0, base0, 14.0, .fill_soft, 0.0, blur, 0.6, .{ 0, 0, 0, 0.45 }, true);
-        dc.drawSoftRoundedRect(draw1, base1, 14.0, .fill_soft, 0.0, blur, 2.4, .{ 0, 0, 0, 0.45 }, true);
+        dc.drawSoftRoundedRect(draw0, base0, 14.0, .fill_soft, 0.0, blur, 0.6, .{ 0, 0, 0, 0.45 }, true, .alpha);
+        dc.drawSoftRoundedRect(draw1, base1, 14.0, .fill_soft, 0.0, blur, 2.4, .{ 0, 0, 0, 0.45 }, true, .alpha);
         dc.drawRoundedRect(base0, 14.0, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
         dc.drawRoundedRect(base1, 14.0, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
         dc.drawText("falloff exp: 0.6 | 2.4", .{ c.min[0] + 10, c.min[1] + 6 }, .{ .color = t.colors.text_secondary });
@@ -234,7 +235,7 @@ fn drawSdfDemos(dc: *draw_context.DrawContext, rect: draw_context.Rect, t: *cons
 
         // A) Respect clip
         dc.pushClip(clip_rect);
-        dc.drawSoftRoundedRect(draw_rect, base, 12.0, .fill_soft, 0.0, 22.0, 1.0, .{ 0, 0, 0, 0.55 }, true);
+        dc.drawSoftRoundedRect(draw_rect, base, 12.0, .fill_soft, 0.0, 22.0, 1.0, .{ 0, 0, 0, 0.55 }, true, .alpha);
         dc.drawRoundedRect(base, 12.0, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
         dc.popClip();
 
@@ -245,7 +246,7 @@ fn drawSdfDemos(dc: *draw_context.DrawContext, rect: draw_context.Rect, t: *cons
             .max = .{ base2.max[0] + 32, base2.max[1] + 32 },
         };
         dc.pushClip(clip_rect);
-        dc.drawSoftRoundedRect(draw_rect2, base2, 12.0, .fill_soft, 0.0, 22.0, 1.0, .{ 0, 0, 0, 0.45 }, false);
+        dc.drawSoftRoundedRect(draw_rect2, base2, 12.0, .fill_soft, 0.0, 22.0, 1.0, .{ 0, 0, 0, 0.45 }, false, .alpha);
         dc.drawRoundedRect(base2, 12.0, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
         dc.popClip();
 

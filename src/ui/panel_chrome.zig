@@ -55,6 +55,8 @@ fn drawPanelShadow(dc: *draw_context.DrawContext, rect: draw_context.Rect, radiu
         const offset = ss.panel.shadow.offset orelse .{ 0.0, 6.0 };
         const falloff_exp = @max(0.001, ss.panel.shadow.falloff_exp orelse 1.0);
         const respect_clip = !(ss.panel.shadow.ignore_clip orelse false);
+        const blend_mode = ss.panel.shadow.blend orelse style_sheet.BlendMode.alpha;
+        const blend: draw_context.BlendMode = if (blend_mode == .additive) .additive else .alpha;
 
         const shape_rect = draw_context.Rect{
             .min = .{ rect.min[0] + offset[0] - spread, rect.min[1] + offset[1] - spread },
@@ -71,7 +73,7 @@ fn drawPanelShadow(dc: *draw_context.DrawContext, rect: draw_context.Rect, radiu
         const r = @max(0.0, @min(radius + spread, r_max));
 
         // Single GPU draw using an SDF rounded-rect shader.
-        dc.drawSoftRoundedRect(draw_rect, shape_rect, r, .fill_soft, 0.0, blur, falloff_exp, shadow_color, respect_clip);
+        dc.drawSoftRoundedRect(draw_rect, shape_rect, r, .fill_soft, 0.0, blur, falloff_exp, shadow_color, respect_clip, blend);
     }
 }
 

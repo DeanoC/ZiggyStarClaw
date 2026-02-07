@@ -57,6 +57,11 @@ pub const SoftFxKind = enum(u8) {
     stroke_soft = 1,
 };
 
+pub const BlendMode = enum(u8) {
+    alpha = 0,
+    additive = 1,
+};
+
 pub const SoftRoundedRectCmd = struct {
     // The quad we render (usually expanded to cover blur).
     draw_rect: Rect,
@@ -69,6 +74,7 @@ pub const SoftRoundedRectCmd = struct {
     falloff_exp: f32 = 1.0,
     color: Color,
     respect_clip: bool = true,
+    blend: BlendMode = .alpha,
 };
 
 pub const TextCmd = struct {
@@ -196,6 +202,7 @@ pub const CommandList = struct {
         falloff_exp: f32,
         color: Color,
         respect_clip: bool,
+        blend: BlendMode,
     ) void {
         _ = self.commands.append(self.allocator, .{
             .soft_rounded_rect = .{
@@ -208,6 +215,7 @@ pub const CommandList = struct {
                 .falloff_exp = falloff_exp,
                 .color = color,
                 .respect_clip = respect_clip,
+                .blend = blend,
             },
         }) catch {};
     }

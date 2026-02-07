@@ -4,6 +4,11 @@ const theme_tokens = @import("../theme/theme.zig");
 
 pub const Color = [4]f32;
 
+pub const BlendMode = enum {
+    alpha,
+    additive,
+};
+
 pub const Gradient4 = struct {
     tl: Color,
     tr: Color,
@@ -96,6 +101,7 @@ pub const EffectStyle = struct {
     spread_px: ?f32 = null,
     offset: ?[2]f32 = null,
     steps: ?u8 = null,
+    blend: ?BlendMode = null,
     // Shapes the alpha falloff for blur/glow/shadow:
     // 1.0 = default, >1.0 = tighter edge, <1.0 = softer spread.
     falloff_exp: ?f32 = null,
@@ -314,10 +320,18 @@ fn parseEffect(out: *EffectStyle, v: std.json.Value, theme: *const theme_tokens.
     if (obj.get("steps")) |sv| {
         if (sv == .integer and sv.integer >= 0 and sv.integer <= 255) out.steps = @intCast(sv.integer);
     }
+    if (obj.get("blend")) |bv| out.blend = parseBlendMode(bv) orelse out.blend;
     if (obj.get("falloff_exp")) |fv| out.falloff_exp = parseFloat(fv) orelse out.falloff_exp;
     if (obj.get("ignore_clip")) |bv| {
         if (bv == .bool) out.ignore_clip = bv.bool;
     }
+}
+
+fn parseBlendMode(v: std.json.Value) ?BlendMode {
+    if (v != .string) return null;
+    if (std.ascii.eqlIgnoreCase(v.string, "alpha")) return .alpha;
+    if (std.ascii.eqlIgnoreCase(v.string, "additive")) return .additive;
+    return null;
 }
 
 fn parseFloat(v: std.json.Value) ?f32 {
