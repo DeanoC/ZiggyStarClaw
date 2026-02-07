@@ -31,6 +31,7 @@ pub const ThemeEngine = struct {
     // Owned runtime themes (stable pointers handed to `ui/theme.zig`).
     runtime_light: ?*theme_tokens.Theme = null,
     runtime_dark: ?*theme_tokens.Theme = null,
+    active_pack_path: ?[]u8 = null,
 
     active_profile: Profile = profile.defaultsFor(.desktop, profile.PlatformCaps.defaultForTarget()),
     styles: style_sheet.StyleSheetStore,
@@ -57,9 +58,27 @@ pub const ThemeEngine = struct {
         }
         self.runtime_light = null;
         self.runtime_dark = null;
+        if (self.active_pack_path) |p| {
+            self.allocator.free(p);
+        }
+        self.active_pack_path = null;
         self.styles.deinit();
         runtime.setStyleSheet(.{});
         runtime.setProfile(profile.defaultsFor(.desktop, self.caps));
+    }
+
+    pub fn clearThemePack(self: *ThemeEngine) void {
+        theme_mod.setRuntimeTheme(.light, null);
+        theme_mod.setRuntimeTheme(.dark, null);
+        if (self.runtime_light) |ptr| freeTheme(self.allocator, ptr);
+        if (self.runtime_dark) |ptr| freeTheme(self.allocator, ptr);
+        self.runtime_light = null;
+        self.runtime_dark = null;
+        if (self.active_pack_path) |p| self.allocator.free(p);
+        self.active_pack_path = null;
+        self.styles.deinit();
+        self.styles = style_sheet.StyleSheetStore.initEmpty(self.allocator);
+        runtime.setStyleSheet(.{});
     }
 
     pub fn setProfile(self: *ThemeEngine, p: Profile) void {
@@ -114,6 +133,32 @@ pub const ThemeEngine = struct {
 
         // base_theme was only a builder input; no longer needed.
         freeTheme(self.allocator, base_theme);
+    }
+
+    /// Applies a theme pack from a directory path, tracking the currently applied pack.
+    /// - `pack_path`: `null` or empty clears the theme pack and returns to built-in theme.
+    /// - When `force_reload` is false, re-applying the same path is a no-op.
+    pub fn applyThemePackDirFromPath(
+        self: *ThemeEngine,
+        pack_path: ?[]const u8,
+        force_reload: bool,
+    ) !void {
+        const path = pack_path orelse "";
+        if (path.len == 0) {
+            self.clearThemePack();
+            return;
+        }
+        if (!force_reload) {
+            if (self.active_pack_path) |p| {
+                if (std.mem.eql(u8, p, path)) return;
+            }
+        }
+
+        // Only update `active_pack_path` on success so a transient bad reload doesn't
+        // "stick" and prevent the user from reloading after fixing files.
+        try self.loadAndApplyThemePackDir(path);
+        if (self.active_pack_path) |p| self.allocator.free(p);
+        self.active_pack_path = try self.allocator.dupe(u8, path);
     }
 };
 

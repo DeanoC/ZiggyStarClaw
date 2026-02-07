@@ -830,11 +830,9 @@ fn run() !void {
     }
     var theme_eng = theme_engine.ThemeEngine.init(allocator, theme_engine.PlatformCaps.defaultForTarget());
     defer theme_eng.deinit();
-    if (cfg.ui_theme_pack) |pack_path| {
-        theme_eng.loadAndApplyThemePackDir(pack_path) catch |err| {
-            logger.warn("Failed to load theme pack '{s}': {}", .{ pack_path, err });
-        };
-    }
+    theme_eng.applyThemePackDirFromPath(cfg.ui_theme_pack, true) catch |err| {
+        logger.warn("Failed to load theme pack: {}", .{err});
+    };
     var agents = try agent_registry.AgentRegistry.loadOrDefault(allocator, "ziggystarclaw_agents.json");
     defer agents.deinit(allocator);
     var app_state_state = app_state.loadOrDefault(allocator, "ziggystarclaw_state.json") catch app_state.initDefault();
@@ -1119,6 +1117,18 @@ fn run() !void {
             if (cfg.ui_theme) |label| {
                 theme.setMode(theme.modeFromLabel(label));
             }
+        }
+
+        if (ui_action.config_updated or ui_action.reload_theme_pack) {
+            theme_eng.applyThemePackDirFromPath(cfg.ui_theme_pack, ui_action.reload_theme_pack) catch |err| {
+                if (cfg.ui_theme_pack) |pack_path| {
+                    logger.warn("Failed to load theme pack '{s}': {}", .{ pack_path, err });
+                } else {
+                    logger.warn("Failed to apply theme pack: {}", .{err});
+                }
+            };
+            theme_eng.resolveProfileFromConfig(fb_width, fb_height, cfg.ui_profile);
+            theme.applyTypography(dpi_scale * theme_eng.active_profile.ui_scale);
         }
 
         if (ui_action.save_config) {

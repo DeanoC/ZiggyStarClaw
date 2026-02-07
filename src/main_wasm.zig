@@ -144,9 +144,11 @@ fn initApp() !void {
         theme.apply();
     }
     theme_eng = theme_engine.ThemeEngine.init(allocator, theme_engine.PlatformCaps.defaultForTarget());
-    if (cfg.ui_theme_pack) |pack_path| {
-        theme_eng.?.loadAndApplyThemePackDir(pack_path) catch |err| {
-            logger.warn("Failed to load theme pack '{s}': {}", .{ pack_path, err });
+    if (cfg.ui_theme_pack != null and !theme_eng.?.caps.supports_filesystem_read) {
+        logger.warn("Theme packs are not supported on the web build (filesystem unavailable).", .{});
+    } else {
+        theme_eng.?.applyThemePackDirFromPath(cfg.ui_theme_pack, true) catch |err| {
+            logger.warn("Failed to load theme pack: {}", .{err});
         };
     }
     var fb_w: c_int = 0;
@@ -1244,6 +1246,29 @@ fn frame() callconv(.c) void {
     if (ui_action.config_updated) {
         // config updated in-place
         saveConfigToStorage();
+    }
+
+    if (ui_action.config_updated or ui_action.reload_theme_pack) {
+        if (cfg.ui_theme) |label| {
+            theme.setMode(theme.modeFromLabel(label));
+            theme.apply();
+        }
+        if (theme_eng) |*eng| {
+            if (ui_action.reload_theme_pack and cfg.ui_theme_pack != null and !eng.caps.supports_filesystem_read) {
+                logger.warn("Theme packs reload requested, but filesystem is unavailable in the web build.", .{});
+            } else if (eng.caps.supports_filesystem_read) {
+                eng.applyThemePackDirFromPath(cfg.ui_theme_pack, ui_action.reload_theme_pack) catch |err| {
+                    logger.warn("Failed to apply theme pack: {}", .{err});
+                };
+            }
+
+            if (window) |w| {
+                const dpi_scale_raw: f32 = sdl.SDL_GetWindowDisplayScale(w);
+                const dpi_scale: f32 = if (dpi_scale_raw > 0.0) dpi_scale_raw else 1.0;
+                eng.resolveProfileFromConfig(fb_width, fb_height, cfg.ui_profile);
+                theme.applyTypography(dpi_scale * eng.active_profile.ui_scale);
+            }
+        }
     }
 
     if (ui_action.save_config) {

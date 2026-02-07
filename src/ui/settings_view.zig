@@ -15,6 +15,7 @@ pub const SettingsAction = struct {
     connect: bool = false,
     disconnect: bool = false,
     save: bool = false,
+    reload_theme_pack: bool = false,
     clear_saved: bool = false,
     config_updated: bool = false,
     check_updates: bool = false,
@@ -108,7 +109,7 @@ pub fn draw(
     const start_y = cursor_y;
     const card_x = content_rect.min[0] + t.spacing.md;
 
-    cursor_y += drawAppearanceCard(&dc, queue, allocator, card_x, cursor_y, card_width);
+    cursor_y += drawAppearanceCard(&dc, queue, allocator, card_x, cursor_y, card_width, &action);
     cursor_y += t.spacing.md;
 
     const server_text = editorText(server_editor);
@@ -254,6 +255,7 @@ fn drawAppearanceCard(
     x: f32,
     y: f32,
     width: f32,
+    action: *SettingsAction,
 ) f32 {
     const t = theme.activeTheme();
     const padding = t.spacing.md;
@@ -266,7 +268,8 @@ fn drawAppearanceCard(
     height += labeledInputHeight(input_height, line_height, t);
     // Helper text + config path.
     height += (line_height + t.spacing.xs) * 2.0;
-    height += button_height + padding;
+    height += button_height + t.spacing.sm; // pack buttons row
+    height += button_height + padding; // profile picker row + bottom padding
     const rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ width, height });
 
     const content_y = drawCardBase(dc, rect, "Appearance");
@@ -295,11 +298,11 @@ fn drawAppearanceCard(
         .{ .placeholder = "docs/theme_engine/examples/zsc_clean" },
     );
 
-    dc.drawText(
-        "Theme packs and profile selection apply on next app launch (for now).",
-        .{ rect.min[0] + padding, cursor_y },
-        .{ .color = t.colors.text_secondary },
-    );
+    const helper_line: []const u8 = if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi)
+        "Theme packs: not supported in web build yet."
+    else
+        "Theme pack changes apply immediately. Use Reload after editing JSON.";
+    dc.drawText(helper_line, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
     cursor_y += line_height + t.spacing.xs;
 
     if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi) {
@@ -315,21 +318,40 @@ fn drawAppearanceCard(
     }
     cursor_y += line_height + t.spacing.xs;
 
-    const button_w = buttonWidth(dc, "Use example pack", t);
-    const button_rect = draw_context.Rect.fromMinSize(
-        .{ rect.min[0] + padding, rect.max[1] - padding - button_height },
-        .{ button_w, button_height },
-    );
-    if (widgets.button.draw(dc, button_rect, "Use example pack", queue, .{ .variant = .secondary })) {
+    // Pack actions row.
+    const button_y = cursor_y;
+    var button_x = rect.min[0] + padding;
+
+    const example_w = buttonWidth(dc, "Use example pack", t);
+    const example_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ example_w, button_height });
+    if (widgets.button.draw(dc, example_rect, "Use example pack", queue, .{ .variant = .secondary })) {
         ensureEditor(&theme_pack_editor, allocator).setText(allocator, "docs/theme_engine/examples/zsc_clean");
         profile_choice = .desktop;
         appearance_changed = true;
     }
+    button_x += example_w + t.spacing.xs;
+
+    const theme_pack_text = editorText(theme_pack_editor);
+    const can_reload = theme_pack_text.len > 0 and !(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi);
+    const reload_w = buttonWidth(dc, "Reload pack", t);
+    const reload_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ reload_w, button_height });
+    if (widgets.button.draw(dc, reload_rect, "Reload pack", queue, .{ .variant = .ghost, .disabled = !can_reload })) {
+        action.reload_theme_pack = true;
+    }
+    button_x += reload_w + t.spacing.xs;
+
+    const disable_w = buttonWidth(dc, "Disable pack", t);
+    const disable_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ disable_w, button_height });
+    if (widgets.button.draw(dc, disable_rect, "Disable pack", queue, .{ .variant = .ghost, .disabled = theme_pack_text.len == 0 })) {
+        ensureEditor(&theme_pack_editor, allocator).setText(allocator, "");
+        appearance_changed = true;
+    }
+    cursor_y += button_height + t.spacing.sm;
 
     // Simple profile picker (stored into config, used to choose UI scaling/density/input assumptions).
     const picker_label = "Profile:";
-    const picker_x = button_rect.max[0] + t.spacing.md;
-    dc.drawText(picker_label, .{ picker_x, button_rect.min[1] + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_primary });
+    const picker_x = rect.min[0] + padding;
+    dc.drawText(picker_label, .{ picker_x, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_primary });
 
     var px = picker_x + dc.measureText(picker_label, 0.0)[0] + t.spacing.sm;
     const choices = [_]struct { id: ProfileChoice, label: []const u8 }{
@@ -341,7 +363,7 @@ fn drawAppearanceCard(
     };
     for (choices) |c| {
         const w = buttonWidth(dc, c.label, t);
-        const r = draw_context.Rect.fromMinSize(.{ px, button_rect.min[1] }, .{ w, button_height });
+        const r = draw_context.Rect.fromMinSize(.{ px, cursor_y }, .{ w, button_height });
         const is_selected = profile_choice == c.id;
         if (widgets.button.draw(dc, r, c.label, queue, .{ .variant = if (is_selected) .primary else .ghost })) {
             profile_choice = c.id;

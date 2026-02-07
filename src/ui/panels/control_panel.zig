@@ -18,6 +18,7 @@ pub const ControlPanelAction = struct {
     connect: bool = false,
     disconnect: bool = false,
     save_config: bool = false,
+    reload_theme_pack: bool = false,
     clear_saved: bool = false,
     config_updated: bool = false,
     refresh_sessions: bool = false,
@@ -115,6 +116,7 @@ pub fn draw(
             action.connect = settings_action.connect;
             action.disconnect = settings_action.disconnect;
             action.save_config = settings_action.save;
+            action.reload_theme_pack = settings_action.reload_theme_pack;
             action.clear_saved = settings_action.clear_saved;
             action.config_updated = settings_action.config_updated;
             action.check_updates = settings_action.check_updates;

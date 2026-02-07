@@ -43,6 +43,7 @@ pub const UiAction = struct {
     connect: bool = false,
     disconnect: bool = false,
     save_config: bool = false,
+    reload_theme_pack: bool = false,
     clear_saved: bool = false,
     config_updated: bool = false,
     refresh_sessions: bool = false,
@@ -626,6 +627,7 @@ fn drawPanelContents(
             action.connect = control_action.connect;
             action.disconnect = control_action.disconnect;
             action.save_config = control_action.save_config;
+            action.reload_theme_pack = control_action.reload_theme_pack;
             action.clear_saved = control_action.clear_saved;
             action.config_updated = control_action.config_updated;
             action.refresh_sessions = control_action.refresh_sessions;
