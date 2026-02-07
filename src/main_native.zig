@@ -32,9 +32,10 @@ const sdl = @import("platform/sdl3.zig").c;
 const input_backend = @import("ui/input/input_backend.zig");
 const sdl_input_backend = @import("ui/input/sdl_input_backend.zig");
 const text_input_backend = @import("ui/input/text_input_backend.zig");
+const command_queue = @import("ui/render/command_queue.zig");
 const input_state = @import("ui/input/input_state.zig");
 
-const webgpu_renderer = @import("client/renderer.zig");
+const multi_renderer = @import("client/multi_window_renderer.zig");
 const font_system = @import("ui/font_system.zig");
 
 const icon = @cImport({
@@ -45,20 +46,21 @@ const startup_log_path = "ziggystarclaw_startup.log";
 
 const UiWindow = struct {
     window: *sdl.SDL_Window,
-    renderer: webgpu_renderer.Renderer,
     id: u32,
     queue: input_state.InputQueue,
+    swapchain: multi_renderer.WindowSwapchain,
 };
 
 fn destroyUiWindow(allocator: std.mem.Allocator, w: *UiWindow) void {
     w.queue.deinit(allocator);
-    w.renderer.deinit();
+    w.swapchain.deinit();
     sdl.SDL_DestroyWindow(w.window);
     allocator.destroy(w);
 }
 
 fn createUiWindow(
     allocator: std.mem.Allocator,
+    shared: *multi_renderer.Shared,
     title: [:0]const u8,
     width: c_int,
     height: c_int,
@@ -70,24 +72,19 @@ fn createUiWindow(
     };
     errdefer sdl.SDL_DestroyWindow(win);
     setWindowIcon(win);
-
-    var renderer0 = try webgpu_renderer.Renderer.init(allocator, win);
-    var renderer0_owned = true;
-    errdefer if (renderer0_owned) renderer0.deinit();
+    multi_renderer.cachePlatformHandlesFromWindow(win);
     logSurfaceBackend(win);
 
     const out = try allocator.create(UiWindow);
     errdefer allocator.destroy(out);
     out.* = .{
         .window = win,
-        .renderer = renderer0,
         .id = sdl.SDL_GetWindowID(win),
         .queue = input_state.InputQueue.init(allocator),
+        .swapchain = try multi_renderer.WindowSwapchain.initOwned(shared, win),
     };
     errdefer out.queue.deinit(allocator);
-    errdefer out.renderer.deinit();
-    renderer0_owned = false;
-    renderer0 = undefined;
+    errdefer out.swapchain.deinit();
     return out;
 }
 
@@ -1046,23 +1043,21 @@ pub fn main() !void {
         );
     }
 
-    var renderer0 = try webgpu_renderer.Renderer.init(allocator, window);
-    var renderer0_owned = true;
-    errdefer if (renderer0_owned) renderer0.deinit();
     logSurfaceBackend(window);
+
+    var gpu = try multi_renderer.Shared.init(allocator, window);
+    defer gpu.deinit();
 
     const main_win = try allocator.create(UiWindow);
     errdefer allocator.destroy(main_win);
     main_win.* = .{
         .window = window,
-        .renderer = renderer0,
         .id = sdl.SDL_GetWindowID(window),
         .queue = input_state.InputQueue.init(allocator),
+        .swapchain = multi_renderer.WindowSwapchain.initMain(&gpu, window),
     };
     errdefer main_win.queue.deinit(allocator);
-    errdefer main_win.renderer.deinit();
-    renderer0_owned = false;
-    renderer0 = undefined;
+    errdefer main_win.swapchain.deinit();
 
     var ui_windows: std.ArrayList(*UiWindow) = .empty;
     try ui_windows.append(allocator, main_win);
@@ -1288,13 +1283,12 @@ pub fn main() !void {
                 const w_fb_width: u32 = if (w_fb_w > 0) @intCast(w_fb_w) else 1;
                 const w_fb_height: u32 = if (w_fb_h > 0) @intCast(w_fb_h) else 1;
 
-                w.renderer.beginFrame(w_fb_width, w_fb_height);
-
                 w.queue.clear(allocator);
                 sdl_input_backend.setCollectWindow(w.window);
                 input_router.setExternalQueue(&w.queue);
                 input_router.collect(allocator);
 
+                w.swapchain.beginFrame(&gpu, w_fb_width, w_fb_height);
                 const action = ui.drawWindow(
                     allocator,
                     &ctx,
@@ -1312,7 +1306,10 @@ pub fn main() !void {
                     ui_action = action;
                 }
 
-                w.renderer.render();
+                if (command_queue.get()) |list| {
+                    gpu.ui_renderer.beginFrame(w_fb_width, w_fb_height);
+                    w.swapchain.render(&gpu, list);
+                }
             }
             sdl_input_backend.setCollectWindow(null);
             ui.frameEnd();
@@ -1723,7 +1720,7 @@ pub fn main() !void {
             if (cur_w < 300) cur_w = 960;
             if (cur_h < 200) cur_h = 720;
 
-            const new_win = createUiWindow(allocator, title_z, cur_w, cur_h, window_flags) catch null;
+            const new_win = createUiWindow(allocator, &gpu, title_z, cur_w, cur_h, window_flags) catch null;
             if (new_win) |w| {
                 var pos_x: c_int = 0;
                 var pos_y: c_int = 0;
