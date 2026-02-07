@@ -1,4 +1,5 @@
 const profile = @import("profile.zig");
+const schema = @import("schema.zig");
 const style_sheet = @import("style_sheet.zig");
 const theme = @import("../theme.zig");
 const std = @import("std");
@@ -8,11 +9,13 @@ pub const ProfileId = profile.ProfileId;
 pub const Profile = profile.Profile;
 
 pub const StyleSheet = style_sheet.StyleSheet;
+pub const WindowTemplate = schema.WindowTemplate;
 
 var active_profile: Profile = profile.defaultsFor(.desktop, profile.PlatformCaps.defaultForTarget());
 var active_styles_light: StyleSheet = .{};
 var active_styles_dark: StyleSheet = .{};
 var active_pack_root: ?[]const u8 = null;
+var active_windows: []const WindowTemplate = &[_]WindowTemplate{};
 
 pub fn setProfile(p: Profile) void {
     active_profile = p;
@@ -44,6 +47,14 @@ pub fn setThemePackRootPath(path: ?[]const u8) void {
 
 pub fn getThemePackRootPath() ?[]const u8 {
     return active_pack_root;
+}
+
+pub fn setWindowTemplates(templates: []const WindowTemplate) void {
+    active_windows = templates;
+}
+
+pub fn getWindowTemplates() []const WindowTemplate {
+    return active_windows;
 }
 
 pub fn resolveThemeAssetPath(buf: []u8, rel_path: []const u8) ?[]const u8 {

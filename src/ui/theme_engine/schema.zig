@@ -25,6 +25,27 @@ pub const Manifest = struct {
     };
 };
 
+/// Optional `windows.json` provides desktop multi-window templates (Winamp-style).
+///
+/// This file is intentionally small and UI-focused:
+/// - "panels" lists which core panels should be opened in the new window
+///   (e.g. ["workspace", "chat", "showcase"]).
+/// - "profile" can force a specific profile for that window ("desktop"/"phone"/...).
+pub const WindowTemplate = struct {
+    id: []const u8,
+    title: []const u8 = "",
+    width: u32 = 960,
+    height: u32 = 720,
+    profile: ?[]const u8 = null,
+    panels: ?[]const []const u8 = null,
+    focused_panel: ?[]const u8 = null,
+};
+
+pub const WindowsFile = struct {
+    schema_version: u32 = 1,
+    windows: []WindowTemplate = &[_]WindowTemplate{},
+};
+
 pub const Shadow = struct {
     blur: f32,
     spread: f32,

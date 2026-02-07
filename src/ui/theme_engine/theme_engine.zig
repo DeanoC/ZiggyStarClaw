@@ -48,6 +48,7 @@ pub const ThemeEngine = struct {
 
     active_profile: Profile = profile.defaultsFor(.desktop, profile.PlatformCaps.defaultForTarget()),
     styles: style_sheet.StyleSheetStore,
+    windows: ?[]schema.WindowTemplate = null,
 
     // Web (Emscripten) theme pack loading is async; we keep a single in-flight job.
     web_job: ?*WebPackJob = null,
@@ -60,6 +61,7 @@ pub const ThemeEngine = struct {
             .caps = caps,
             .active_profile = profile.defaultsFor(.desktop, caps),
             .styles = style_sheet.StyleSheetStore.initEmpty(allocator),
+            .windows = null,
         };
     }
 
@@ -88,9 +90,12 @@ pub const ThemeEngine = struct {
             job.deinit();
             self.web_job = null;
         }
+        if (self.windows) |v| theme_package.freeWindowTemplates(self.allocator, v);
+        self.windows = null;
         self.styles.deinit();
         runtime.setStyleSheets(.{}, .{});
         runtime.setThemePackRootPath(null);
+        runtime.setWindowTemplates(&[_]schema.WindowTemplate{});
         runtime.setProfile(profile.defaultsFor(.desktop, self.caps));
     }
 
@@ -107,8 +112,11 @@ pub const ThemeEngine = struct {
         self.active_pack_root = null;
         self.styles.deinit();
         self.styles = style_sheet.StyleSheetStore.initEmpty(self.allocator);
+        if (self.windows) |v| theme_package.freeWindowTemplates(self.allocator, v);
+        self.windows = null;
         runtime.setStyleSheets(.{}, .{});
         runtime.setThemePackRootPath(null);
+        runtime.setWindowTemplates(&[_]schema.WindowTemplate{});
     }
 
     pub fn takeWebThemeChanged(self: *ThemeEngine) bool {
@@ -216,6 +224,12 @@ pub const ThemeEngine = struct {
         }
         self.active_pack_root = try self.allocator.dupe(u8, root_for_assets);
         runtime.setThemePackRootPath(self.active_pack_root);
+
+        // Adopt optional multi-window templates (ThemeEngine owns the memory).
+        if (self.windows) |v| theme_package.freeWindowTemplates(self.allocator, v);
+        self.windows = pack.windows;
+        pack.windows = null;
+        runtime.setWindowTemplates(self.windows orelse &[_]schema.WindowTemplate{});
 
         // Replace owned themes.
         if (self.runtime_light) |prev| freeTheme(self.allocator, prev);

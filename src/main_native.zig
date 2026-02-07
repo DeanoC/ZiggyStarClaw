@@ -5,6 +5,7 @@ const input_router = @import("ui/input/input_router.zig");
 const operator_view = @import("ui/operator_view.zig");
 const theme = @import("ui/theme.zig");
 const theme_engine = @import("ui/theme_engine/theme_engine.zig");
+const profile = @import("ui/theme_engine/profile.zig");
 const panel_manager = @import("ui/panel_manager.zig");
 const workspace_store = @import("ui/workspace_store.zig");
 const workspace = @import("ui/workspace.zig");
@@ -51,6 +52,7 @@ const UiWindow = struct {
     swapchain: multi_renderer.WindowSwapchain,
     manager: panel_manager.PanelManager,
     ui_state: ui.WindowUiState = .{},
+    profile_override: ?theme_engine.ProfileId = null,
 };
 
 fn destroyUiWindow(allocator: std.mem.Allocator, w: *UiWindow) void {
@@ -67,6 +69,56 @@ fn cloneWorkspace(allocator: std.mem.Allocator, src: *const workspace.Workspace)
     return try workspace.Workspace.fromSnapshot(allocator, snap);
 }
 
+fn parsePanelKindLabel(label: []const u8) ?workspace.PanelKind {
+    if (std.ascii.eqlIgnoreCase(label, "workspace") or std.ascii.eqlIgnoreCase(label, "control")) return .Control;
+    if (std.ascii.eqlIgnoreCase(label, "chat")) return .Chat;
+    if (std.ascii.eqlIgnoreCase(label, "showcase")) return .Showcase;
+    if (std.ascii.eqlIgnoreCase(label, "code_editor") or std.ascii.eqlIgnoreCase(label, "codeeditor")) return .CodeEditor;
+    if (std.ascii.eqlIgnoreCase(label, "tool_output") or std.ascii.eqlIgnoreCase(label, "tooloutput")) return .ToolOutput;
+    return null;
+}
+
+fn takeWorkspaceFromManager(allocator: std.mem.Allocator, manager: *panel_manager.PanelManager) workspace.Workspace {
+    const ws = manager.workspace;
+    manager.workspace = workspace.Workspace.initEmpty(allocator);
+    return ws;
+}
+
+fn buildWorkspaceFromTemplate(
+    allocator: std.mem.Allocator,
+    tpl: theme_engine.runtime.WindowTemplate,
+) !workspace.Workspace {
+    var manager = panel_manager.PanelManager.init(allocator, workspace.Workspace.initEmpty(allocator));
+    errdefer manager.deinit();
+
+    var opened_any = false;
+    if (tpl.panels) |labels| {
+        for (labels) |label| {
+            const kind = parsePanelKindLabel(label) orelse continue;
+            manager.ensurePanel(kind);
+            opened_any = true;
+        }
+    }
+
+    if (!opened_any) {
+        manager.ensurePanel(.Control);
+    }
+
+    if (tpl.focused_panel) |label| {
+        if (parsePanelKindLabel(label)) |focus_kind| {
+            for (manager.workspace.panels.items) |panel| {
+                if (panel.kind == focus_kind) {
+                    manager.focusPanel(panel.id);
+                    break;
+                }
+            }
+        }
+    }
+
+    defer manager.deinit();
+    return takeWorkspaceFromManager(allocator, &manager);
+}
+
 fn createUiWindow(
     allocator: std.mem.Allocator,
     shared: *multi_renderer.Shared,
@@ -75,6 +127,7 @@ fn createUiWindow(
     height: c_int,
     flags: sdl.SDL_WindowFlags,
     initial_workspace: workspace.Workspace,
+    profile_override: ?theme_engine.ProfileId,
 ) !*UiWindow {
     var ws = initial_workspace;
     errdefer ws.deinit(allocator);
@@ -100,6 +153,7 @@ fn createUiWindow(
         .swapchain = swapchain,
         .manager = panel_manager.PanelManager.init(allocator, ws),
         .ui_state = .{},
+        .profile_override = profile_override,
     };
     errdefer out.queue.deinit(allocator);
     return out;
@@ -1074,6 +1128,7 @@ pub fn main() !void {
         // Initialize immediately so early errors don't trip `destroyUiWindow`.
         .manager = panel_manager.PanelManager.init(allocator, workspace.Workspace.initEmpty(allocator)),
         .ui_state = .{},
+        .profile_override = null,
     };
     errdefer main_win.queue.deinit(allocator);
     errdefer main_win.swapchain.deinit();
@@ -1312,7 +1367,8 @@ pub fn main() !void {
                 // and keeps hit-target sizing / hover rules correct per window.
                 const w_dpi_scale_raw: f32 = sdl.SDL_GetWindowDisplayScale(w.window);
                 const w_dpi_scale: f32 = if (w_dpi_scale_raw > 0.0) w_dpi_scale_raw else 1.0;
-                theme_eng.resolveProfileFromConfig(w_fb_width, w_fb_height, cfg.ui_profile);
+                const requested_profile: ?[]const u8 = if (w.profile_override) |pid| profile.labelForProfile(pid) else cfg.ui_profile;
+                theme_eng.resolveProfileFromConfig(w_fb_width, w_fb_height, requested_profile);
                 theme.applyTypography(w_dpi_scale * theme_eng.active_profile.ui_scale);
 
                 w.queue.clear(allocator);
@@ -1752,10 +1808,8 @@ pub fn main() !void {
             }
         }
 
-        if (ui_action.spawn_window and theme_eng.caps.supports_multi_window) {
+        if ((ui_action.spawn_window or ui_action.spawn_window_template != null) and theme_eng.caps.supports_multi_window) {
             const index: usize = ui_windows.items.len + 1;
-            var title_buf: [64]u8 = undefined;
-            const title_z = std.fmt.bufPrintZ(&title_buf, "ZiggyStarClaw ({d})", .{index}) catch "ZiggyStarClaw";
 
             var cur_w: c_int = 960;
             var cur_h: c_int = 720;
@@ -1763,15 +1817,53 @@ pub fn main() !void {
             if (cur_w < 300) cur_w = 960;
             if (cur_h < 200) cur_h = 720;
 
-            const ws_copy = cloneWorkspace(allocator, &active_window.manager.workspace) catch null;
-            const new_win = if (ws_copy) |ws_val|
-                createUiWindow(allocator, &gpu, title_z, cur_w, cur_h, window_flags, ws_val) catch |err| blk: {
+            var title_buf: [96]u8 = undefined;
+            var title_z: [:0]const u8 = "ZiggyStarClaw";
+            var profile_override: ?theme_engine.ProfileId = active_window.profile_override;
+
+            var ws_for_new: workspace.Workspace = undefined;
+            var ws_owned: bool = false;
+            defer if (ws_owned) ws_for_new.deinit(allocator);
+
+            if (ui_action.spawn_window_template) |tpl_idx| {
+                const templates = theme_engine.runtime.getWindowTemplates();
+                if (tpl_idx < templates.len) {
+                    const tpl = templates[tpl_idx];
+                    const max_cint_u32: u32 = @intCast(std.math.maxInt(c_int));
+                    if (tpl.width > 0) cur_w = @intCast(@min(max_cint_u32, tpl.width));
+                    if (tpl.height > 0) cur_h = @intCast(@min(max_cint_u32, tpl.height));
+                    const base_title = if (tpl.title.len > 0) tpl.title else tpl.id;
+                    title_z = std.fmt.bufPrintZ(&title_buf, "{s} ({d})", .{ base_title, index }) catch "ZiggyStarClaw";
+                    if (profile.profileFromLabel(tpl.profile)) |pid| {
+                        profile_override = pid;
+                    }
+                    if (buildWorkspaceFromTemplate(allocator, tpl)) |ws_val| {
+                        ws_for_new = ws_val;
+                        ws_owned = true;
+                    } else |_| {}
+                }
+            }
+
+            if (!ws_owned) {
+                title_z = std.fmt.bufPrintZ(&title_buf, "ZiggyStarClaw ({d})", .{index}) catch "ZiggyStarClaw";
+                if (cloneWorkspace(allocator, &active_window.manager.workspace)) |ws_val| {
+                    ws_for_new = ws_val;
+                    ws_owned = true;
+                } else |_| {}
+            }
+
+            const new_win = if (ws_owned)
+                createUiWindow(allocator, &gpu, title_z, cur_w, cur_h, window_flags, ws_for_new, profile_override) catch |err| blk: {
                     logger.warn("Failed to create window: {}", .{err});
                     break :blk null;
                 }
             else
                 null;
+
             if (new_win) |w| {
+                // `createUiWindow` owns the workspace; don't free it here.
+                ws_owned = false;
+
                 var pos_x: c_int = 0;
                 var pos_y: c_int = 0;
                 _ = sdl.SDL_GetWindowPosition(active_window.window, &pos_x, &pos_y);

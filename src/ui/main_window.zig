@@ -55,6 +55,7 @@ pub const UiAction = struct {
     clear_saved: bool = false,
     config_updated: bool = false,
     spawn_window: bool = false,
+    spawn_window_template: ?u32 = null,
     refresh_sessions: bool = false,
     new_session: bool = false,
     select_session: ?[]u8 = null,
@@ -137,7 +138,10 @@ fn drawCustomMenuBar(
     // Even if the user is running the Phone/Tablet profile on desktop, they may still want
     // detachable/multi-window UI (Winamp-style use case).
     const allow_multi_window = (builtin.cpu.arch != .wasm32) and !builtin.abi.isAndroid();
-    const item_count: f32 = if (allow_multi_window) 4.0 else 3.0;
+    const templates_all = theme_runtime.getWindowTemplates();
+    const max_templates: usize = 8;
+    const templates = templates_all[0..@min(templates_all.len, max_templates)];
+    const item_count: f32 = 3.0 + (if (allow_multi_window) (1.0 + @as(f32, @floatFromInt(templates.len))) else 0.0);
     const menu_height = menu_padding * 2.0 + item_height * item_count;
     const menu_rect = draw_context.Rect.fromMinSize(
         .{ rect.min[0] + t.spacing.sm, rect.max[1] + t.spacing.xs },
@@ -190,6 +194,23 @@ fn drawCustomMenuBar(
         )) {
             action.spawn_window = true;
             win_state.custom_window_menu_open = false;
+        }
+
+        for (templates, 0..) |tpl, idx| {
+            cursor_y += item_height;
+            var label_buf: [96]u8 = undefined;
+            const title = if (tpl.title.len > 0) tpl.title else tpl.id;
+            const label2 = std.fmt.bufPrint(&label_buf, "New: {s}", .{title}) catch title;
+            if (drawMenuItem(
+                dc,
+                queue,
+                draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+                label2,
+                false,
+            )) {
+                action.spawn_window_template = @intCast(idx);
+                win_state.custom_window_menu_open = false;
+            }
         }
     }
 
