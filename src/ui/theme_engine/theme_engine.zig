@@ -10,6 +10,7 @@ const theme_package = @import("theme_package.zig");
 const style_sheet = @import("style_sheet.zig");
 const builtin_packs = @import("builtin_packs.zig");
 pub const runtime = @import("runtime.zig");
+const wasm_fetch = @import("../../platform/wasm_fetch.zig");
 
 pub const PlatformCaps = profile.PlatformCaps;
 pub const ProfileId = profile.ProfileId;
@@ -38,6 +39,11 @@ pub const ThemeEngine = struct {
 
     active_profile: Profile = profile.defaultsFor(.desktop, profile.PlatformCaps.defaultForTarget()),
     styles: style_sheet.StyleSheetStore,
+
+    // Web (Emscripten) theme pack loading is async; we keep a single in-flight job.
+    web_job: ?*WebPackJob = null,
+    web_generation: u32 = 0,
+    web_theme_changed: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, caps: PlatformCaps) ThemeEngine {
         return .{
@@ -69,6 +75,10 @@ pub const ThemeEngine = struct {
             self.allocator.free(p);
         }
         self.active_pack_root = null;
+        if (self.web_job) |job| {
+            job.deinit();
+            self.web_job = null;
+        }
         self.styles.deinit();
         runtime.setStyleSheets(.{}, .{});
         runtime.setThemePackRootPath(null);
@@ -90,6 +100,47 @@ pub const ThemeEngine = struct {
         self.styles = style_sheet.StyleSheetStore.initEmpty(self.allocator);
         runtime.setStyleSheets(.{}, .{});
         runtime.setThemePackRootPath(null);
+    }
+
+    pub fn takeWebThemeChanged(self: *ThemeEngine) bool {
+        const v = self.web_theme_changed;
+        self.web_theme_changed = false;
+        return v;
+    }
+
+    /// Web (Emscripten) loader: fetches `manifest.json`, token files, and `styles/components.json`
+    /// from the provided `pack_root` (URL or relative-to-origin path) and applies it when ready.
+    /// This is async; failures are logged by the caller (if desired) via `takeWebThemeChanged`.
+    pub fn requestThemePackWeb(self: *ThemeEngine, pack_root: ?[]const u8, force_reload: bool) void {
+        if (builtin.target.os.tag != .emscripten) return;
+
+        const raw = pack_root orelse "";
+        if (raw.len == 0) {
+            self.clearThemePack();
+            self.web_theme_changed = true;
+            return;
+        }
+
+        if (!force_reload) {
+            if (self.active_pack_path) |p| {
+                if (std.mem.eql(u8, p, raw)) return;
+            }
+        }
+
+        self.web_generation +%= 1;
+        const gen = self.web_generation;
+
+        if (self.web_job) |job| {
+            job.deinit();
+            self.web_job = null;
+        }
+
+        const job = WebPackJob.init(self, gen, raw) catch return;
+        self.web_job = job;
+        job.start() catch {
+            job.deinit();
+            self.web_job = null;
+        };
     }
 
     pub fn setProfile(self: *ThemeEngine, p: Profile) void {
@@ -175,6 +226,11 @@ pub const ThemeEngine = struct {
         pack_path: ?[]const u8,
         force_reload: bool,
     ) !void {
+        if (builtin.target.os.tag == .emscripten) {
+            // On web builds, theme packs are fetched over HTTP(S) and applied asynchronously.
+            self.requestThemePackWeb(pack_path, force_reload);
+            return;
+        }
         const path = pack_path orelse "";
         if (path.len == 0) {
             self.clearThemePack();
@@ -228,6 +284,367 @@ pub const ThemeEngine = struct {
         return last_err;
     }
 };
+
+const WebStage = enum {
+    manifest,
+    tokens_base,
+    tokens_light,
+    tokens_dark,
+    styles,
+};
+
+const WebPackJob = struct {
+    engine: *ThemeEngine,
+    allocator: std.mem.Allocator,
+    generation: u32,
+    root: []u8,
+    stage: WebStage = .manifest,
+
+    manifest: ?schema.Manifest = null,
+    tokens_base: ?schema.TokensFile = null,
+    tokens_light: ?schema.TokensFile = null,
+    tokens_dark: ?schema.TokensFile = null,
+    styles_raw: ?[]u8 = null,
+
+    fn init(engine: *ThemeEngine, generation: u32, root: []const u8) !*WebPackJob {
+        const job = try engine.allocator.create(WebPackJob);
+        job.* = .{
+            .engine = engine,
+            .allocator = engine.allocator,
+            .generation = generation,
+            .root = try engine.allocator.dupe(u8, root),
+        };
+        return job;
+    }
+
+    fn deinit(self: *WebPackJob) void {
+        self.allocator.free(self.root);
+        if (self.styles_raw) |bytes| self.allocator.free(bytes);
+        if (self.manifest) |*m| freeManifestStrings(self.allocator, m);
+        if (self.tokens_base) |*t| freeTokensStrings(self.allocator, t);
+        if (self.tokens_light) |*t| freeTokensStrings(self.allocator, t);
+        if (self.tokens_dark) |*t| freeTokensStrings(self.allocator, t);
+        self.allocator.destroy(self);
+    }
+
+    fn start(self: *WebPackJob) !void {
+        self.stage = .manifest;
+        try self.fetchRel("manifest.json");
+    }
+
+    fn fetchRel(self: *WebPackJob, rel: []const u8) !void {
+        const url = try joinUrl(self.allocator, self.root, rel);
+        defer self.allocator.free(url);
+        try wasm_fetch.fetchBytes(self.allocator, url, @intFromPtr(self), webFetchSuccess, webFetchError);
+    }
+};
+
+fn joinUrl(allocator: std.mem.Allocator, root: []const u8, rel: []const u8) ![]u8 {
+    if (root.len == 0) return allocator.dupe(u8, rel);
+    const needs = if (root[root.len - 1] == '/') "" else "/";
+    return std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ root, needs, rel });
+}
+
+fn looksLikeNotFound(msg: []const u8) bool {
+    return std.mem.startsWith(u8, msg, "HTTP 404");
+}
+
+fn webFetchSuccess(user_ctx: usize, bytes: []const u8) void {
+    const job: *WebPackJob = @ptrFromInt(user_ctx);
+    const eng = job.engine;
+    if (eng.web_job == null or eng.web_job.? != job or eng.web_generation != job.generation) {
+        job.deinit();
+        return;
+    }
+
+    switch (job.stage) {
+        .manifest => {
+            var parsed = schema.parseJson(schema.Manifest, job.allocator, bytes) catch {
+                job.deinit();
+                eng.web_job = null;
+                return;
+            };
+            defer parsed.deinit();
+            var m = parsed.value;
+            if (m.schema_version != 1) {
+                job.deinit();
+                eng.web_job = null;
+                return;
+            }
+            m.id = job.allocator.dupe(u8, m.id) catch {
+                job.deinit();
+                eng.web_job = null;
+                return;
+            };
+            m.name = job.allocator.dupe(u8, m.name) catch {
+                job.allocator.free(m.id);
+                job.deinit();
+                eng.web_job = null;
+                return;
+            };
+            m.author = job.allocator.dupe(u8, m.author) catch {
+                job.allocator.free(m.id);
+                job.allocator.free(m.name);
+                job.deinit();
+                eng.web_job = null;
+                return;
+            };
+            m.license = job.allocator.dupe(u8, m.license) catch {
+                job.allocator.free(m.id);
+                job.allocator.free(m.name);
+                job.allocator.free(m.author);
+                job.deinit();
+                eng.web_job = null;
+                return;
+            };
+            m.defaults.variant = job.allocator.dupe(u8, m.defaults.variant) catch {
+                job.allocator.free(m.id);
+                job.allocator.free(m.name);
+                job.allocator.free(m.author);
+                job.allocator.free(m.license);
+                job.deinit();
+                eng.web_job = null;
+                return;
+            };
+            m.defaults.profile = job.allocator.dupe(u8, m.defaults.profile) catch {
+                job.allocator.free(m.id);
+                job.allocator.free(m.name);
+                job.allocator.free(m.author);
+                job.allocator.free(m.license);
+                job.allocator.free(m.defaults.variant);
+                job.deinit();
+                eng.web_job = null;
+                return;
+            };
+            job.manifest = m;
+
+            job.stage = .tokens_base;
+            job.fetchRel("tokens/base.json") catch {
+                job.deinit();
+                eng.web_job = null;
+            };
+        },
+        .tokens_base => {
+            var parsed = schema.parseJson(schema.TokensFile, job.allocator, bytes) catch {
+                job.deinit();
+                eng.web_job = null;
+                return;
+            };
+            defer parsed.deinit();
+            var tbase = parsed.value;
+            tbase.typography.font_family = job.allocator.dupe(u8, tbase.typography.font_family) catch {
+                job.deinit();
+                eng.web_job = null;
+                return;
+            };
+            job.tokens_base = tbase;
+
+            job.stage = .tokens_light;
+            job.fetchRel("tokens/light.json") catch {
+                job.deinit();
+                eng.web_job = null;
+            };
+        },
+        .tokens_light => {
+            const base = job.tokens_base orelse {
+                job.deinit();
+                eng.web_job = null;
+                return;
+            };
+            parseOptionalVariant(job, bytes, base) catch {
+                // If parsing failed, treat it as absent and continue.
+            };
+            job.stage = .tokens_dark;
+            job.fetchRel("tokens/dark.json") catch {
+                job.deinit();
+                eng.web_job = null;
+            };
+        },
+        .tokens_dark => {
+            const base = job.tokens_base orelse {
+                job.deinit();
+                eng.web_job = null;
+                return;
+            };
+            parseOptionalVariant(job, bytes, base) catch {
+                // ignore
+            };
+            job.stage = .styles;
+            job.fetchRel("styles/components.json") catch {
+                job.deinit();
+                eng.web_job = null;
+            };
+        },
+        .styles => {
+            // Styles are optional; an empty sheet is valid.
+            if (bytes.len > 0) {
+                job.styles_raw = job.allocator.dupe(u8, bytes) catch null;
+            }
+            applyWebJob(job);
+        },
+    }
+}
+
+fn webFetchError(user_ctx: usize, msg: []const u8) void {
+    const job: *WebPackJob = @ptrFromInt(user_ctx);
+    const eng = job.engine;
+    if (eng.web_job == null or eng.web_job.? != job or eng.web_generation != job.generation) {
+        job.deinit();
+        return;
+    }
+
+    // Optional resources: treat 404 as missing and continue.
+    if (looksLikeNotFound(msg)) {
+        switch (job.stage) {
+            .tokens_light => {
+                job.stage = .tokens_dark;
+                job.fetchRel("tokens/dark.json") catch {
+                    job.deinit();
+                    eng.web_job = null;
+                };
+                return;
+            },
+            .tokens_dark => {
+                job.stage = .styles;
+                job.fetchRel("styles/components.json") catch {
+                    job.deinit();
+                    eng.web_job = null;
+                };
+                return;
+            },
+            .styles => {
+                applyWebJob(job);
+                return;
+            },
+            else => {},
+        }
+    }
+
+    job.deinit();
+    eng.web_job = null;
+}
+
+fn parseOptionalVariant(job: *WebPackJob, bytes: []const u8, base_tokens: schema.TokensFile) !void {
+    // Try full file first.
+    var parsed_full = schema.parseJson(schema.TokensFile, job.allocator, bytes) catch |err| switch (err) {
+        error.MissingField => null,
+        else => return err,
+    };
+    if (parsed_full) |*p| {
+        defer p.deinit();
+        var out = p.value;
+        out.typography.font_family = try job.allocator.dupe(u8, out.typography.font_family);
+        // Heuristic: choose slot based on stage.
+        if (job.stage == .tokens_light) job.tokens_light = out else job.tokens_dark = out;
+        return;
+    }
+
+    var parsed_override = try schema.parseJson(schema.TokensOverrideFile, job.allocator, bytes);
+    defer parsed_override.deinit();
+    const merged = try schema.mergeTokens(job.allocator, base_tokens, parsed_override.value);
+    if (job.stage == .tokens_light) job.tokens_light = merged else job.tokens_dark = merged;
+}
+
+fn applyWebJob(job: *WebPackJob) void {
+    const eng = job.engine;
+    const base = job.tokens_base orelse {
+        job.deinit();
+        eng.web_job = null;
+        return;
+    };
+
+    // Build runtime themes.
+    const base_theme = buildRuntimeTheme(eng.allocator, base) catch {
+        job.deinit();
+        eng.web_job = null;
+        return;
+    };
+    errdefer freeTheme(eng.allocator, base_theme);
+
+    const light_theme = if (job.tokens_light) |tf|
+        buildRuntimeTheme(eng.allocator, tf) catch cloneTheme(eng.allocator, base_theme) catch {
+            freeTheme(eng.allocator, base_theme);
+            job.deinit();
+            eng.web_job = null;
+            return;
+        }
+    else
+        cloneTheme(eng.allocator, base_theme) catch {
+            freeTheme(eng.allocator, base_theme);
+            job.deinit();
+            eng.web_job = null;
+            return;
+        };
+    errdefer freeTheme(eng.allocator, light_theme);
+
+    const dark_theme = if (job.tokens_dark) |tf|
+        buildRuntimeTheme(eng.allocator, tf) catch cloneTheme(eng.allocator, base_theme) catch {
+            freeTheme(eng.allocator, base_theme);
+            freeTheme(eng.allocator, light_theme);
+            job.deinit();
+            eng.web_job = null;
+            return;
+        }
+    else
+        cloneTheme(eng.allocator, base_theme) catch {
+            freeTheme(eng.allocator, base_theme);
+            freeTheme(eng.allocator, light_theme);
+            job.deinit();
+            eng.web_job = null;
+            return;
+        };
+    errdefer freeTheme(eng.allocator, dark_theme);
+
+    // Style sheet (optional).
+    eng.styles.deinit();
+    eng.styles = style_sheet.StyleSheetStore.initEmpty(eng.allocator);
+    if (job.styles_raw) |raw| {
+        // Keep raw bytes for future debugging/hot-reload (owned by StyleSheetStore).
+        eng.styles.raw_json = raw;
+        const ss_light: style_sheet.StyleSheet = style_sheet.parseResolved(eng.allocator, raw, light_theme) catch .{};
+        const ss_dark: style_sheet.StyleSheet = style_sheet.parseResolved(eng.allocator, raw, dark_theme) catch .{};
+        eng.styles.resolved = .{};
+        runtime.setStyleSheets(ss_light, ss_dark);
+        job.styles_raw = null; // ownership transferred
+    } else {
+        runtime.setStyleSheets(.{}, .{});
+    }
+
+    // Swap in new themes.
+    theme_mod.setRuntimeTheme(.light, light_theme);
+    theme_mod.setRuntimeTheme(.dark, dark_theme);
+
+    if (eng.active_pack_root) |p| eng.allocator.free(p);
+    eng.active_pack_root = eng.allocator.dupe(u8, job.root) catch null;
+    runtime.setThemePackRootPath(eng.active_pack_root);
+
+    if (eng.active_pack_path) |p| eng.allocator.free(p);
+    eng.active_pack_path = eng.allocator.dupe(u8, job.root) catch null;
+
+    if (eng.runtime_light) |prev| freeTheme(eng.allocator, prev);
+    if (eng.runtime_dark) |prev| freeTheme(eng.allocator, prev);
+    eng.runtime_light = light_theme;
+    eng.runtime_dark = dark_theme;
+
+    freeTheme(eng.allocator, base_theme);
+
+    eng.web_theme_changed = true;
+    eng.web_job = null;
+    job.deinit();
+}
+
+fn freeManifestStrings(allocator: std.mem.Allocator, m: *schema.Manifest) void {
+    allocator.free(m.id);
+    allocator.free(m.name);
+    allocator.free(m.author);
+    allocator.free(m.license);
+    allocator.free(m.defaults.variant);
+    allocator.free(m.defaults.profile);
+}
+
+fn freeTokensStrings(allocator: std.mem.Allocator, t: *schema.TokensFile) void {
+    allocator.free(t.typography.font_family);
+}
 
 const ThemePackCandidates = struct {
     allocator: std.mem.Allocator,

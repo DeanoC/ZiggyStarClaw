@@ -64,6 +64,14 @@ Theme packs referenced as `themes/<id>` therefore live under that pref directory
 The app also embeds the built-in example packs and will auto-install them into `themes/zsc_clean` and
 `themes/zsc_showcase` if the user selects them and they are missing.
 
+### Web (WASM) Note (Fetch-Based Theme Packs)
+
+On the web build, theme packs are loaded by fetching files from a URL (or a path relative to the page origin).
+
+Examples:
+- `ui_theme_pack: "themes/zsc_showcase"` (served alongside `ziggystarclaw-client.html`)
+- `ui_theme_pack: "https://example.com/my_theme_pack"`
+
 Add config fields (proposal):
 
 ```json

@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const data_uri = @import("data_uri.zig");
+const wasm_fetch = @import("../platform/wasm_fetch.zig");
 const image_fetch = if (builtin.cpu.arch == .wasm32)
     struct {
         pub fn fetchHttpBytes(_: std.mem.Allocator, _: []const u8) ![]u8 {
@@ -13,8 +14,6 @@ else
 const icon = @cImport({
     @cInclude("icon_loader.h");
 });
-
-extern fn zsc_wasm_fetch(url: [*:0]const u8, ctx: usize) void;
 
 pub const ImageState = enum {
     loading,
@@ -143,11 +142,7 @@ pub fn request(url: []const u8) void {
     }
 
     if (builtin.cpu.arch == .wasm32) {
-        // WASM builds have no general filesystem access; require HTTP(S) URLs (or data URIs above).
-        if (std.mem.indexOf(u8, url, "://") == null) {
-            setFailed(cache, key, "unsupported (wasm file path)");
-            return;
-        }
+        // WASM builds have no general filesystem access; treat URLs as relative-to-origin fetches.
         startWasmFetch(cache, key);
     } else {
         startNativeFetch(cache, key);
@@ -282,13 +277,26 @@ fn startWasmFetch(cache: *ImageCache, key: []u8) void {
         return;
     };
     ctx.* = .{ .cache = cache, .url = key };
-    const url_z = cache.allocator.dupeZ(u8, key) catch {
+    wasm_fetch.fetchBytes(cache.allocator, key, @intFromPtr(ctx), wasmFetchSuccess, wasmFetchError) catch {
         cache.allocator.destroy(ctx);
-        setFailed(cache, key, "url alloc failed");
-        return;
+        setFailed(cache, key, "fetch start failed");
     };
-    defer cache.allocator.free(url_z);
-    zsc_wasm_fetch(url_z.ptr, @intFromPtr(ctx));
+}
+
+fn wasmFetchSuccess(user_ctx: usize, bytes: []const u8) void {
+    if (cache_state == null) return;
+    const ctx_ptr: *FetchContext = @ptrFromInt(user_ctx);
+    decodeImage(ctx_ptr.cache, ctx_ptr.url, bytes) catch |err| {
+        setFailed(ctx_ptr.cache, ctx_ptr.url, @errorName(err));
+    };
+    ctx_ptr.cache.allocator.destroy(ctx_ptr);
+}
+
+fn wasmFetchError(user_ctx: usize, msg: []const u8) void {
+    if (cache_state == null) return;
+    const ctx_ptr: *FetchContext = @ptrFromInt(user_ctx);
+    setFailed(ctx_ptr.cache, ctx_ptr.url, msg);
+    ctx_ptr.cache.allocator.destroy(ctx_ptr);
 }
 
 fn decodeImage(cache: *ImageCache, key: []u8, bytes: []const u8) !void {
@@ -378,20 +386,4 @@ fn removeEntry(self: *ImageCache, key: []const u8) void {
     }
 }
 
-pub export fn zsc_wasm_fetch_on_success(ctx: usize, ptr: [*]u8, len: usize) void {
-    if (cache_state == null) return;
-    const ctx_ptr: *FetchContext = @ptrFromInt(ctx);
-    const bytes = ptr[0..len];
-    decodeImage(ctx_ptr.cache, ctx_ptr.url, bytes) catch |err| {
-        setFailed(ctx_ptr.cache, ctx_ptr.url, @errorName(err));
-    };
-    ctx_ptr.cache.allocator.destroy(ctx_ptr);
-}
-
-pub export fn zsc_wasm_fetch_on_error(ctx: usize, msg_ptr: [*:0]const u8) void {
-    if (cache_state == null) return;
-    const ctx_ptr: *FetchContext = @ptrFromInt(ctx);
-    const msg = if (@intFromPtr(msg_ptr) == 0) "fetch failed" else std.mem.sliceTo(msg_ptr, 0);
-    setFailed(ctx_ptr.cache, ctx_ptr.url, msg);
-    ctx_ptr.cache.allocator.destroy(ctx_ptr);
-}
+// zsc_wasm_fetch callbacks live in `src/platform/wasm_fetch.zig` now.

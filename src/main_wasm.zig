@@ -147,13 +147,9 @@ fn initApp() !void {
         theme.apply();
     }
     theme_eng = theme_engine.ThemeEngine.init(allocator, theme_engine.PlatformCaps.defaultForTarget());
-    if (cfg.ui_theme_pack != null and !theme_eng.?.caps.supports_filesystem_read) {
-        logger.warn("Theme packs are not supported on the web build (filesystem unavailable).", .{});
-    } else {
-        theme_eng.?.applyThemePackDirFromPath(cfg.ui_theme_pack, true) catch |err| {
-            logger.warn("Failed to load theme pack: {}", .{err});
-        };
-    }
+    theme_eng.?.applyThemePackDirFromPath(cfg.ui_theme_pack, true) catch |err| {
+        logger.warn("Failed to load theme pack: {}", .{err});
+    };
     var fb_w: c_int = 0;
     var fb_h: c_int = 0;
     _ = sdl.SDL_GetWindowSizeInPixels(win, &fb_w, &fb_h);
@@ -1257,14 +1253,22 @@ fn frame() callconv(.c) void {
             theme.apply();
         }
         if (theme_eng) |*eng| {
-            if (ui_action.reload_theme_pack and cfg.ui_theme_pack != null and !eng.caps.supports_filesystem_read) {
-                logger.warn("Theme packs reload requested, but filesystem is unavailable in the web build.", .{});
-            } else if (eng.caps.supports_filesystem_read) {
-                eng.applyThemePackDirFromPath(cfg.ui_theme_pack, ui_action.reload_theme_pack) catch |err| {
-                    logger.warn("Failed to apply theme pack: {}", .{err});
-                };
-            }
+            eng.applyThemePackDirFromPath(cfg.ui_theme_pack, ui_action.reload_theme_pack) catch |err| {
+                logger.warn("Failed to apply theme pack: {}", .{err});
+            };
 
+            if (window) |w| {
+                const dpi_scale_raw: f32 = sdl.SDL_GetWindowDisplayScale(w);
+                const dpi_scale: f32 = if (dpi_scale_raw > 0.0) dpi_scale_raw else 1.0;
+                eng.resolveProfileFromConfig(fb_width, fb_height, cfg.ui_profile);
+                theme.applyTypography(dpi_scale * eng.active_profile.ui_scale);
+            }
+        }
+    }
+
+    // Web theme packs load asynchronously; if one finishes, refresh typography/profile scaling.
+    if (theme_eng) |*eng| {
+        if (eng.takeWebThemeChanged()) {
             if (window) |w| {
                 const dpi_scale_raw: f32 = sdl.SDL_GetWindowDisplayScale(w);
                 const dpi_scale: f32 = if (dpi_scale_raw > 0.0) dpi_scale_raw else 1.0;
