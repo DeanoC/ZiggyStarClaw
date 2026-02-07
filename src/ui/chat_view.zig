@@ -352,7 +352,10 @@ pub fn drawCustom(
         } else null;
 
         var layout_height: f32 = if (cached) |c| c.height else estimateMessageHeight(line_height, padding, msg.attachments);
-        var layout_text_len: usize = if (cached) |c| c.text_len else msg.content.len;
+        // IMPORTANT: doc_base is expressed in terms of the display text (see buildDisplayText),
+        // not raw msg.content. If we use msg.content.len for offscreen items, later selection/
+        // hover indices can drift whenever markdown stripping changes the display length.
+        var layout_text_len: usize = if (cached) |c| c.text_len else displayTextLen(msg.content);
 
         var bubble_bottom = content_y + layout_height;
         const near = !(bubble_bottom < ext_top or bubble_top > ext_bottom);
@@ -1198,6 +1201,56 @@ fn buildDisplayText(allocator: std.mem.Allocator, text: []const u8) DisplayText 
         return .{ .text = text, .owned = false, .sources = .empty };
     };
     return .{ .text = owned, .owned = true, .sources = sources };
+}
+
+fn displayTextLen(text: []const u8) usize {
+    // Must stay in sync with buildDisplayText() transformations.
+    var it = std.mem.splitScalar(u8, text, '\n');
+    var in_code_block = false;
+    var len: usize = 0;
+    var wrote_any = false;
+    while (it.next()) |line| {
+        const trimmed = std.mem.trimRight(u8, line, "\r");
+        if (std.mem.startsWith(u8, trimmed, "```")) {
+            in_code_block = !in_code_block;
+            continue;
+        }
+
+        var style: LineStyle = if (in_code_block) .code else .normal;
+        var line_out = trimmed;
+        var prefix_len: usize = 0;
+
+        if (!in_code_block) {
+            if (trimmed.len > 0 and trimmed[0] == '#') {
+                var hash_count: usize = 0;
+                while (hash_count < trimmed.len and trimmed[hash_count] == '#') {
+                    hash_count += 1;
+                }
+                if (hash_count < trimmed.len and trimmed[hash_count] == ' ') {
+                    style = .heading;
+                    if (hash_count + 1 <= trimmed.len) {
+                        line_out = trimmed[hash_count + 1 ..];
+                    }
+                }
+            }
+            if (style == .normal and std.mem.startsWith(u8, trimmed, "> ")) {
+                style = .quote;
+                if (trimmed.len >= 2) line_out = trimmed[2..];
+            } else if (style == .normal and (std.mem.startsWith(u8, trimmed, "- ") or std.mem.startsWith(u8, trimmed, "* ") or std.mem.startsWith(u8, trimmed, "+ "))) {
+                style = .list;
+                if (trimmed.len >= 2) line_out = trimmed[2..];
+                prefix_len = 2; // "- "
+            }
+        }
+
+        len += prefix_len;
+        len += line_out.len;
+        len += 1; // newline
+        wrote_any = true;
+    }
+
+    if (wrote_any and len > 0) len -= 1; // pop last newline
+    return len;
 }
 
 fn buildWrappedLines(
