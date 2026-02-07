@@ -33,6 +33,7 @@ pub const ViewState = struct {
     last_show_tool_output: bool = false,
     select_copy_editor: ?text_editor.TextEditor = null,
     message_cache: ?std.StringHashMap(MessageCache) = null,
+    virt: VirtualState = .{},
 };
 
 const Line = struct {
@@ -89,12 +90,68 @@ const MessageCache = struct {
     text_len: usize,
 };
 
+const VirtualItemKind = enum {
+    message,
+    stream,
+};
+
+const VirtualItem = struct {
+    kind: VirtualItemKind,
+    // For kind == .message: index into the `messages` slice this frame.
+    // For kind == .stream: ignored.
+    msg_index: usize = 0,
+    height: f32 = 0.0,
+    text_len: usize = 0,
+};
+
+const VirtualState = struct {
+    items: std.ArrayListUnmanaged(VirtualItem) = .{},
+    // Prefix sum of per-item vertical stride (height + gap) in content space.
+    // Length is always items.len + 1, with prefix_strides[0] = 0.
+    prefix_strides: std.ArrayListUnmanaged(f32) = .{},
+    // Prefix sum of per-item selectable text units (text_len + separator_len).
+    // Length is always items.len + 1, with prefix_doc_units[0] = 0.
+    prefix_doc_units: std.ArrayListUnmanaged(usize) = .{},
+
+    scanned_message_count: usize = 0,
+    scanned_last_id_hash: u64 = 0,
+
+    built_for_session_hash: u64 = 0,
+    built_for_show_tool_output: bool = false,
+    built_for_bubble_width: f32 = 0.0,
+    built_for_line_height: f32 = 0.0,
+    built_for_padding: f32 = 0.0,
+    built_for_gap: f32 = 0.0,
+
+    pub fn deinit(self: *VirtualState, allocator: std.mem.Allocator) void {
+        self.reset(allocator);
+    }
+
+    pub fn reset(self: *VirtualState, allocator: std.mem.Allocator) void {
+        self.items.deinit(allocator);
+        self.prefix_strides.deinit(allocator);
+        self.prefix_doc_units.deinit(allocator);
+        self.items = .{};
+        self.prefix_strides = .{};
+        self.prefix_doc_units = .{};
+        self.scanned_message_count = 0;
+        self.scanned_last_id_hash = 0;
+        self.built_for_session_hash = 0;
+        self.built_for_show_tool_output = false;
+        self.built_for_bubble_width = 0.0;
+        self.built_for_line_height = 0.0;
+        self.built_for_padding = 0.0;
+        self.built_for_gap = 0.0;
+    }
+};
+
 pub fn deinit(state: *ViewState, allocator: std.mem.Allocator) void {
     if (state.select_copy_editor) |*editor| {
         editor.deinit(allocator);
     }
     state.select_copy_editor = null;
     clearMessageCache(state, allocator);
+    state.virt.deinit(allocator);
 }
 
 pub fn hasSelectCopySelection(state: *const ViewState) bool {
@@ -284,9 +341,11 @@ pub fn drawCustom(
         state.follow_tail = true;
         state.scroll_y = 0.0;
         clearMessageCache(state, allocator);
+        state.virt.reset(allocator);
     }
 
-    var content_changed = false;
+    var messages_changed = false;
+    var stream_changed = false;
     const prev_message_count = state.last_message_count;
     const last_id_hash = if (messages.len > 0)
         std.hash.Wyhash.hash(0, messages[messages.len - 1].id)
@@ -294,166 +353,187 @@ pub fn drawCustom(
         0;
     const last_len = if (messages.len > 0) messages[messages.len - 1].content.len else 0;
     if (messages.len != state.last_message_count or last_id_hash != state.last_last_id_hash or last_len != state.last_last_len) {
-        content_changed = true;
+        messages_changed = true;
     }
     if (stream_text) |stream| {
         if (stream.len != state.last_stream_len) {
-            content_changed = true;
+            stream_changed = true;
         }
     } else if (state.last_stream_len != 0) {
-        content_changed = true;
+        stream_changed = true;
     }
     state.last_message_count = messages.len;
     state.last_last_id_hash = last_id_hash;
     state.last_last_len = last_len;
     state.last_stream_len = if (stream_text) |stream| stream.len else 0;
+
     const show_tool_output_changed = opts.show_tool_output != state.last_show_tool_output;
-    if (show_tool_output_changed) {
-        content_changed = true;
-    }
     state.last_show_tool_output = opts.show_tool_output;
+
+    const content_changed = messages_changed or stream_changed or show_tool_output_changed;
     if (session_changed or show_tool_output_changed) {
         state.selection_anchor = null;
         state.selection_focus = null;
         state.selecting = false;
     }
 
-    var content_y: f32 = padding;
+    const gap = t.spacing.sm;
+    const separator_len: usize = 2;
+
     const now_ms = std.time.milliTimestamp();
-    var rendered: usize = 0;
     const selection = selectionRange(state);
     var hover_doc_index: ?usize = null;
-    var doc_base: usize = 0;
-    const separator_len: usize = 2;
-    const visible_count = @as(usize, @intCast(countVisible(messages, inbox, opts.show_tool_output)));
-    const stream_count: usize = @as(usize, @intFromBool(stream_text != null));
-    const total_items: usize = visible_count + stream_count;
-    var item_index: usize = 0;
 
-    // Virtualization/clip (MVP): avoid measuring/layouting every message every frame.
-    // We only measure within an extended viewport; far-off items use cached or estimated heights.
+    ensureVirtualState(
+        allocator,
+        state,
+        session_hash,
+        messages,
+        stream_text,
+        inbox,
+        opts.show_tool_output,
+        bubble_width,
+        line_height,
+        padding,
+        gap,
+        separator_len,
+        messages_changed,
+        show_tool_output_changed,
+        stream_changed,
+    );
+
+    var content_height = virtualContentHeight(&state.virt, padding, gap);
+    const view_height = rect.size()[1];
+    var max_scroll: f32 = @max(0.0, content_height - view_height);
+
+    // If content shrank (or we just rebuilt estimates), clamp scroll before searching.
+    if (state.scroll_y < 0.0) state.scroll_y = 0.0;
+    if (state.scroll_y > max_scroll) state.scroll_y = max_scroll;
+
+    // Windowed rendering: only walk items in an extended viewport.
     const view_top = state.scroll_y;
     const view_bottom = state.scroll_y + rect.size()[1];
     const overscan = rect.size()[1];
     const ext_top = if (view_top > overscan) view_top - overscan else 0.0;
     const ext_bottom = view_bottom + overscan;
 
-    var idx: usize = 0;
-    while (idx < messages.len) : (idx += 1) {
-        const msg = messages[idx];
-        if (shouldSkipMessage(msg, inbox, opts.show_tool_output)) continue;
-        const align_right = std.mem.eql(u8, msg.role, "user");
+    const total_items: usize = state.virt.items.items.len;
+    const first = findFirstVisibleIndex(&state.virt, padding, ext_top);
+    const last_excl = findFirstTopAfterIndex(&state.virt, padding, ext_bottom);
 
-        const bubble_top = content_y;
+    var i: usize = first;
+    while (i < last_excl and i < total_items) : (i += 1) {
+        const item = state.virt.items.items[i];
+        const item_top = padding + state.virt.prefix_strides.items[i];
+        const item_bottom = item_top + item.height;
+        const visible = !(item_bottom < view_top or item_top > view_bottom);
 
-        const cached: ?MessageCache = if (state.message_cache) |*map| blk: {
-            if (map.getPtr(msg.id)) |ptr| break :blk ptr.*;
-            break :blk null;
-        } else null;
+        const doc_base = state.virt.prefix_doc_units.items[i];
 
-        var layout_height: f32 = if (cached) |c| c.height else estimateMessageHeight(line_height, padding, msg.attachments);
-        // IMPORTANT: doc_base is expressed in terms of the display text (see buildDisplayText),
-        // not raw msg.content. If we use msg.content.len for offscreen items, later selection/
-        // hover indices can drift whenever markdown stripping changes the display length.
-        var layout_text_len: usize = if (cached) |c| c.text_len else displayTextLen(msg.content);
+        switch (item.kind) {
+            .message => {
+                const msg = messages[item.msg_index];
+                const align_right = std.mem.eql(u8, msg.role, "user");
 
-        var bubble_bottom = content_y + layout_height;
-        const near = !(bubble_bottom < ext_top or bubble_top > ext_bottom);
-        if (near) {
-            const cache = ensureMessageCache(
-                allocator,
-                state,
-                ctx,
-                msg,
-                bubble_width,
-                line_height,
-                padding,
-            );
-            layout_height = cache.height;
-            layout_text_len = cache.text_len;
-            bubble_bottom = content_y + layout_height;
+                if (visible) {
+                    const layout = drawMessage(
+                        allocator,
+                        ctx,
+                        rect,
+                        msg.id,
+                        msg.role,
+                        msg.content,
+                        msg.timestamp,
+                        now_ms,
+                        msg.attachments,
+                        align_right,
+                        bubble_width,
+                        line_height,
+                        padding,
+                        item_top,
+                        state.scroll_y,
+                        doc_base,
+                        selection,
+                        mouse_pos,
+                    );
+                    if (hover_doc_index == null and layout.hover_index != null) {
+                        hover_doc_index = layout.hover_index;
+                    }
 
-            const visible = !(bubble_bottom < view_top or bubble_top > view_bottom);
-            if (visible) {
-                const layout = drawMessage(
-                    allocator,
-                    ctx,
-                    rect,
-                    msg.id,
-                    msg.role,
-                    msg.content,
-                    msg.timestamp,
-                    now_ms,
-                    msg.attachments,
-                    align_right,
-                    bubble_width,
-                    line_height,
-                    padding,
-                    content_y,
-                    state.scroll_y,
-                    doc_base,
-                    selection,
-                    mouse_pos,
-                );
-                if (hover_doc_index == null and layout.hover_index != null) {
-                    hover_doc_index = layout.hover_index;
+                    if (layout.height != item.height or layout.text_len != item.text_len) {
+                        virtualUpdateItemMetrics(state, i, layout.height, layout.text_len, gap, separator_len);
+                    }
+                    upsertMessageCacheFromLayout(allocator, state, msg, bubble_width, line_height, padding, layout.height, layout.text_len);
+                } else {
+                    const cache = ensureMessageCache(
+                        allocator,
+                        state,
+                        ctx,
+                        msg,
+                        bubble_width,
+                        line_height,
+                        padding,
+                    );
+                    if (cache.height != item.height or cache.text_len != item.text_len) {
+                        virtualUpdateItemMetrics(state, i, cache.height, cache.text_len, gap, separator_len);
+                    }
                 }
-                layout_height = layout.height;
-                layout_text_len = layout.text_len;
-                updateMessageCache(state, msg.id, cache, layout_height, layout_text_len);
-            }
+            },
+            .stream => {
+                if (stream_text) |stream| {
+                    if (visible) {
+                        const layout = drawMessage(
+                            allocator,
+                            ctx,
+                            rect,
+                            "streaming",
+                            "assistant",
+                            stream,
+                            now_ms,
+                            now_ms,
+                            null,
+                            false,
+                            bubble_width,
+                            line_height,
+                            padding,
+                            item_top,
+                            state.scroll_y,
+                            doc_base,
+                            selection,
+                            mouse_pos,
+                        );
+                        if (hover_doc_index == null and layout.hover_index != null) {
+                            hover_doc_index = layout.hover_index;
+                        }
+                        if (layout.height != item.height or layout.text_len != item.text_len) {
+                            virtualUpdateItemMetrics(state, i, layout.height, layout.text_len, gap, separator_len);
+                        }
+                    } else {
+                        const layout = measureMessageLayout(
+                            allocator,
+                            ctx,
+                            stream,
+                            null,
+                            bubble_width,
+                            line_height,
+                            padding,
+                        );
+                        if (layout.height != item.height or layout.text_len != item.text_len) {
+                            virtualUpdateItemMetrics(state, i, layout.height, layout.text_len, gap, separator_len);
+                        }
+                    }
+                }
+            },
         }
-
-        content_y += layout_height + t.spacing.sm;
-        doc_base += layout_text_len;
-        rendered += 1;
-        if (item_index + 1 < total_items) {
-            doc_base += separator_len;
-        }
-        item_index += 1;
     }
 
-    if (stream_text) |stream| {
-        const layout = drawMessage(
-            allocator,
-            ctx,
-            rect,
-            "streaming",
-            "assistant",
-            stream,
-            now_ms,
-            now_ms,
-            null,
-            false,
-            bubble_width,
-            line_height,
-            padding,
-            content_y,
-            state.scroll_y,
-            doc_base,
-            selection,
-            mouse_pos,
-        );
-        if (hover_doc_index == null and layout.hover_index != null) {
-            hover_doc_index = layout.hover_index;
-        }
-        content_y += layout.height + t.spacing.sm;
-        doc_base += layout.text_len;
-        rendered += 1;
-        item_index += 1;
-    }
-
-    if (rendered == 0) {
+    // Recompute after any height updates.
+    content_height = virtualContentHeight(&state.virt, padding, gap);
+    max_scroll = @max(0.0, content_height - view_height);
+    if (state.virt.items.items.len == 0) {
         const pos = .{ rect.min[0] + padding, rect.min[1] + padding - state.scroll_y };
         ctx.drawText("No messages yet.", pos, .{ .color = t.colors.text_secondary });
     }
-
-    if (rendered > 0) {
-        content_y -= t.spacing.sm;
-    }
-    const content_height = content_y + padding;
-    const view_height = rect.size()[1];
-    const max_scroll = @max(0.0, content_height - view_height);
 
     var user_scrolled = false;
     var scrollbar_interacted = false;
@@ -521,7 +601,7 @@ pub fn drawCustom(
     if (state.scroll_y < 0.0) state.scroll_y = 0.0;
     if (state.scroll_y > max_scroll) state.scroll_y = max_scroll;
 
-    const doc_length = doc_base;
+    const doc_length = virtualDocLength(&state.virt, separator_len);
     if (mouse_down and rect.contains(mouse_pos)) {
         state.focused = true;
     }
@@ -558,11 +638,317 @@ pub fn drawCustom(
     }
 
     const force_to_bottom = session_changed or (prev_message_count == 0 and messages.len > 0);
-    if (state.follow_tail and (content_changed or force_to_bottom)) {
+    // If pinned, keep pinned even when heights are updated lazily (e.g. cache fill / image load).
+    if (state.follow_tail and (!user_scrolled or content_changed or force_to_bottom)) {
         state.scroll_y = max_scroll;
     }
 
     drawScrollbar(ctx, rect, state.scroll_y, max_scroll);
+}
+
+fn getMessageCacheIfValid(
+    state: *const ViewState,
+    msg: types.ChatMessage,
+    bubble_width: f32,
+    line_height: f32,
+    padding: f32,
+) ?MessageCache {
+    if (state.message_cache) |*map| {
+        if (map.getPtr(msg.id)) |cache| {
+            if (cache.content_len == msg.content.len and cache.bubble_width == bubble_width and
+                cache.line_height == line_height and cache.padding == padding)
+            {
+                if (msg.attachments == null and cache.attachments_hash == 0) {
+                    return cache.*;
+                }
+                const attachments_hash = attachmentStateHash(msg.attachments);
+                if (cache.attachments_hash == attachments_hash) {
+                    return cache.*;
+                }
+            }
+        }
+    }
+    return null;
+}
+
+fn upsertMessageCacheFromLayout(
+    allocator: std.mem.Allocator,
+    state: *ViewState,
+    msg: types.ChatMessage,
+    bubble_width: f32,
+    line_height: f32,
+    padding: f32,
+    height: f32,
+    text_len: usize,
+) void {
+    const cache = MessageCache{
+        .content_len = msg.content.len,
+        .attachments_hash = attachmentStateHash(msg.attachments),
+        .bubble_width = bubble_width,
+        .line_height = line_height,
+        .padding = padding,
+        .height = height,
+        .text_len = text_len,
+    };
+    storeMessageCache(allocator, state, msg.id, cache);
+}
+
+fn ensureVirtualState(
+    allocator: std.mem.Allocator,
+    state: *ViewState,
+    session_hash: u64,
+    messages: []const types.ChatMessage,
+    stream_text: ?[]const u8,
+    inbox: ?*const ui_command_inbox.UiCommandInbox,
+    show_tool_output: bool,
+    bubble_width: f32,
+    line_height: f32,
+    padding: f32,
+    gap: f32,
+    separator_len: usize,
+    messages_changed: bool,
+    show_tool_output_changed: bool,
+    stream_changed: bool,
+) void {
+    const virt = &state.virt;
+
+    const params_changed = virt.built_for_session_hash != session_hash or
+        virt.built_for_show_tool_output != show_tool_output or
+        virt.built_for_bubble_width != bubble_width or
+        virt.built_for_line_height != line_height or
+        virt.built_for_padding != padding or
+        virt.built_for_gap != gap;
+
+    // If something changed that could reorder/filter the list, rebuild.
+    const need_rebuild = params_changed or show_tool_output_changed or virt.scanned_message_count > messages.len or
+        (messages_changed and messages.len <= virt.scanned_message_count);
+    if (need_rebuild) {
+        virt.reset(allocator);
+        virt.built_for_session_hash = session_hash;
+        virt.built_for_show_tool_output = show_tool_output;
+        virt.built_for_bubble_width = bubble_width;
+        virt.built_for_line_height = line_height;
+        virt.built_for_padding = padding;
+        virt.built_for_gap = gap;
+    } else if (messages.len > virt.scanned_message_count and virt.scanned_message_count > 0) {
+        // Detect prepends/inserts: if indices shifted, we must rebuild to keep msg_index correct.
+        const boundary_hash = std.hash.Wyhash.hash(0, messages[virt.scanned_message_count - 1].id);
+        if (boundary_hash != virt.scanned_last_id_hash) {
+            virt.reset(allocator);
+            virt.built_for_session_hash = session_hash;
+            virt.built_for_show_tool_output = show_tool_output;
+            virt.built_for_bubble_width = bubble_width;
+            virt.built_for_line_height = line_height;
+            virt.built_for_padding = padding;
+            virt.built_for_gap = gap;
+        }
+    }
+
+    // Append any newly arrived messages (steady state: O(new_messages)).
+    var idx: usize = virt.scanned_message_count;
+    while (idx < messages.len) : (idx += 1) {
+        const msg = messages[idx];
+        if (shouldSkipMessage(msg, inbox, show_tool_output)) continue;
+
+        const cached = getMessageCacheIfValid(state, msg, bubble_width, line_height, padding);
+        const height = if (cached) |c| c.height else estimateMessageHeight(line_height, padding, msg.attachments);
+        const text_len = if (cached) |c| c.text_len else displayTextLen(msg.content);
+
+        virtualAppendItem(
+            allocator,
+            virt,
+            .{ .kind = .message, .msg_index = idx, .height = height, .text_len = text_len },
+            gap,
+            separator_len,
+        );
+    }
+    virt.scanned_message_count = messages.len;
+    virt.scanned_last_id_hash = if (messages.len > 0) std.hash.Wyhash.hash(0, messages[messages.len - 1].id) else 0;
+
+    // Stream item (always last if present).
+    const has_stream = stream_text != null;
+    const has_item_stream = virt.items.items.len > 0 and virt.items.items[virt.items.items.len - 1].kind == .stream;
+
+    if (has_stream and !has_item_stream) {
+        const stream = stream_text.?;
+        virtualAppendItem(
+            allocator,
+            virt,
+            .{
+                .kind = .stream,
+                .msg_index = 0,
+                .height = estimateMessageHeight(line_height, padding, null),
+                .text_len = displayTextLen(stream),
+            },
+            gap,
+            separator_len,
+        );
+    } else if (!has_stream and has_item_stream) {
+        virtualPopItem(virt);
+    } else if (has_stream and has_item_stream and stream_changed) {
+        // Keep selectable doc length in sync even when the stream isn't visible.
+        const stream = stream_text.?;
+        const idx_stream = virt.items.items.len - 1;
+        const item = virt.items.items[idx_stream];
+        const new_text_len = displayTextLen(stream);
+        if (new_text_len != item.text_len) {
+            virtualUpdateItemMetrics(state, idx_stream, item.height, new_text_len, gap, separator_len);
+        }
+    }
+}
+
+fn virtualEnsurePrefixInit(
+    allocator: std.mem.Allocator,
+    virt: *VirtualState,
+) void {
+    if (virt.prefix_strides.items.len == 0) {
+        virt.prefix_strides.append(allocator, 0.0) catch {};
+    }
+    if (virt.prefix_doc_units.items.len == 0) {
+        virt.prefix_doc_units.append(allocator, 0) catch {};
+    }
+}
+
+fn virtualAppendItem(
+    allocator: std.mem.Allocator,
+    virt: *VirtualState,
+    item: VirtualItem,
+    gap: f32,
+    separator_len: usize,
+) void {
+    virtualEnsurePrefixInit(allocator, virt);
+    virt.items.append(allocator, item) catch return;
+
+    const prev_stride = virt.prefix_strides.items[virt.prefix_strides.items.len - 1];
+    virt.prefix_strides.append(allocator, prev_stride + item.height + gap) catch {};
+
+    const prev_doc = virt.prefix_doc_units.items[virt.prefix_doc_units.items.len - 1];
+    virt.prefix_doc_units.append(allocator, prev_doc + item.text_len + separator_len) catch {};
+}
+
+fn virtualPopItem(virt: *VirtualState) void {
+    if (virt.items.items.len == 0) return;
+    _ = virt.items.pop();
+    if (virt.prefix_strides.items.len > 0) _ = virt.prefix_strides.pop();
+    if (virt.prefix_doc_units.items.len > 0) _ = virt.prefix_doc_units.pop();
+}
+
+fn virtualRecomputePrefixesFrom(
+    virt: *VirtualState,
+    start_item_index: usize,
+    gap: f32,
+    separator_len: usize,
+) void {
+    if (start_item_index >= virt.items.items.len) return;
+    if (virt.prefix_strides.items.len != virt.items.items.len + 1) return;
+    if (virt.prefix_doc_units.items.len != virt.items.items.len + 1) return;
+
+    var stride = virt.prefix_strides.items[start_item_index];
+    var doc = virt.prefix_doc_units.items[start_item_index];
+    var i: usize = start_item_index;
+    while (i < virt.items.items.len) : (i += 1) {
+        const item = virt.items.items[i];
+        stride += item.height + gap;
+        virt.prefix_strides.items[i + 1] = stride;
+
+        doc += item.text_len + separator_len;
+        virt.prefix_doc_units.items[i + 1] = doc;
+    }
+}
+
+fn virtualUpdateItemMetrics(
+    state: *ViewState,
+    item_index: usize,
+    height: f32,
+    text_len: usize,
+    gap: f32,
+    separator_len: usize,
+) void {
+    if (item_index >= state.virt.items.items.len) return;
+    state.virt.items.items[item_index].height = height;
+    state.virt.items.items[item_index].text_len = text_len;
+    virtualRecomputePrefixesFrom(&state.virt, item_index, gap, separator_len);
+}
+
+fn virtualContentHeight(virt: *const VirtualState, padding: f32, gap: f32) f32 {
+    const n = virt.items.items.len;
+    if (n == 0) return padding * 2.0;
+    if (virt.prefix_strides.items.len < n + 1) return padding * 2.0;
+    return padding + virt.prefix_strides.items[n] - gap + padding;
+}
+
+fn virtualDocLength(virt: *const VirtualState, separator_len: usize) usize {
+    const n = virt.items.items.len;
+    if (n == 0) return 0;
+    if (virt.prefix_doc_units.items.len < n + 1) return 0;
+    const total = virt.prefix_doc_units.items[n];
+    return if (total > separator_len) total - separator_len else 0;
+}
+
+fn findFirstVisibleIndex(virt: *const VirtualState, padding: f32, y: f32) usize {
+    const n = virt.items.items.len;
+    if (n == 0) return 0;
+    if (virt.prefix_strides.items.len < n + 1) return 0;
+
+    var lo: usize = 0;
+    var hi: usize = n;
+    while (lo < hi) {
+        const mid = (lo + hi) / 2;
+        const top = padding + virt.prefix_strides.items[mid];
+        const bottom = top + virt.items.items[mid].height;
+        if (bottom < y) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+fn findFirstTopAfterIndex(virt: *const VirtualState, padding: f32, y: f32) usize {
+    const n = virt.items.items.len;
+    if (n == 0) return 0;
+    if (virt.prefix_strides.items.len < n + 1) return 0;
+
+    var lo: usize = 0;
+    var hi: usize = n;
+    while (lo < hi) {
+        const mid = (lo + hi) / 2;
+        const top = padding + virt.prefix_strides.items[mid];
+        if (top > y) {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    return lo;
+}
+
+test "chat virtualization binary search basics" {
+    const allocator = std.testing.allocator;
+    var virt: VirtualState = .{};
+    defer virt.deinit(allocator);
+
+    const gap: f32 = 10.0;
+    const sep: usize = 2;
+
+    virtualAppendItem(allocator, &virt, .{ .kind = .message, .msg_index = 0, .height = 100.0, .text_len = 5 }, gap, sep);
+    virtualAppendItem(allocator, &virt, .{ .kind = .message, .msg_index = 1, .height = 50.0, .text_len = 3 }, gap, sep);
+    virtualAppendItem(allocator, &virt, .{ .kind = .message, .msg_index = 2, .height = 80.0, .text_len = 4 }, gap, sep);
+
+    const padding: f32 = 5.0;
+
+    // y within first item
+    try std.testing.expectEqual(@as(usize, 0), findFirstVisibleIndex(&virt, padding, 0.0));
+    try std.testing.expectEqual(@as(usize, 0), findFirstVisibleIndex(&virt, padding, padding + 10.0));
+
+    // y just below first item bottom (100)
+    const y_after_first = padding + 100.0 + 0.1;
+    try std.testing.expectEqual(@as(usize, 1), findFirstVisibleIndex(&virt, padding, y_after_first));
+
+    // top-after
+    try std.testing.expectEqual(@as(usize, 0), findFirstTopAfterIndex(&virt, padding, 0.0));
+    try std.testing.expectEqual(@as(usize, 1), findFirstTopAfterIndex(&virt, padding, padding + 100.0));
 }
 
 fn endsWithIgnoreCase(value: []const u8, suffix: []const u8) bool {
