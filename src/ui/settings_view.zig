@@ -38,6 +38,8 @@ var initialized = false;
 var download_popup_opened = false;
 var scroll_y: f32 = 0.0;
 var scroll_max: f32 = 0.0;
+var config_cwd: ?[]u8 = null;
+var appearance_changed: bool = false;
 
 const BadgeVariant = enum {
     primary,
@@ -53,11 +55,13 @@ pub fn deinit(allocator: std.mem.Allocator) void {
     if (connect_host_editor) |*editor| editor.deinit(allocator);
     if (update_url_editor) |*editor| editor.deinit(allocator);
     if (theme_pack_editor) |*editor| editor.deinit(allocator);
+    if (config_cwd) |value| allocator.free(value);
     server_editor = null;
     token_editor = null;
     connect_host_editor = null;
     update_url_editor = null;
     theme_pack_editor = null;
+    config_cwd = null;
     initialized = false;
     download_popup_opened = false;
 }
@@ -125,6 +129,25 @@ pub fn draw(
         (show_insecure_tls and insecure_tls_value != cfg.insecure_tls) or
         auto_connect_value != cfg.auto_connect_on_launch;
 
+    // Appearance toggles (theme mode / quick pack buttons / profile buttons) should feel persistent.
+    // If they changed, apply + request save immediately.
+    if (appearance_changed) {
+        appearance_changed = false;
+        if (applyConfig(
+            allocator,
+            cfg,
+            server_text,
+            connect_host_text,
+            token_text,
+            update_url_text,
+            theme_pack_text,
+            profileLabel(profile_choice),
+        )) {
+            action.config_updated = true;
+        }
+        action.save = true;
+    }
+
     cursor_y += drawConnectionCard(
         &dc,
         queue,
@@ -178,6 +201,12 @@ fn syncBuffers(allocator: std.mem.Allocator, cfg: config.Config) void {
     auto_connect_value = cfg.auto_connect_on_launch;
     theme_is_light = theme.modeFromLabel(cfg.ui_theme) == .light;
     profile_choice = profileChoiceFromLabel(cfg.ui_profile);
+
+    if (config_cwd) |value| allocator.free(value);
+    config_cwd = null;
+    if (builtin.target.os.tag != .emscripten and builtin.target.os.tag != .wasi) {
+        config_cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch null;
+    }
 }
 
 fn ensureEditor(
@@ -235,7 +264,8 @@ fn drawAppearanceCard(
 
     var height = padding + line_height + t.spacing.xs + checkbox_height + t.spacing.sm;
     height += labeledInputHeight(input_height, line_height, t);
-    height += line_height + t.spacing.xs; // helper text
+    // Helper text + config path.
+    height += (line_height + t.spacing.xs) * 2.0;
     height += button_height + padding;
     const rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ width, height });
 
@@ -249,6 +279,7 @@ fn drawAppearanceCard(
         theme_is_light = use_light;
         theme.setMode(if (theme_is_light) .light else .dark);
         theme.apply();
+        appearance_changed = true;
     }
 
     var cursor_y = content_y + checkbox_height + t.spacing.sm;
@@ -266,9 +297,23 @@ fn drawAppearanceCard(
 
     dc.drawText(
         "Theme packs and profile selection apply on next app launch (for now).",
-        .{ rect.min[0] + padding, cursor_y - t.spacing.sm },
+        .{ rect.min[0] + padding, cursor_y },
         .{ .color = t.colors.text_secondary },
     );
+    cursor_y += line_height + t.spacing.xs;
+
+    if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi) {
+        dc.drawText(
+            "Config saves to: browser storage",
+            .{ rect.min[0] + padding, cursor_y },
+            .{ .color = t.colors.text_secondary },
+        );
+    } else if (config_cwd) |cwd| {
+        var buf: [512]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "Config saves to: {s}/ziggystarclaw_config.json", .{cwd}) catch "Config saves to: (unknown)";
+        dc.drawText(line, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+    }
+    cursor_y += line_height + t.spacing.xs;
 
     const button_w = buttonWidth(dc, "Use example pack", t);
     const button_rect = draw_context.Rect.fromMinSize(
@@ -278,6 +323,7 @@ fn drawAppearanceCard(
     if (widgets.button.draw(dc, button_rect, "Use example pack", queue, .{ .variant = .secondary })) {
         ensureEditor(&theme_pack_editor, allocator).setText(allocator, "docs/theme_engine/examples/zsc_clean");
         profile_choice = .desktop;
+        appearance_changed = true;
     }
 
     // Simple profile picker (stored into config, used to choose UI scaling/density/input assumptions).
@@ -299,6 +345,7 @@ fn drawAppearanceCard(
         const is_selected = profile_choice == c.id;
         if (widgets.button.draw(dc, r, c.label, queue, .{ .variant = if (is_selected) .primary else .ghost })) {
             profile_choice = c.id;
+            appearance_changed = true;
         }
         px += w + t.spacing.xs;
     }

@@ -805,6 +805,13 @@ fn run() !void {
 
     var cfg = try config.loadOrDefault(allocator, "ziggystarclaw_config.json");
     defer cfg.deinit(allocator);
+    {
+        const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch null;
+        defer if (cwd) |v| allocator.free(v);
+        const cfg_path = std.fs.cwd().realpathAlloc(allocator, "ziggystarclaw_config.json") catch null;
+        defer if (cfg_path) |v| allocator.free(v);
+        logger.info("Config file: {s} (cwd: {s})", .{ cfg_path orelse "ziggystarclaw_config.json", cwd orelse "." });
+    }
     if (cfg.ui_theme) |label| {
         theme.setMode(theme.modeFromLabel(label));
     }
@@ -1102,6 +1109,9 @@ fn run() !void {
         }
 
         if (ui_action.save_config) {
+            const cfg_path = std.fs.cwd().realpathAlloc(allocator, "ziggystarclaw_config.json") catch null;
+            defer if (cfg_path) |v| allocator.free(v);
+            logger.info("Saving config: {s}", .{cfg_path orelse "ziggystarclaw_config.json"});
             config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
                 logger.err("Failed to save config: {}", .{err});
             };
