@@ -259,7 +259,17 @@ pub const ThemeEngine = struct {
             self.clearThemePack();
             return;
         }
-        if (!force_reload) {
+        // If the user points at an embedded built-in theme under `themes/<id>`, ensure any
+        // newly-added optional files (e.g. `windows.json`) are installed even when the
+        // base pack already exists on disk.
+        var effective_force_reload = force_reload;
+        if (self.caps.supports_filesystem_write) {
+            if (try builtin_packs.installIfBuiltinThemePathAlloc(self.allocator, path)) {
+                effective_force_reload = true;
+            }
+        }
+
+        if (!effective_force_reload) {
             if (self.active_pack_path) |p| {
                 if (std.mem.eql(u8, p, path)) return;
             }
