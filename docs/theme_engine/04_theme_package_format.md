@@ -131,6 +131,13 @@ Example (sketch):
   },
   "panel": {
     "fill": "colors.surface",
+    "shadow": {
+      "color": "#00000066",
+      "blur_px": 18.0,
+      "spread_px": 2.0,
+      "offset": [0.0, 8.0],
+      "steps": 12
+    },
     "frame": {
       "image": "assets/images/panel_frame.png",
       "slices_px": [8, 8, 8, 8],

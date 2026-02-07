@@ -57,6 +57,7 @@ pub const PanelStyle = struct {
     radius: ?f32 = null,
     fill: ?Paint = null,
     border: ?Color = null,
+    shadow: EffectStyle = .{},
     frame_image: AssetPath = .{},
     frame_slices_px: ?[4]f32 = null,
     frame_tint: ?Color = null,
@@ -65,6 +66,17 @@ pub const PanelStyle = struct {
 pub const FocusRingStyle = struct {
     thickness: ?f32 = null,
     color: ?Color = null,
+    glow: EffectStyle = .{},
+};
+
+pub const EffectStyle = struct {
+    // Generic effect params used for panel shadows and focus ring glows.
+    // All fields optional so themes can partially specify.
+    color: ?Color = null,
+    blur_px: ?f32 = null,
+    spread_px: ?f32 = null,
+    offset: ?[2]f32 = null,
+    steps: ?u8 = null,
 };
 
 /// Resolved style sheet (no allocations).
@@ -167,6 +179,9 @@ fn parsePanel(out: *PanelStyle, v: std.json.Value, theme: *const theme_tokens.Th
     if (obj.get("radius")) |rv| out.radius = parseRadius(rv, theme) orelse out.radius;
     if (obj.get("fill")) |cv| out.fill = parsePaint(cv, theme) orelse out.fill;
     if (obj.get("border")) |cv| out.border = parseColor(cv, theme) orelse out.border;
+    if (obj.get("shadow")) |sv| {
+        parseEffect(&out.shadow, sv, theme);
+    }
     if (obj.get("frame")) |fv| {
         parsePanelFrame(out, fv, theme);
     }
@@ -210,6 +225,9 @@ fn parseFocusRing(out: *FocusRingStyle, v: std.json.Value, theme: *const theme_t
         if (tv == .integer) out.thickness = @floatFromInt(tv.integer);
     }
     if (obj.get("color")) |cv| out.color = parseColor(cv, theme) orelse out.color;
+    if (obj.get("glow")) |gv| {
+        parseEffect(&out.glow, gv, theme);
+    }
 }
 
 fn parseRadius(v: std.json.Value, theme: *const theme_tokens.Theme) ?f32 {
@@ -229,6 +247,34 @@ fn resolveRadiusToken(token: []const u8, theme: *const theme_tokens.Theme) ?f32 
     if (std.ascii.eqlIgnoreCase(key, "lg")) return theme.radius.lg;
     if (std.ascii.eqlIgnoreCase(key, "full")) return theme.radius.full;
     return null;
+}
+
+fn parseEffect(out: *EffectStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {
+    if (v != .object) return;
+    const obj = v.object;
+    if (obj.get("color")) |cv| out.color = parseColor(cv, theme) orelse out.color;
+    if (obj.get("blur_px")) |fv| out.blur_px = parseFloat(fv) orelse out.blur_px;
+    if (obj.get("spread_px")) |fv| out.spread_px = parseFloat(fv) orelse out.spread_px;
+    if (obj.get("offset")) |ov| out.offset = parseVec2(ov) orelse out.offset;
+    if (obj.get("steps")) |sv| {
+        if (sv == .integer and sv.integer >= 0 and sv.integer <= 255) out.steps = @intCast(sv.integer);
+    }
+}
+
+fn parseFloat(v: std.json.Value) ?f32 {
+    switch (v) {
+        .float => return @floatCast(v.float),
+        .integer => return @floatFromInt(v.integer),
+        else => return null,
+    }
+}
+
+fn parseVec2(v: std.json.Value) ?[2]f32 {
+    if (v != .array) return null;
+    if (v.array.items.len != 2) return null;
+    const a = parseFloat(v.array.items[0]) orelse return null;
+    const b = parseFloat(v.array.items[1]) orelse return null;
+    return .{ a, b };
 }
 
 fn parseColor(v: std.json.Value, theme: *const theme_tokens.Theme) ?Color {

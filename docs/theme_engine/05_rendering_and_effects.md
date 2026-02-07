@@ -96,6 +96,10 @@ If “materials” feels too big initially, implement in slices:
 - Implemented: **9-slice frames** (textured)
   - StyleSheet `panel.frame` can reference an image and `slices_px`.
   - Renderer implementation expands into 9 quads with appropriate UVs.
+- Implemented: **Soft shadows and glows** (approximation)
+  - StyleSheet `panel.shadow` and `focus_ring.glow`.
+  - Current implementation is layered fills/strokes using existing primitives (portable across native/wasm/android).
+  - Future optimization: collapse into a dedicated material/shader to reduce command count and improve quality.
 
 ## Performance Notes
 

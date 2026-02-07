@@ -783,6 +783,30 @@ fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: [
     const line_height = dc.lineHeight();
 
     const radius = ss.panel.radius orelse t.radius.md;
+    // Optional soft shadow behind panels (implemented as layered fills; later can become a material).
+    if (ss.panel.shadow.color) |shadow_color| {
+        const blur = ss.panel.shadow.blur_px orelse 12.0;
+        const spread = ss.panel.shadow.spread_px orelse 0.0;
+        const offset = ss.panel.shadow.offset orelse .{ 0.0, 6.0 };
+        const steps_u8 = ss.panel.shadow.steps orelse 10;
+        const steps: u32 = @max(1, @min(@as(u32, steps_u8), 24));
+
+        var i: u32 = 0;
+        while (i < steps) : (i += 1) {
+            const t01: f32 = @as(f32, @floatFromInt(i + 1)) / @as(f32, @floatFromInt(steps));
+            const grow = spread + blur * t01;
+            const rr = draw_context.Rect{
+                .min = .{ rect.min[0] - grow + offset[0], rect.min[1] - grow + offset[1] },
+                .max = .{ rect.max[0] + grow + offset[0], rect.max[1] + grow + offset[1] },
+            };
+            var c = shadow_color;
+            // Outer layers are more transparent.
+            const falloff = (1.0 - t01);
+            c[3] *= (falloff * falloff) * 0.65;
+            if (c[3] <= 0.001) continue;
+            dc.drawRoundedRect(rr, radius + grow, .{ .fill = c });
+        }
+    }
     const fill = ss.panel.fill orelse style_sheet.Paint{ .solid = t.colors.surface };
     const border = ss.panel.border orelse t.colors.border;
     switch (fill) {
