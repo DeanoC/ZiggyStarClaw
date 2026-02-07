@@ -1223,12 +1223,6 @@ pub fn main() !void {
             }
         }
 
-        var fb_w: c_int = 0;
-        var fb_h: c_int = 0;
-        _ = sdl.SDL_GetWindowSizeInPixels(window, &fb_w, &fb_h);
-        const fb_width: u32 = if (fb_w > 0) @intCast(fb_w) else 1;
-        const fb_height: u32 = if (fb_h > 0) @intCast(fb_h) else 1;
-
         var drained = message_queue.drain();
         defer {
             for (drained.items) |payload| {
@@ -1312,6 +1306,15 @@ pub fn main() !void {
                 const w_fb_width: u32 = if (w_fb_w > 0) @intCast(w_fb_w) else 1;
                 const w_fb_height: u32 = if (w_fb_h > 0) @intCast(w_fb_h) else 1;
 
+                // Multi-window: each window can have a different framebuffer size (and potentially DPI),
+                // so resolve profile and typography scale per window before we record its UI commands.
+                // This makes "auto" profile selection (desktop/phone/tablet/fullscreen) window-local,
+                // and keeps hit-target sizing / hover rules correct per window.
+                const w_dpi_scale_raw: f32 = sdl.SDL_GetWindowDisplayScale(w.window);
+                const w_dpi_scale: f32 = if (w_dpi_scale_raw > 0.0) w_dpi_scale_raw else 1.0;
+                theme_eng.resolveProfileFromConfig(w_fb_width, w_fb_height, cfg.ui_profile);
+                theme.applyTypography(w_dpi_scale * theme_eng.active_profile.ui_scale);
+
                 w.queue.clear(allocator);
                 sdl_input_backend.setCollectWindow(w.window);
                 input_router.setExternalQueue(&w.queue);
@@ -1364,8 +1367,7 @@ pub fn main() !void {
                     logger.warn("Failed to apply theme pack: {}", .{err});
                 }
             };
-            theme_eng.resolveProfileFromConfig(fb_width, fb_height, cfg.ui_profile);
-            theme.applyTypography(dpi_scale * theme_eng.active_profile.ui_scale);
+            // Profile/typography are resolved per-window during UI draw.
         }
 
         if (ui_action.save_config) {
