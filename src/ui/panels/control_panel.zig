@@ -12,6 +12,9 @@ const theme = @import("../theme.zig");
 const colors = @import("../theme/colors.zig");
 const input_router = @import("../input/input_router.zig");
 const input_state = @import("../input/input_state.zig");
+const theme_runtime = @import("../theme_engine/runtime.zig");
+const nav_router = @import("../input/nav_router.zig");
+const focus_ring = @import("../widgets/focus_ring.zig");
 const widgets = @import("../widgets/widgets.zig");
 
 pub const ControlPanelAction = struct {
@@ -246,7 +249,13 @@ fn drawTab(
     queue: *input_state.InputQueue,
 ) bool {
     const t = dc.theme;
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const nav_state = nav_router.get();
+    if (nav_state) |nav| nav.registerItem(dc.allocator, rect);
+    const nav_active = if (nav_state) |nav| nav.isActive() else false;
+    const focused = if (nav_state) |nav| nav.isFocusedRect(rect, queue) else false;
+
+    const allow_hover = theme_runtime.getProfile().allow_hover_states;
+    const hovered = rect.contains(queue.state.mouse_pos) and (allow_hover or nav_active);
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
@@ -277,6 +286,10 @@ fn drawTab(
 
     if (active) {
         dc.drawLine(.{ rect.min[0], rect.max[1] }, .{ rect.max[0], rect.max[1] }, 2.0, t.colors.primary);
+    }
+
+    if (focused) {
+        focus_ring.draw(dc, rect, t.radius.lg);
     }
 
     return clicked;

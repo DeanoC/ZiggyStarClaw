@@ -19,6 +19,8 @@ const ui_systems = @import("ui_systems.zig");
 const input_router = @import("input/input_router.zig");
 const input_state = @import("input/input_state.zig");
 const cursor = @import("input/cursor.zig");
+const nav = @import("input/nav.zig");
+const nav_router = @import("input/nav_router.zig");
 const colors = @import("theme/colors.zig");
 const agent_registry = @import("../client/agent_registry.zig");
 const session_keys = @import("../client/session_keys.zig");
@@ -44,6 +46,22 @@ pub const SendMessageAction = struct {
 pub const WindowUiState = struct {
     custom_split_dragging: bool = false,
     custom_window_menu_open: bool = false,
+    nav: nav.NavState = .{},
+
+    fullscreen_page: FullscreenPage = .home,
+
+    pub fn deinit(self: *WindowUiState, allocator: std.mem.Allocator) void {
+        self.nav.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
+const FullscreenPage = enum {
+    home,
+    agents,
+    settings,
+    chat,
+    showcase,
 };
 
 pub const UiAction = struct {
@@ -408,6 +426,12 @@ pub fn drawWindow(
         const extra_bottom: f32 = if (builtin.abi.isAndroid()) 24.0 else 0.0;
         const height = @max(1.0, display_h - top - bottom - extra_bottom);
         const host_rect = draw_context.Rect.fromMinSize(.{ left, top }, .{ width, height });
+
+        nav_router.set(&win_state.nav);
+        defer nav_router.set(null);
+        win_state.nav.beginFrame(allocator, host_rect, queue);
+        defer win_state.nav.endFrame(allocator);
+
         drawWorkspaceHost(
             allocator,
             ctx,
@@ -457,6 +481,27 @@ fn drawWorkspaceHost(
     defer dc.deinit();
 
     dc.drawRect(host_rect, .{ .fill = t.colors.background });
+
+    if (theme_runtime.getProfile().id == .fullscreen) {
+        drawFullscreenHost(
+            allocator,
+            ctx,
+            cfg,
+            registry,
+            is_connected,
+            app_version,
+            manager,
+            inbox,
+            queue,
+            &dc,
+            host_rect,
+            action,
+            pending_attachment,
+            win_state,
+        );
+        ui_systems.endFrame(&dc);
+        return;
+    }
 
     const line_height = dc.lineHeight();
     const menu_height = customMenuHeight(line_height, t);
@@ -621,6 +666,166 @@ fn drawWorkspaceHost(
     );
 
     ui_systems.endFrame(&dc);
+}
+
+fn ensureOnlyPanelKind(manager: *panel_manager.PanelManager, kind: workspace.PanelKind) void {
+    // Open the requested one, close everything else.
+    manager.ensurePanel(kind);
+    var idx: usize = 0;
+    while (idx < manager.workspace.panels.items.len) {
+        const panel = manager.workspace.panels.items[idx];
+        if (panel.kind == kind) {
+            idx += 1;
+            continue;
+        }
+        _ = manager.closePanel(panel.id);
+        // closePanel compacts the list.
+    }
+
+    // Ensure focus follows.
+    for (manager.workspace.panels.items) |p| {
+        if (p.kind == kind) {
+            manager.focusPanel(p.id);
+            break;
+        }
+    }
+}
+
+fn drawFullscreenHost(
+    allocator: std.mem.Allocator,
+    ctx: *state.ClientContext,
+    cfg: *config.Config,
+    registry: *agent_registry.AgentRegistry,
+    is_connected: bool,
+    app_version: []const u8,
+    manager: *panel_manager.PanelManager,
+    inbox: *ui_command_inbox.UiCommandInbox,
+    queue: *input_state.InputQueue,
+    dc: *draw_context.DrawContext,
+    host_rect: draw_context.Rect,
+    action: *UiAction,
+    pending_attachment: *?sessions_panel.AttachmentOpen,
+    win_state: *WindowUiState,
+) void {
+    const t = dc.theme;
+
+    // Controller "back" returns to the home cards.
+    if (win_state.nav.actions.back and win_state.fullscreen_page != .home) {
+        win_state.fullscreen_page = .home;
+    }
+
+    const line_h = dc.lineHeight();
+    const header_h = line_h + t.spacing.md * 2.0;
+    const status_h = statusBarHeight(line_h, t);
+    const header_rect = draw_context.Rect.fromMinSize(host_rect.min, .{ host_rect.size()[0], header_h });
+    const status_rect = draw_context.Rect.fromMinSize(
+        .{ host_rect.min[0], host_rect.max[1] - status_h },
+        .{ host_rect.size()[0], status_h },
+    );
+    const content_h = @max(1.0, host_rect.size()[1] - header_h - status_h);
+    const content_rect = draw_context.Rect.fromMinSize(.{ host_rect.min[0], header_rect.max[1] }, .{ host_rect.size()[0], content_h });
+
+    // Header chrome.
+    dc.drawRect(header_rect, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+    dc.drawText("ZiggyStarClaw", .{ header_rect.min[0] + t.spacing.lg, header_rect.min[1] + t.spacing.md }, .{ .color = t.colors.text_primary });
+
+    if (win_state.fullscreen_page != .home) {
+        const back_label = "Back";
+        const back_w = dc.measureText(back_label, 0.0)[0] + t.spacing.lg * 2.0;
+        const back_rect = draw_context.Rect.fromMinSize(
+            .{ header_rect.max[0] - back_w - t.spacing.lg, header_rect.min[1] + t.spacing.sm },
+            .{ back_w, header_rect.size()[1] - t.spacing.sm * 2.0 },
+        );
+        if (widgets.button.draw(dc, back_rect, back_label, queue, .{ .variant = .secondary })) {
+            win_state.fullscreen_page = .home;
+        }
+    }
+
+    // Main content.
+    switch (win_state.fullscreen_page) {
+        .home => {
+            drawFullscreenHome(dc, content_rect, queue, win_state, manager);
+        },
+        .agents => {
+            ensureOnlyPanelKind(manager, .Control);
+            if (selectPanelForKind(manager, .Control)) |panel| {
+                panel.data.Control.active_tab = .Agents;
+            }
+            if (selectPanelForKind(manager, .Control)) |panel| {
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_rect, inbox, manager, action, pending_attachment);
+            }
+        },
+        .settings => {
+            ensureOnlyPanelKind(manager, .Control);
+            if (selectPanelForKind(manager, .Control)) |panel| {
+                panel.data.Control.active_tab = .Settings;
+            }
+            if (selectPanelForKind(manager, .Control)) |panel| {
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_rect, inbox, manager, action, pending_attachment);
+            }
+        },
+        .chat => {
+            ensureOnlyPanelKind(manager, .Chat);
+            if (selectPanelForKind(manager, .Chat)) |panel| {
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_rect, inbox, manager, action, pending_attachment);
+            }
+        },
+        .showcase => {
+            ensureOnlyPanelKind(manager, .Showcase);
+            if (selectPanelForKind(manager, .Showcase)) |panel| {
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_rect, inbox, manager, action, pending_attachment);
+            }
+        },
+    }
+
+    status_bar.drawCustom(
+        dc,
+        status_rect,
+        ctx.state,
+        is_connected,
+        null,
+        null,
+        0,
+        ctx.last_error,
+    );
+}
+
+fn drawFullscreenHome(
+    dc: *draw_context.DrawContext,
+    rect: draw_context.Rect,
+    queue: *input_state.InputQueue,
+    win_state: *WindowUiState,
+    manager: *panel_manager.PanelManager,
+) void {
+    _ = manager;
+    const t = dc.theme;
+    const gap = t.spacing.lg;
+    const cols: usize = 2;
+    const rows: usize = 2;
+    const card_w = @max(1.0, (rect.size()[0] - gap * (@as(f32, @floatFromInt(cols - 1)))) / @as(f32, @floatFromInt(cols)));
+    const card_h = @max(1.0, (rect.size()[1] - gap * (@as(f32, @floatFromInt(rows - 1)))) / @as(f32, @floatFromInt(rows)));
+
+    const start_x = rect.min[0] + (rect.size()[0] - (card_w * @as(f32, @floatFromInt(cols)) + gap * @as(f32, @floatFromInt(cols - 1)))) * 0.5;
+    const start_y = rect.min[1] + (rect.size()[1] - (card_h * @as(f32, @floatFromInt(rows)) + gap * @as(f32, @floatFromInt(rows - 1)))) * 0.5;
+
+    const cards = [_]struct { label: []const u8, page: FullscreenPage }{
+        .{ .label = "Agents", .page = .agents },
+        .{ .label = "Settings", .page = .settings },
+        .{ .label = "Chat", .page = .chat },
+        .{ .label = "Showcase", .page = .showcase },
+    };
+
+    for (cards, 0..) |card, idx| {
+        const col: f32 = @floatFromInt(idx % cols);
+        const row: f32 = @floatFromInt(idx / cols);
+        const card_rect = draw_context.Rect.fromMinSize(
+            .{ start_x + col * (card_w + gap), start_y + row * (card_h + gap) },
+            .{ card_w, card_h },
+        );
+        if (widgets.button.draw(dc, card_rect, card.label, queue, .{ .variant = .primary, .radius = t.radius.lg })) {
+            win_state.fullscreen_page = card.page;
+        }
+    }
 }
 
 fn drawPanelContents(

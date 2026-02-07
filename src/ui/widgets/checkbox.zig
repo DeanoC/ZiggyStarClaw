@@ -3,6 +3,8 @@ const input_state = @import("../input/input_state.zig");
 const colors = @import("../theme/colors.zig");
 const theme_runtime = @import("../theme_engine/runtime.zig");
 const style_sheet = @import("../theme_engine/style_sheet.zig");
+const nav_router = @import("../input/nav_router.zig");
+const focus_ring = @import("focus_ring.zig");
 
 fn blendPaint(paint: anytype, over: colors.Color, factor: f32) @TypeOf(paint) {
     return switch (paint) {
@@ -42,7 +44,12 @@ pub fn draw(
 ) bool {
     const t = ctx.theme;
     const profile = theme_runtime.getProfile();
-    const hovered = profile.allow_hover_states and rect.contains(queue.state.mouse_pos);
+    const nav_state = nav_router.get();
+    if (nav_state) |nav| nav.registerItem(ctx.allocator, rect);
+    const nav_active = if (nav_state) |nav| nav.isActive() else false;
+    const focused = if (nav_state) |nav| nav.isFocusedRect(rect, queue) else false;
+
+    const hovered = (profile.allow_hover_states or nav_active) and rect.contains(queue.state.mouse_pos);
     const ss = theme_runtime.getStyleSheet();
     const cs = ss.checkbox;
     var clicked = false;
@@ -134,5 +141,11 @@ pub fn draw(
         value.* = !value.*;
         return true;
     }
+
+    if (focused and !opts.disabled) {
+        const ring_radius = cs.radius orelse t.radius.sm;
+        focus_ring.draw(ctx, rect, ring_radius);
+    }
+
     return false;
 }

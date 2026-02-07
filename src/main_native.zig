@@ -60,6 +60,7 @@ const UiWindow = struct {
 
 fn destroyUiWindow(allocator: std.mem.Allocator, w: *UiWindow) void {
     w.queue.deinit(allocator);
+    w.ui_state.deinit(allocator);
     w.swapchain.deinit();
     w.manager.deinit();
     sdl.SDL_DestroyWindow(w.window);

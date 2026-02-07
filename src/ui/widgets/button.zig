@@ -4,6 +4,8 @@ const theme = @import("../theme.zig");
 const colors = @import("../theme/colors.zig");
 const theme_runtime = @import("../theme_engine/runtime.zig");
 const style_sheet = @import("../theme_engine/style_sheet.zig");
+const nav_router = @import("../input/nav_router.zig");
+const focus_ring = @import("focus_ring.zig");
 
 fn blendPaint(paint: anytype, over: colors.Color, factor: f32) @TypeOf(paint) {
     return switch (paint) {
@@ -49,10 +51,15 @@ pub fn draw(
     opts: Options,
 ) bool {
     const t = ctx.theme;
+    const nav_state = nav_router.get();
+    if (nav_state) |nav| nav.registerItem(ctx.allocator, rect);
+    const nav_active = if (nav_state) |nav| nav.isActive() else false;
+    const focused = if (nav_state) |nav| nav.isFocusedRect(rect, queue) else false;
+
     const profile = theme_runtime.getProfile();
     const allow_hover = profile.allow_hover_states;
     const inside = rect.contains(queue.state.mouse_pos);
-    const hovered = allow_hover and inside;
+    const hovered = (allow_hover or nav_active) and inside;
     const active = inside and queue.state.mouse_down_left;
 
     const ss = theme_runtime.getStyleSheet();
@@ -147,6 +154,11 @@ pub fn draw(
         rect.min[1] + (rect.size()[1] - text_h) * 0.5,
     };
     ctx.drawText(label, pos, .{ .color = text_color });
+
+    if (focused and !opts.disabled) {
+        const ring_radius = opts.radius orelse variant_style.radius orelse t.radius.sm;
+        focus_ring.draw(ctx, rect, ring_radius);
+    }
 
     return clicked and !opts.disabled;
 }

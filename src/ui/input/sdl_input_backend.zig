@@ -97,15 +97,31 @@ pub fn collect(allocator: std.mem.Allocator, queue: *input_state.InputQueue) voi
     }
 
     // Multi-window mode: only consume events for `collect_window_id`, leaving other windows' events pending.
+    // Some events (e.g. gamepad) are global, so route them to the window that has keyboard focus.
+    const target_global_window_id: u32 = if (kb_id != 0) kb_id else collect_window_id;
     var write_idx: usize = 0;
     for (pending_events.items) |event| {
-        const evt_win = eventWindowId(event) orelse continue; // drop unknown/unhandled events
-        if (evt_win == collect_window_id) {
-            handleEvent(allocator, queue, event, scale);
-        } else {
-            pending_events.items[write_idx] = event;
-            write_idx += 1;
+        if (eventWindowId(event)) |evt_win| {
+            if (evt_win == collect_window_id) {
+                handleEvent(allocator, queue, event, scale);
+            } else {
+                pending_events.items[write_idx] = event;
+                write_idx += 1;
+            }
+            continue;
         }
+
+        if (isGlobalEvent(event)) {
+            if (collect_window_id == target_global_window_id) {
+                handleEvent(allocator, queue, event, scale);
+            } else {
+                pending_events.items[write_idx] = event;
+                write_idx += 1;
+            }
+            continue;
+        }
+
+        // drop unknown/unhandled events
     }
     pending_events.shrinkRetainingCapacity(write_idx);
 }
@@ -179,6 +195,25 @@ fn handleEvent(allocator: std.mem.Allocator, queue: *input_state.InputQueue, eve
         sdl.SDL_EVENT_WINDOW_FOCUS_LOST => {
             queue.push(allocator, .focus_lost);
         },
+        sdl.SDL_EVENT_GAMEPAD_BUTTON_DOWN => {
+            if (mapGamepadButton(event.gbutton.button)) |button| {
+                const which: u32 = @intCast(event.gbutton.which);
+                queue.push(allocator, .{ .gamepad_button_down = .{ .which = which, .button = button } });
+            }
+        },
+        sdl.SDL_EVENT_GAMEPAD_BUTTON_UP => {
+            if (mapGamepadButton(event.gbutton.button)) |button| {
+                const which: u32 = @intCast(event.gbutton.which);
+                queue.push(allocator, .{ .gamepad_button_up = .{ .which = which, .button = button } });
+            }
+        },
+        sdl.SDL_EVENT_GAMEPAD_AXIS_MOTION => {
+            if (mapGamepadAxis(event.gaxis.axis)) |axis| {
+                const which: u32 = @intCast(event.gaxis.which);
+                const value: i16 = @intCast(event.gaxis.value);
+                queue.push(allocator, .{ .gamepad_axis = .{ .which = which, .axis = axis, .value = value } });
+            }
+        },
         else => {},
     }
 }
@@ -192,6 +227,20 @@ fn eventWindowId(event: sdl.SDL_Event) ?u32 {
         sdl.SDL_EVENT_TEXT_INPUT => event.text.windowID,
         sdl.SDL_EVENT_WINDOW_FOCUS_GAINED, sdl.SDL_EVENT_WINDOW_FOCUS_LOST => event.window.windowID,
         else => null,
+    };
+}
+
+fn isGlobalEvent(event: sdl.SDL_Event) bool {
+    return switch (event.type) {
+        sdl.SDL_EVENT_GAMEPAD_AXIS_MOTION,
+        sdl.SDL_EVENT_GAMEPAD_BUTTON_DOWN,
+        sdl.SDL_EVENT_GAMEPAD_BUTTON_UP,
+        sdl.SDL_EVENT_GAMEPAD_ADDED,
+        sdl.SDL_EVENT_GAMEPAD_REMOVED,
+        sdl.SDL_EVENT_GAMEPAD_REMAPPED,
+        sdl.SDL_EVENT_GAMEPAD_UPDATE_COMPLETE,
+        => true,
+        else => false,
     };
 }
 
@@ -259,6 +308,43 @@ fn mapKey(scancode: sdl.SDL_Scancode) ?input_events.Key {
         sdl.SDL_SCANCODE_X => .x,
         sdl.SDL_SCANCODE_Z => .z,
         sdl.SDL_SCANCODE_Y => .y,
+        else => null,
+    };
+}
+
+fn mapGamepadButton(button: u8) ?input_events.GamepadButton {
+    const b: c_int = @intCast(button);
+    return switch (b) {
+        sdl.SDL_GAMEPAD_BUTTON_SOUTH => .south,
+        sdl.SDL_GAMEPAD_BUTTON_EAST => .east,
+        sdl.SDL_GAMEPAD_BUTTON_WEST => .west,
+        sdl.SDL_GAMEPAD_BUTTON_NORTH => .north,
+        sdl.SDL_GAMEPAD_BUTTON_BACK => .back,
+        sdl.SDL_GAMEPAD_BUTTON_GUIDE => .guide,
+        sdl.SDL_GAMEPAD_BUTTON_START => .start,
+        sdl.SDL_GAMEPAD_BUTTON_LEFT_STICK => .left_stick,
+        sdl.SDL_GAMEPAD_BUTTON_RIGHT_STICK => .right_stick,
+        sdl.SDL_GAMEPAD_BUTTON_LEFT_SHOULDER => .left_shoulder,
+        sdl.SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER => .right_shoulder,
+        sdl.SDL_GAMEPAD_BUTTON_DPAD_UP => .dpad_up,
+        sdl.SDL_GAMEPAD_BUTTON_DPAD_DOWN => .dpad_down,
+        sdl.SDL_GAMEPAD_BUTTON_DPAD_LEFT => .dpad_left,
+        sdl.SDL_GAMEPAD_BUTTON_DPAD_RIGHT => .dpad_right,
+        sdl.SDL_GAMEPAD_BUTTON_MISC1 => .misc1,
+        sdl.SDL_GAMEPAD_BUTTON_TOUCHPAD => .touchpad,
+        else => null,
+    };
+}
+
+fn mapGamepadAxis(axis: u8) ?input_events.GamepadAxis {
+    const a: c_int = @intCast(axis);
+    return switch (a) {
+        sdl.SDL_GAMEPAD_AXIS_LEFTX => .left_x,
+        sdl.SDL_GAMEPAD_AXIS_LEFTY => .left_y,
+        sdl.SDL_GAMEPAD_AXIS_RIGHTX => .right_x,
+        sdl.SDL_GAMEPAD_AXIS_RIGHTY => .right_y,
+        sdl.SDL_GAMEPAD_AXIS_LEFT_TRIGGER => .left_trigger,
+        sdl.SDL_GAMEPAD_AXIS_RIGHT_TRIGGER => .right_trigger,
         else => null,
     };
 }

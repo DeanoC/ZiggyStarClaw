@@ -11,13 +11,22 @@ Supporting the four profiles requires an explicit input model:
 
 - Input routing: `src/ui/input/input_router.zig`
 - SDL backend: `src/ui/input/sdl_input_backend.zig`
+- Controller navigation: `src/ui/input/nav.zig` + `src/ui/input/nav_router.zig`
 
-The current SDL input backend primarily collects:
+The SDL input backend collects:
 - mouse motion/buttons/wheel
 - keyboard
 - text input
+- gamepad (buttons + left stick axis)
 
-SDL is initialized with `SDL_INIT_GAMEPAD`, but the input layer does not yet push gamepad events into the UI queue.
+In multi-window mode, gamepad events are treated as **global** and routed to the window that currently has keyboard focus (fallback: the first window that collects input that frame).
+
+Controller navigation currently works by:
+- collecting a per-frame list of focusable rectangles (buttons, checkboxes, control-panel tabs, etc.)
+- using d-pad / left stick to move selection between those rectangles using a simple geometric nearest-in-direction heuristic
+- pinning a virtual cursor to the focused item's center
+- generating synthetic left-clicks on `A` (South face button) so existing widgets keep working without special controller code paths
+- drawing a visible focus indicator via the theme focus ring (thickness/color/glow are theme-controlled)
 
 ## Proposed Additions
 
@@ -49,11 +58,13 @@ Minimum for phone/tablet:
 ### 3. Controller navigation
 Fullscreen requires a navigation system that does not depend on pointer hover.
 
-Core design:
-
-- Each interactive widget can be assigned a stable **FocusId**.
-- The UI maintains a **focus graph** each frame: nodes (focusables) with rectangles.
+Current design:
+- Focusables are registered by rect (no stable IDs yet).
 - Navigation chooses the nearest focusable in the requested direction.
+- Activation is implemented via synthetic pointer clicks for compatibility with existing widgets.
+
+Future improvement:
+- Add stable focus IDs so focus survives layout changes and scrolling more robustly.
 
 Pseudo-types:
 
@@ -61,6 +72,7 @@ Pseudo-types:
 pub const FocusId = u64;
 
 pub const FocusNode = struct {
+    // TODO: stable id for better persistence across frames/layout changes.
     id: FocusId,
     rect: Rect,
     enabled: bool,
@@ -105,4 +117,3 @@ The focus ring should be drawn using the material system (glow is a material).
 - Always provide a visible focus indicator when keyboard/controller is active.
 - Ensure state visuals do not rely on hover alone.
 - Keep hit targets consistent across profiles.
-

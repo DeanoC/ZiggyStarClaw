@@ -1,0 +1,250 @@
+const std = @import("std");
+
+const draw_context = @import("../draw_context.zig");
+const input_events = @import("input_events.zig");
+const input_state = @import("input_state.zig");
+const theme_runtime = @import("../theme_engine/runtime.zig");
+
+pub const NavItem = struct {
+    rect: draw_context.Rect,
+
+    pub fn center(self: NavItem) [2]f32 {
+        return .{
+            (self.rect.min[0] + self.rect.max[0]) * 0.5,
+            (self.rect.min[1] + self.rect.max[1]) * 0.5,
+        };
+    }
+};
+
+pub const MoveDir = enum {
+    left,
+    right,
+    up,
+    down,
+};
+
+pub const FrameActions = struct {
+    activate: bool = false,
+    back: bool = false,
+    menu: bool = false,
+};
+
+pub const NavState = struct {
+    // When true, we override mouse position and generate synthetic clicks.
+    active: bool = false,
+
+    // Selection state based on the previous frame's registered items.
+    focused_idx: usize = 0,
+    cursor_pos: [2]f32 = .{ 0.0, 0.0 },
+
+    // Simple time-based repeat for stick/dpad.
+    last_move_ms: i64 = 0,
+    last_axis_ms: i64 = 0,
+    axis_held_dir: ?MoveDir = null,
+
+    // Items are collected during drawing (curr) and used next frame (prev).
+    prev_items: std.ArrayList(NavItem) = .empty,
+    curr_items: std.ArrayList(NavItem) = .empty,
+
+    // Latched actions for the current frame (consumed by the caller).
+    actions: FrameActions = .{},
+
+    pub fn deinit(self: *NavState, allocator: std.mem.Allocator) void {
+        self.prev_items.deinit(allocator);
+        self.curr_items.deinit(allocator);
+        self.* = undefined;
+    }
+
+    pub fn isActive(self: *const NavState) bool {
+        return self.active;
+    }
+
+    pub fn beginFrame(self: *NavState, allocator: std.mem.Allocator, viewport: draw_context.Rect, queue: *input_state.InputQueue) void {
+        // Default: off unless the profile is explicitly controller-driven.
+        const p = theme_runtime.getProfile();
+        self.active = (p.modality == .controller);
+
+        // If the user uses the mouse/touch this frame, don't fight them.
+        for (queue.events.items) |evt| {
+            switch (evt) {
+                .mouse_move, .mouse_down, .mouse_up, .mouse_wheel => {
+                    if (p.modality != .controller) self.active = false;
+                },
+                else => {},
+            }
+        }
+
+        self.actions = .{};
+        self.handleInputs(queue);
+
+        // Apply current selection to the input queue before widgets look at it.
+        if (self.active) {
+            if (self.prev_items.items.len == 0) {
+                self.cursor_pos = .{
+                    (viewport.min[0] + viewport.max[0]) * 0.5,
+                    (viewport.min[1] + viewport.max[1]) * 0.5,
+                };
+            } else {
+                self.focused_idx = @min(self.focused_idx, self.prev_items.items.len - 1);
+                self.cursor_pos = self.prev_items.items[self.focused_idx].center();
+            }
+
+            queue.state.mouse_pos = self.cursor_pos;
+
+            if (self.actions.activate) {
+                // Widgets generally look for a left mouse up inside rect to count as click.
+                queue.push(allocator, .{ .mouse_down = .{ .button = .left, .pos = self.cursor_pos } });
+                queue.push(allocator, .{ .mouse_up = .{ .button = .left, .pos = self.cursor_pos } });
+            }
+        }
+
+        self.curr_items.clearRetainingCapacity();
+    }
+
+    pub fn endFrame(self: *NavState, allocator: std.mem.Allocator) void {
+        _ = allocator;
+        // Swap item lists for next frame.
+        std.mem.swap(@TypeOf(self.prev_items), &self.prev_items, &self.curr_items);
+    }
+
+    pub fn registerItem(self: *NavState, allocator: std.mem.Allocator, rect: draw_context.Rect) void {
+        _ = self.curr_items.append(allocator, .{ .rect = rect }) catch {};
+    }
+
+    pub fn isFocusedRect(self: *const NavState, rect: draw_context.Rect, queue: *const input_state.InputQueue) bool {
+        if (!self.active) return false;
+        // Cursor is pinned to the focused item's center, so containment is a cheap proxy.
+        return rect.contains(queue.state.mouse_pos);
+    }
+
+    fn handleInputs(self: *NavState, queue: *input_state.InputQueue) void {
+        const now_ms = std.time.milliTimestamp();
+
+        for (queue.events.items) |evt| {
+            switch (evt) {
+                .gamepad_button_down => |gb| {
+                    _ = gb;
+                    // Any gamepad activity implies nav intent.
+                    self.active = true;
+                },
+                .gamepad_axis => |ga| {
+                    _ = ga;
+                    self.active = true;
+                },
+                else => {},
+            }
+        }
+
+        // Digital: D-pad and common buttons.
+        for (queue.events.items) |evt| {
+            switch (evt) {
+                .gamepad_button_down => |gb| switch (gb.button) {
+                    .dpad_left => self.move(.left, now_ms),
+                    .dpad_right => self.move(.right, now_ms),
+                    .dpad_up => self.move(.up, now_ms),
+                    .dpad_down => self.move(.down, now_ms),
+                    .south => self.actions.activate = true,
+                    .east => self.actions.back = true,
+                    .start => self.actions.menu = true,
+                    .left_shoulder => self.cycle(-1),
+                    .right_shoulder => self.cycle(1),
+                    else => {},
+                },
+                .key_down => |kd| switch (kd.key) {
+                    .left_arrow => self.move(.left, now_ms),
+                    .right_arrow => self.move(.right, now_ms),
+                    .up_arrow => self.move(.up, now_ms),
+                    .down_arrow => self.move(.down, now_ms),
+                    .enter, .keypad_enter => self.actions.activate = true,
+                    .back_space => self.actions.back = true,
+                    else => {},
+                },
+                .gamepad_axis => |ga| {
+                    // Light stick support: if the axis is held, emit repeat moves.
+                    if (ga.axis == .left_x or ga.axis == .left_y) {
+                        self.handleLeftStick(ga, now_ms);
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    fn handleLeftStick(self: *NavState, ga: input_events.GamepadAxisEvent, now_ms: i64) void {
+        // Deadzone and repeat gating.
+        const v = ga.value;
+        const dead: i16 = 14000;
+        const repeat_ms: i64 = 140;
+
+        const dir: ?MoveDir = switch (ga.axis) {
+            .left_x => if (v < -dead) .left else if (v > dead) .right else null,
+            .left_y => if (v < -dead) .up else if (v > dead) .down else null,
+            else => null,
+        };
+
+        if (dir == null) {
+            self.axis_held_dir = null;
+            return;
+        }
+
+        if (self.axis_held_dir == null or self.axis_held_dir.? != dir.?) {
+            self.axis_held_dir = dir;
+            self.last_axis_ms = 0;
+        }
+
+        if (self.last_axis_ms == 0 or (now_ms - self.last_axis_ms) >= repeat_ms) {
+            self.last_axis_ms = now_ms;
+            self.move(dir.?, now_ms);
+        }
+    }
+
+    fn cycle(self: *NavState, delta: i32) void {
+        if (self.prev_items.items.len == 0) return;
+        const len_i = @as(i32, @intCast(self.prev_items.items.len));
+        var idx_i = @as(i32, @intCast(@min(self.focused_idx, self.prev_items.items.len - 1)));
+        idx_i = @mod(idx_i + delta, len_i);
+        self.focused_idx = @as(usize, @intCast(idx_i));
+    }
+
+    fn move(self: *NavState, dir: MoveDir, now_ms: i64) void {
+        // Rate limit repeated moves (dpad/key repeat can be fast).
+        const repeat_ms: i64 = 90;
+        if (self.last_move_ms != 0 and (now_ms - self.last_move_ms) < repeat_ms) return;
+        self.last_move_ms = now_ms;
+
+        if (self.prev_items.items.len == 0) return;
+
+        self.focused_idx = @min(self.focused_idx, self.prev_items.items.len - 1);
+        const from = self.prev_items.items[self.focused_idx].center();
+
+        var best_idx: ?usize = null;
+        var best_score: f32 = 0.0;
+
+        for (self.prev_items.items, 0..) |it, idx| {
+            if (idx == self.focused_idx) continue;
+            const c = it.center();
+            const dx = c[0] - from[0];
+            const dy = c[1] - from[1];
+
+            const ok = switch (dir) {
+                .left => dx < -0.001,
+                .right => dx > 0.001,
+                .up => dy < -0.001,
+                .down => dy > 0.001,
+            };
+            if (!ok) continue;
+
+            const score: f32 = switch (dir) {
+                .left, .right => @abs(dx) + @abs(dy) * 0.5,
+                .up, .down => @abs(dy) + @abs(dx) * 0.5,
+            };
+
+            if (best_idx == null or score < best_score) {
+                best_idx = idx;
+                best_score = score;
+            }
+        }
+
+        if (best_idx) |idx| self.focused_idx = idx;
+    }
+};
