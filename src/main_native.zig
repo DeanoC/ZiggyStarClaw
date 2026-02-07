@@ -50,6 +50,7 @@ const UiWindow = struct {
     queue: input_state.InputQueue,
     swapchain: multi_renderer.WindowSwapchain,
     manager: panel_manager.PanelManager,
+    ui_state: ui.WindowUiState = .{},
 };
 
 fn destroyUiWindow(allocator: std.mem.Allocator, w: *UiWindow) void {
@@ -98,6 +99,7 @@ fn createUiWindow(
         .queue = input_state.InputQueue.init(allocator),
         .swapchain = swapchain,
         .manager = panel_manager.PanelManager.init(allocator, ws),
+        .ui_state = .{},
     };
     errdefer out.queue.deinit(allocator);
     return out;
@@ -772,7 +774,6 @@ fn sendChatMessageRequest(
     ctx.setPendingSendRequest(request.id);
 }
 
-
 fn freeChatMessageOwned(allocator: std.mem.Allocator, msg: *types.ChatMessage) void {
     allocator.free(msg.id);
     allocator.free(msg.role);
@@ -1072,6 +1073,7 @@ pub fn main() !void {
         .swapchain = multi_renderer.WindowSwapchain.initMain(&gpu, window),
         // Initialize immediately so early errors don't trip `destroyUiWindow`.
         .manager = panel_manager.PanelManager.init(allocator, workspace.Workspace.initEmpty(allocator)),
+        .ui_state = .{},
     };
     errdefer main_win.queue.deinit(allocator);
     errdefer main_win.swapchain.deinit();
@@ -1328,6 +1330,7 @@ pub fn main() !void {
                     &w.manager,
                     &command_inbox,
                     &w.queue,
+                    &w.ui_state,
                 );
                 if (w.id == focused_id) {
                     ui_action = action;

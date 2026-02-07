@@ -41,6 +41,11 @@ pub const SendMessageAction = struct {
     message: []u8,
 };
 
+pub const WindowUiState = struct {
+    custom_split_dragging: bool = false,
+    custom_window_menu_open: bool = false,
+};
+
 pub const UiAction = struct {
     send_message: ?SendMessageAction = null,
     connect: bool = false,
@@ -102,6 +107,7 @@ fn drawCustomMenuBar(
     queue: *input_state.InputQueue,
     manager: *panel_manager.PanelManager,
     action: *UiAction,
+    win_state: *WindowUiState,
 ) void {
     const t = dc.theme;
     dc.drawRect(rect, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
@@ -112,15 +118,15 @@ fn drawCustomMenuBar(
         .{ rect.min[0] + t.spacing.sm, rect.min[1] + t.spacing.xs },
         .{ button_width, rect.size()[1] - t.spacing.xs * 2.0 },
     );
-    const menu_open = custom_window_menu_open;
+    const menu_open = win_state.custom_window_menu_open;
     if (widgets.button.draw(dc, button_rect, label, queue, .{
         .variant = if (menu_open) .secondary else .ghost,
         .radius = t.radius.sm,
     })) {
-        custom_window_menu_open = !custom_window_menu_open;
+        win_state.custom_window_menu_open = !win_state.custom_window_menu_open;
     }
 
-    if (!custom_window_menu_open) {
+    if (!win_state.custom_window_menu_open) {
         return;
     }
 
@@ -149,12 +155,12 @@ fn drawCustomMenuBar(
     var cursor_y = menu_rect.min[1] + menu_padding;
     if (drawMenuItem(dc, queue, draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }), "Workspace", has_control)) {
         manager.ensurePanel(.Control);
-        custom_window_menu_open = false;
+        win_state.custom_window_menu_open = false;
     }
     cursor_y += item_height;
     if (drawMenuItem(dc, queue, draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }), "Chat", has_chat)) {
         manager.ensurePanel(.Chat);
-        custom_window_menu_open = false;
+        win_state.custom_window_menu_open = false;
     }
     cursor_y += item_height;
     if (drawMenuItem(dc, queue, draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }), "Showcase", has_showcase)) {
@@ -163,7 +169,7 @@ fn drawCustomMenuBar(
         } else {
             manager.ensurePanel(.Showcase);
         }
-        custom_window_menu_open = false;
+        win_state.custom_window_menu_open = false;
     }
     if (allow_multi_window) {
         cursor_y += item_height;
@@ -175,7 +181,7 @@ fn drawCustomMenuBar(
             false,
         )) {
             action.spawn_window = true;
-            custom_window_menu_open = false;
+            win_state.custom_window_menu_open = false;
         }
     }
 
@@ -191,7 +197,7 @@ fn drawCustomMenuBar(
         }
     }
     if (clicked_outside) {
-        custom_window_menu_open = false;
+        win_state.custom_window_menu_open = false;
     }
 }
 
@@ -275,8 +281,7 @@ const PanelIdList = struct {
 };
 
 var safe_insets: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };
-var custom_split_dragging: bool = false;
-var custom_window_menu_open: bool = false;
+var default_window_ui_state: WindowUiState = .{};
 const attachment_fetch_limit: usize = 256 * 1024;
 const attachment_editor_limit: usize = 128 * 1024;
 const attachment_json_pretty_limit: usize = 64 * 1024;
@@ -313,7 +318,7 @@ pub fn draw(
     frameBegin(allocator, ctx, manager, inbox);
     defer frameEnd();
     const queue = collectInput(allocator);
-    return drawWindow(allocator, ctx, cfg, registry, is_connected, app_version, framebuffer_width, framebuffer_height, manager, inbox, queue);
+    return drawWindow(allocator, ctx, cfg, registry, is_connected, app_version, framebuffer_width, framebuffer_height, manager, inbox, queue, &default_window_ui_state);
 }
 
 pub fn frameBegin(
@@ -354,6 +359,7 @@ pub fn drawWindow(
     manager: *panel_manager.PanelManager,
     inbox: *ui_command_inbox.UiCommandInbox,
     queue: *input_state.InputQueue,
+    win_state: *WindowUiState,
 ) UiAction {
     var action = UiAction{};
     const zone = profiler.zone("ui.draw");
@@ -387,6 +393,7 @@ pub fn drawWindow(
             host_rect,
             &action,
             &pending_attachment,
+            win_state,
         );
     }
 
@@ -409,6 +416,7 @@ fn drawWorkspaceHost(
     host_rect: draw_context.Rect,
     action: *UiAction,
     pending_attachment: *?sessions_panel.AttachmentOpen,
+    win_state: *WindowUiState,
 ) void {
     const zone = profiler.zone("ui.workspace");
     defer zone.end();
@@ -463,28 +471,28 @@ fn drawWorkspaceHost(
             .{ divider_width, content_rect.size()[1] },
         );
         const hovered = divider_rect.contains(queue.state.mouse_pos);
-        if (hovered or custom_split_dragging) {
+        if (hovered or win_state.custom_split_dragging) {
             cursor.set(.resize_ew);
         }
         for (queue.events.items) |evt| {
             switch (evt) {
                 .mouse_down => |md| {
                     if (md.button == .left and hovered) {
-                        custom_split_dragging = true;
+                        win_state.custom_split_dragging = true;
                     }
                 },
                 .mouse_up => |mu| {
                     if (mu.button == .left) {
-                        custom_split_dragging = false;
+                        win_state.custom_split_dragging = false;
                     }
                 },
                 .focus_lost => {
-                    custom_split_dragging = false;
+                    win_state.custom_split_dragging = false;
                 },
                 else => {},
             }
         }
-        if (custom_split_dragging) {
+        if (win_state.custom_split_dragging) {
             const mouse_x = queue.state.mouse_pos[0];
             const clamped_left = std.math.clamp(mouse_x - content_rect.min[0], min_left, max_left);
             ratio = if (width > 0.0) clamped_left / width else ratio;
@@ -558,7 +566,7 @@ fn drawWorkspaceHost(
     }
     syncAttachmentFetches(allocator, manager);
 
-    drawCustomMenuBar(&dc, menu_rect, queue, manager, action);
+    drawCustomMenuBar(&dc, menu_rect, queue, manager, action, win_state);
 
     var agent_name: ?[]const u8 = null;
     var session_label: ?[]const u8 = null;
