@@ -124,11 +124,11 @@ pub fn draw(
 
     handleListKeys(queue, visible.items);
 
-    // Keyboard shortcuts: enter / r toggles read/unread for the selected mock item.
+    // Keyboard shortcuts: enter / a toggles read/unread for the selected mock item.
     for (queue.events.items) |evt| {
         if (evt == .key_down and !evt.key_down.repeat) {
             switch (evt.key_down.key) {
-                .enter, .r => {
+                .enter, .a => {
                     if (selected_index < items.len) toggleMockRead(selected_index, items[selected_index].status);
                 },
                 else => {},
