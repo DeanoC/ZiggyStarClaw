@@ -2,6 +2,7 @@ const draw_context = @import("../draw_context.zig");
 const input_state = @import("../input/input_state.zig");
 const theme = @import("../theme.zig");
 const colors = @import("../theme/colors.zig");
+const theme_runtime = @import("../theme_engine/runtime.zig");
 
 pub const Variant = enum {
     primary,
@@ -23,8 +24,18 @@ pub fn draw(
     opts: Options,
 ) bool {
     const t = theme.activeTheme();
-    const hovered = rect.contains(queue.state.mouse_pos);
-    const active = hovered and queue.state.mouse_down_left;
+    const profile = theme_runtime.getProfile();
+    const allow_hover = profile.allow_hover_states;
+    const inside = rect.contains(queue.state.mouse_pos);
+    const hovered = allow_hover and inside;
+    const active = inside and queue.state.mouse_down_left;
+
+    const ss = theme_runtime.getStyleSheet();
+    const variant_style = switch (opts.variant) {
+        .primary => ss.button.primary,
+        .secondary => ss.button.secondary,
+        .ghost => ss.button.ghost,
+    };
 
     var clicked = false;
     if (!opts.disabled) {
@@ -43,9 +54,9 @@ pub fn draw(
     const white: colors.Color = .{ 1.0, 1.0, 1.0, 1.0 };
     const transparent: colors.Color = .{ 0.0, 0.0, 0.0, 0.0 };
     const base_bg = switch (opts.variant) {
-        .primary => t.colors.primary,
-        .secondary => t.colors.surface,
-        .ghost => transparent,
+        .primary => variant_style.fill orelse t.colors.primary,
+        .secondary => variant_style.fill orelse t.colors.surface,
+        .ghost => variant_style.fill orelse transparent,
     };
     const hover_bg = switch (opts.variant) {
         .primary => colors.blend(base_bg, white, 0.12),
@@ -69,7 +80,13 @@ pub fn draw(
     if (opts.variant == .primary) {
         text_color = colors.rgba(255, 255, 255, 255);
     }
+    if (variant_style.text) |override| {
+        text_color = override;
+    }
     var border = t.colors.border;
+    if (variant_style.border) |override| {
+        border = override;
+    }
     if (hovered) {
         border = colors.blend(border, t.colors.primary, 0.2);
     }
@@ -80,7 +97,7 @@ pub fn draw(
         border = colors.withAlpha(border, 0.6);
     }
 
-    const radius = opts.radius orelse t.radius.sm;
+    const radius = opts.radius orelse variant_style.radius orelse t.radius.sm;
     ctx.drawRoundedRect(rect, radius, .{
         .fill = fill,
         .stroke = border,

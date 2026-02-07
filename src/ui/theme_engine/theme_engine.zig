@@ -7,6 +7,7 @@ const profile = @import("profile.zig");
 const schema = @import("schema.zig");
 const theme_package = @import("theme_package.zig");
 const style_sheet = @import("style_sheet.zig");
+pub const runtime = @import("runtime.zig");
 
 pub const PlatformCaps = profile.PlatformCaps;
 pub const ProfileId = profile.ProfileId;
@@ -32,14 +33,14 @@ pub const ThemeEngine = struct {
     runtime_dark: ?*theme_tokens.Theme = null,
 
     active_profile: Profile = profile.defaultsFor(.desktop, profile.PlatformCaps.defaultForTarget()),
-    styles: style_sheet.StyleSheet,
+    styles: style_sheet.StyleSheetStore,
 
     pub fn init(allocator: std.mem.Allocator, caps: PlatformCaps) ThemeEngine {
         return .{
             .allocator = allocator,
             .caps = caps,
             .active_profile = profile.defaultsFor(.desktop, caps),
-            .styles = style_sheet.StyleSheet.initEmpty(allocator),
+            .styles = style_sheet.StyleSheetStore.initEmpty(allocator),
         };
     }
 
@@ -57,10 +58,13 @@ pub const ThemeEngine = struct {
         self.runtime_light = null;
         self.runtime_dark = null;
         self.styles.deinit();
+        runtime.setStyleSheet(.{});
+        runtime.setProfile(profile.defaultsFor(.desktop, self.caps));
     }
 
     pub fn setProfile(self: *ThemeEngine, p: Profile) void {
         self.active_profile = p;
+        runtime.setProfile(p);
     }
 
     pub fn resolveProfileFromConfig(
@@ -71,18 +75,20 @@ pub const ThemeEngine = struct {
     ) void {
         const requested = profile.profileFromLabel(cfg_profile_label);
         self.active_profile = profile.resolveProfile(self.caps, framebuffer_width, framebuffer_height, requested);
+        runtime.setProfile(self.active_profile);
     }
 
     pub fn loadAndApplyThemePackDir(self: *ThemeEngine, root_path: []const u8) !void {
         var pack = try theme_package.loadFromDirectory(self.allocator, root_path);
         defer pack.deinit();
 
-        // Load style sheet payload if present (kept as raw JSON for now).
-        self.styles.deinit();
-        self.styles = try loadStyleSheetMaybe(self.allocator, pack.root_path);
-
         const base_theme = try buildRuntimeTheme(self.allocator, pack.tokens_base);
         errdefer freeTheme(self.allocator, base_theme);
+
+        // Load + resolve style sheet (optional) using base tokens.
+        self.styles.deinit();
+        self.styles = try style_sheet.loadFromDirectoryMaybe(self.allocator, pack.root_path, base_theme);
+        runtime.setStyleSheet(self.styles.resolved);
 
         const light_theme = if (pack.tokens_light) |tf|
             try buildRuntimeTheme(self.allocator, tf)
@@ -110,19 +116,6 @@ pub const ThemeEngine = struct {
         freeTheme(self.allocator, base_theme);
     }
 };
-
-fn loadStyleSheetMaybe(allocator: std.mem.Allocator, root_path: []const u8) !style_sheet.StyleSheet {
-    var dir = std.fs.cwd().openDir(root_path, .{}) catch {
-        return style_sheet.StyleSheet.initEmpty(allocator);
-    };
-    defer dir.close();
-    const f = dir.openFile("styles/components.json", .{}) catch {
-        return style_sheet.StyleSheet.initEmpty(allocator);
-    };
-    defer f.close();
-    const bytes = try f.readToEndAlloc(allocator, 512 * 1024);
-    return .{ .allocator = allocator, .raw_json = bytes };
-}
 
 fn buildRuntimeTheme(allocator: std.mem.Allocator, tokens: schema.TokensFile) !*theme_tokens.Theme {
     const font_family = try allocator.dupe(u8, tokens.typography.font_family);

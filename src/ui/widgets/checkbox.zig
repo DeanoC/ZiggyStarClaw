@@ -2,6 +2,7 @@ const draw_context = @import("../draw_context.zig");
 const input_state = @import("../input/input_state.zig");
 const theme = @import("../theme.zig");
 const colors = @import("../theme/colors.zig");
+const theme_runtime = @import("../theme_engine/runtime.zig");
 
 pub const Options = struct {
     disabled: bool = false,
@@ -16,7 +17,8 @@ pub fn draw(
     opts: Options,
 ) bool {
     const t = theme.activeTheme();
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const profile = theme_runtime.getProfile();
+    const hovered = profile.allow_hover_states and rect.contains(queue.state.mouse_pos);
     var clicked = false;
     if (!opts.disabled) {
         for (queue.events.items) |evt| {
