@@ -805,6 +805,19 @@ fn run() !void {
 
     var cfg = try config.loadOrDefault(allocator, "ziggystarclaw_config.json");
     defer cfg.deinit(allocator);
+    // If the user has never saved a config yet, create one so it's easy to edit by hand.
+    const cfg_missing = blk: {
+        std.fs.cwd().access("ziggystarclaw_config.json", .{}) catch |err| switch (err) {
+            error.FileNotFound => break :blk true,
+            else => break :blk false,
+        };
+        break :blk false;
+    };
+    if (cfg_missing) {
+        config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
+            logger.err("Failed to write default config: {}", .{err});
+        };
+    }
     {
         const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch null;
         defer if (cwd) |v| allocator.free(v);
