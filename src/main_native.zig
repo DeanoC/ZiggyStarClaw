@@ -32,6 +32,7 @@ const sdl = @import("platform/sdl3.zig").c;
 const input_backend = @import("ui/input/input_backend.zig");
 const sdl_input_backend = @import("ui/input/sdl_input_backend.zig");
 const text_input_backend = @import("ui/input/text_input_backend.zig");
+const input_state = @import("ui/input/input_state.zig");
 
 const webgpu_renderer = @import("client/renderer.zig");
 const font_system = @import("ui/font_system.zig");
@@ -41,6 +42,54 @@ const icon = @cImport({
 });
 
 const startup_log_path = "ziggystarclaw_startup.log";
+
+const UiWindow = struct {
+    window: *sdl.SDL_Window,
+    renderer: webgpu_renderer.Renderer,
+    id: u32,
+    queue: input_state.InputQueue,
+};
+
+fn destroyUiWindow(allocator: std.mem.Allocator, w: *UiWindow) void {
+    w.queue.deinit(allocator);
+    w.renderer.deinit();
+    sdl.SDL_DestroyWindow(w.window);
+    allocator.destroy(w);
+}
+
+fn createUiWindow(
+    allocator: std.mem.Allocator,
+    title: [:0]const u8,
+    width: c_int,
+    height: c_int,
+    flags: sdl.SDL_WindowFlags,
+) !*UiWindow {
+    const win = sdl.SDL_CreateWindow(title, width, height, flags) orelse {
+        logger.err("SDL_CreateWindow failed: {s}", .{sdl.SDL_GetError()});
+        return error.SdlWindowCreateFailed;
+    };
+    errdefer sdl.SDL_DestroyWindow(win);
+    setWindowIcon(win);
+
+    var renderer0 = try webgpu_renderer.Renderer.init(allocator, win);
+    var renderer0_owned = true;
+    errdefer if (renderer0_owned) renderer0.deinit();
+    logSurfaceBackend(win);
+
+    const out = try allocator.create(UiWindow);
+    errdefer allocator.destroy(out);
+    out.* = .{
+        .window = win,
+        .renderer = renderer0,
+        .id = sdl.SDL_GetWindowID(win),
+        .queue = input_state.InputQueue.init(allocator),
+    };
+    errdefer out.queue.deinit(allocator);
+    errdefer out.renderer.deinit();
+    renderer0_owned = false;
+    renderer0 = undefined;
+    return out;
+}
 
 fn setWindowIcon(window: *sdl.SDL_Window) void {
     const icon_png = @embedFile("icons/ZiggyStarClaw_Icon.png");
@@ -983,7 +1032,7 @@ pub fn main() !void {
         logger.err("SDL_CreateWindow failed: {s}", .{sdl.SDL_GetError()});
         return error.SdlWindowCreateFailed;
     };
-    defer sdl.SDL_DestroyWindow(window);
+    errdefer sdl.SDL_DestroyWindow(window);
     text_input_backend.init(@ptrCast(window));
     defer text_input_backend.deinit();
     setWindowIcon(window);
@@ -997,8 +1046,30 @@ pub fn main() !void {
         );
     }
 
-    var renderer = try webgpu_renderer.Renderer.init(allocator, window);
+    var renderer0 = try webgpu_renderer.Renderer.init(allocator, window);
+    var renderer0_owned = true;
+    errdefer if (renderer0_owned) renderer0.deinit();
     logSurfaceBackend(window);
+
+    const main_win = try allocator.create(UiWindow);
+    errdefer allocator.destroy(main_win);
+    main_win.* = .{
+        .window = window,
+        .renderer = renderer0,
+        .id = sdl.SDL_GetWindowID(window),
+        .queue = input_state.InputQueue.init(allocator),
+    };
+    errdefer main_win.queue.deinit(allocator);
+    errdefer main_win.renderer.deinit();
+    renderer0_owned = false;
+    renderer0 = undefined;
+
+    var ui_windows: std.ArrayList(*UiWindow) = .empty;
+    try ui_windows.append(allocator, main_win);
+    defer {
+        for (ui_windows.items) |w| destroyUiWindow(allocator, w);
+        ui_windows.deinit(allocator);
+    }
 
     const dpi_scale_raw: f32 = sdl.SDL_GetWindowDisplayScale(window);
     const dpi_scale: f32 = if (dpi_scale_raw > 0.0) dpi_scale_raw else 1.0;
@@ -1017,7 +1088,7 @@ pub fn main() !void {
     image_cache.setEnabled(true);
     defer image_cache.deinit();
     defer attachment_cache.deinit();
-    defer renderer.deinit();
+    // renderers are owned by `ui_windows`
 
     var ctx = try client_state.ClientContext.init(allocator);
     defer ctx.deinit();
@@ -1097,10 +1168,13 @@ pub fn main() !void {
     }
 
     var should_close = false;
+    var window_close_requests: std.ArrayList(u32) = .empty;
+    defer window_close_requests.deinit(allocator);
     while (!should_close) {
         profiler.frameMark();
         const frame_zone = profiler.zone("frame");
         defer frame_zone.end();
+        window_close_requests.clearRetainingCapacity();
         {
             const zone = profiler.zone("frame.events");
             defer zone.end();
@@ -1109,8 +1183,15 @@ pub fn main() !void {
                 sdl_input_backend.pushEvent(&event);
                 switch (event.type) {
                     sdl.SDL_EVENT_QUIT,
-                    sdl.SDL_EVENT_WINDOW_CLOSE_REQUESTED,
                     => should_close = true,
+                    sdl.SDL_EVENT_WINDOW_CLOSE_REQUESTED => {
+                        const wid = event.window.windowID;
+                        if (wid == main_win.id) {
+                            should_close = true;
+                        } else {
+                            window_close_requests.append(allocator, wid) catch {};
+                        }
+                    },
                     else => {},
                 }
             }
@@ -1191,24 +1272,50 @@ pub fn main() !void {
             next_ping_at_ms = 0;
         }
 
-        var ui_action: ui.UiAction = undefined;
+        const kb_focus = sdl.SDL_GetKeyboardFocus();
+        const focused_id: u32 = if (kb_focus) |w| sdl.SDL_GetWindowID(w) else main_win.id;
+
+        var ui_action: ui.UiAction = .{};
         {
             const zone = profiler.zone("frame.ui");
             defer zone.end();
-            renderer.beginFrame(fb_width, fb_height);
-            ui_action = ui.draw(
-                allocator,
-                &ctx,
-                &cfg,
-                &agents,
-                ws_client.is_connected,
-                build_options.app_version,
-                fb_width,
-                fb_height,
-                true,
-                &manager,
-                &command_inbox,
-            );
+
+            ui.frameBegin(allocator, &ctx, &manager, &command_inbox);
+            for (ui_windows.items) |w| {
+                var w_fb_w: c_int = 0;
+                var w_fb_h: c_int = 0;
+                _ = sdl.SDL_GetWindowSizeInPixels(w.window, &w_fb_w, &w_fb_h);
+                const w_fb_width: u32 = if (w_fb_w > 0) @intCast(w_fb_w) else 1;
+                const w_fb_height: u32 = if (w_fb_h > 0) @intCast(w_fb_h) else 1;
+
+                w.renderer.beginFrame(w_fb_width, w_fb_height);
+
+                w.queue.clear(allocator);
+                sdl_input_backend.setCollectWindow(w.window);
+                input_router.setExternalQueue(&w.queue);
+                input_router.collect(allocator);
+
+                const action = ui.drawWindow(
+                    allocator,
+                    &ctx,
+                    &cfg,
+                    &agents,
+                    ws_client.is_connected,
+                    build_options.app_version,
+                    w_fb_width,
+                    w_fb_height,
+                    &manager,
+                    &command_inbox,
+                    &w.queue,
+                );
+                if (w.id == focused_id) {
+                    ui_action = action;
+                }
+
+                w.renderer.render();
+            }
+            sdl_input_backend.setCollectWindow(null);
+            ui.frameEnd();
         }
 
         if (ui_action.config_updated) {
@@ -1605,10 +1712,43 @@ pub fn main() !void {
             }
         }
 
-        {
-            const zone = profiler.zone("frame.render");
-            defer zone.end();
-            renderer.render();
+        if (ui_action.spawn_window and theme_eng.active_profile.allow_multi_window) {
+            const index: usize = ui_windows.items.len + 1;
+            var title_buf: [64]u8 = undefined;
+            const title_z = std.fmt.bufPrintZ(&title_buf, "ZiggyStarClaw ({d})", .{index}) catch "ZiggyStarClaw";
+
+            var cur_w: c_int = 960;
+            var cur_h: c_int = 720;
+            _ = sdl.SDL_GetWindowSize(main_win.window, &cur_w, &cur_h);
+            if (cur_w < 300) cur_w = 960;
+            if (cur_h < 200) cur_h = 720;
+
+            const new_win = createUiWindow(allocator, title_z, cur_w, cur_h, window_flags) catch null;
+            if (new_win) |w| {
+                var pos_x: c_int = 0;
+                var pos_y: c_int = 0;
+                _ = sdl.SDL_GetWindowPosition(main_win.window, &pos_x, &pos_y);
+                const offs: c_int = @intCast(@min(index * 24, 240));
+                _ = sdl.SDL_SetWindowPosition(w.window, pos_x + offs, pos_y + offs);
+                ui_windows.append(allocator, w) catch {
+                    destroyUiWindow(allocator, w);
+                };
+            }
+        }
+
+        if (window_close_requests.items.len > 0) {
+            for (window_close_requests.items) |wid| {
+                var i: usize = 0;
+                while (i < ui_windows.items.len) {
+                    const w = ui_windows.items[i];
+                    if (w.id == wid and w.id != main_win.id) {
+                        _ = ui_windows.swapRemove(i);
+                        destroyUiWindow(allocator, w);
+                        break;
+                    }
+                    i += 1;
+                }
+            }
         }
     }
 }

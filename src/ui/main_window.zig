@@ -32,6 +32,7 @@ const showcase_panel = @import("panels/showcase_panel.zig");
 const status_bar = @import("status_bar.zig");
 const widgets = @import("widgets/widgets.zig");
 const text_input_backend = @import("input/text_input_backend.zig");
+const theme_runtime = @import("theme_engine/runtime.zig");
 const profiler = @import("../utils/profiler.zig");
 const panel_chrome = @import("panel_chrome.zig");
 
@@ -48,6 +49,7 @@ pub const UiAction = struct {
     reload_theme_pack: bool = false,
     clear_saved: bool = false,
     config_updated: bool = false,
+    spawn_window: bool = false,
     refresh_sessions: bool = false,
     new_session: bool = false,
     select_session: ?[]u8 = null,
@@ -99,6 +101,7 @@ fn drawCustomMenuBar(
     rect: draw_context.Rect,
     queue: *input_state.InputQueue,
     manager: *panel_manager.PanelManager,
+    action: *UiAction,
 ) void {
     const t = dc.theme;
     dc.drawRect(rect, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
@@ -124,7 +127,9 @@ fn drawCustomMenuBar(
     const menu_width: f32 = 240.0;
     const menu_padding = t.spacing.xs;
     const item_height = dc.lineHeight() + t.spacing.xs * 2.0;
-    const menu_height = menu_padding * 2.0 + item_height * 3.0;
+    const allow_multi_window = theme_runtime.getProfile().allow_multi_window;
+    const item_count: f32 = if (allow_multi_window) 4.0 else 3.0;
+    const menu_height = menu_padding * 2.0 + item_height * item_count;
     const menu_rect = draw_context.Rect.fromMinSize(
         .{ rect.min[0] + t.spacing.sm, rect.max[1] + t.spacing.xs },
         .{ menu_width, menu_height },
@@ -156,6 +161,19 @@ fn drawCustomMenuBar(
             manager.ensurePanel(.Showcase);
         }
         custom_window_menu_open = false;
+    }
+    if (allow_multi_window) {
+        cursor_y += item_height;
+        if (drawMenuItem(
+            dc,
+            queue,
+            draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+            "New Window",
+            false,
+        )) {
+            action.spawn_window = true;
+            custom_window_menu_open = false;
+        }
     }
 
     var clicked_outside = false;
@@ -288,23 +306,56 @@ pub fn draw(
     manager: *panel_manager.PanelManager,
     inbox: *ui_command_inbox.UiCommandInbox,
 ) UiAction {
-    var action = UiAction{};
     _ = use_wgpu_renderer;
-    const zone = profiler.zone("ui.draw");
-    defer zone.end();
-    var pending_attachment: ?sessions_panel.AttachmentOpen = null;
+    frameBegin(allocator, ctx, manager, inbox);
+    defer frameEnd();
+    const queue = collectInput(allocator);
+    return drawWindow(allocator, ctx, cfg, registry, is_connected, app_version, framebuffer_width, framebuffer_height, manager, inbox, queue);
+}
+
+pub fn frameBegin(
+    allocator: std.mem.Allocator,
+    ctx: *state.ClientContext,
+    manager: *panel_manager.PanelManager,
+    inbox: *ui_command_inbox.UiCommandInbox,
+) void {
     image_cache.beginFrame();
     _ = ui_systems.beginFrame();
-    _ = input_router.beginFrame(allocator);
-    input_router.collect(allocator);
-    const queue = input_router.getQueue();
     text_input_backend.beginFrame();
-    defer text_input_backend.endFrame();
 
     var session_it = ctx.session_states.iterator();
     while (session_it.next()) |entry| {
         inbox.collectFromMessages(allocator, entry.key_ptr.*, entry.value_ptr.messages.items, manager);
     }
+}
+
+pub fn frameEnd() void {
+    text_input_backend.endFrame();
+}
+
+pub fn collectInput(allocator: std.mem.Allocator) *input_state.InputQueue {
+    _ = input_router.beginFrame(allocator);
+    input_router.collect(allocator);
+    return input_router.getQueue();
+}
+
+pub fn drawWindow(
+    allocator: std.mem.Allocator,
+    ctx: *state.ClientContext,
+    cfg: *config.Config,
+    registry: *agent_registry.AgentRegistry,
+    is_connected: bool,
+    app_version: []const u8,
+    framebuffer_width: u32,
+    framebuffer_height: u32,
+    manager: *panel_manager.PanelManager,
+    inbox: *ui_command_inbox.UiCommandInbox,
+    queue: *input_state.InputQueue,
+) UiAction {
+    var action = UiAction{};
+    const zone = profiler.zone("ui.draw");
+    defer zone.end();
+    var pending_attachment: ?sessions_panel.AttachmentOpen = null;
 
     const t = theme.activeTheme();
 
@@ -504,7 +555,7 @@ fn drawWorkspaceHost(
     }
     syncAttachmentFetches(allocator, manager);
 
-    drawCustomMenuBar(&dc, menu_rect, queue, manager);
+    drawCustomMenuBar(&dc, menu_rect, queue, manager, action);
 
     var agent_name: ?[]const u8 = null;
     var session_label: ?[]const u8 = null;
